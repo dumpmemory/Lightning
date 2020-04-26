@@ -933,7 +933,7 @@ impl Default for PassthroughHasher {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use super::*;
+    use crate::map::*;
     use std::collections::HashMap;
     use std::alloc::System;
     use std::thread;
@@ -941,7 +941,7 @@ mod tests {
 
     #[test]
     fn will_not_overflow() {
-        let table = WordMap::<Global>::with_capacity(16);
+        let table = WordMap::<System>::with_capacity(16);
         for i in 50..60 {
             assert_eq!(table.insert(i, i), None);
         }
@@ -955,7 +955,7 @@ mod tests {
 
     #[test]
     fn resize() {
-        let map = WordMap::<Global>::with_capacity(16);
+        let map = WordMap::<System>::with_capacity(16);
         for i in 5..2048 {
             map.insert(i, i * 2);
         }
@@ -969,7 +969,7 @@ mod tests {
 
     #[test]
     fn parallel_no_resize() {
-        let map = Arc::new(WordMap::<Global>::with_capacity(65536));
+        let map = Arc::new(WordMap::<System>::with_capacity(65536));
         let mut threads = vec![];
         for i in 5..99 {
             map.insert(i, i * 10);
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn parallel_with_resize() {
-        let map = Arc::new(WordMap::<Global>::with_capacity(32));
+        let map = Arc::new(WordMap::<System>::with_capacity(32));
         let mut threads = vec![];
         for i in 5..24 {
             let map = map.clone();
@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn parallel_hybird() {
-        let map = Arc::new(WordMap::<Global>::with_capacity(32));
+        let map = Arc::new(WordMap::<System>::with_capacity(32));
         for i in 5..128 {
             map.insert(i, i * 10);
         }
@@ -1086,7 +1086,7 @@ mod tests {
                 assert_eq!(self.d, num + 3);
             }
         }
-        let map = ObjectMap::<Obj, Global>::with_capacity(16);
+        let map = ObjectMap::<Obj>::with_capacity(16);
         for i in 5..2048 {
             map.insert(i, Obj::new(i));
         }

@@ -834,8 +834,8 @@ pub fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
 
 #[cfg(test)]
 mod test {
-    use crate::list::{WordList, ExchangeSlot, ObjectList};
-    use std::alloc::Global;
+    use crate::list::*;
+    use std::alloc::{Global, System};
     use std::thread;
     use std::sync::{Arc, Mutex};
     use std::collections::BTreeSet;
@@ -844,7 +844,7 @@ mod test {
 
     #[test]
     pub fn general() {
-        let list = WordList::<Global>::new();
+        let list = WordList::<System>::new();
         let page_size = page_size::get();
         for i in 2..page_size {
             list.push(i);
@@ -875,7 +875,7 @@ mod test {
     #[test]
     pub fn parallel() {
         let page_size = page_size::get();
-        let list = Arc::new(ObjectList::<usize, Global>::with_capacity(64));
+        let list = Arc::new(ObjectList::<usize, System>::with_capacity(64));
         let mut threads = (2..page_size)
             .map(|i| {
                 let list = list.clone();
@@ -899,7 +899,7 @@ mod test {
         for i in 2..page_size {
             list.push(i);
         }
-        let recev_list = Arc::new(WordList::<Global>::with_capacity(64));
+        let recev_list = Arc::new(WordList::<System>::with_capacity(64));
         threads = (page_size..(page_size * 2))
             .map(|i| {
                 let list = list.clone();
