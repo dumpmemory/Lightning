@@ -20,6 +20,7 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 use std::time::Instant;
 use crate::align_padding;
+use std::alloc::GlobalAlloc;
 
 const CACHE_LINE_SIZE: usize = 64;
 const EMPTY_SLOT: usize = 0;
@@ -34,7 +35,7 @@ const MAXIMUM_EXCHANGE_SLOTS: usize = 16;
 type ExchangeData<T> = Option<(usize, T)>;
 type ExchangeArrayVec<T> = SmallVec<[ExchangeSlot<T>; MAXIMUM_EXCHANGE_SLOTS]>;
 
-struct BufferMeta<T: Default, A: Alloc + Default> {
+struct BufferMeta<T: Default, A: GlobalAlloc + Default> {
     head: AtomicUsize,
     next: AtomicPtr<BufferMeta<T, A>>,
     refs: AtomicUsize,
@@ -50,26 +51,26 @@ pub struct ExchangeSlot<T: Default + Copy> {
     data_state: AtomicUsize,
 }
 
-pub struct ExchangeArray<T: Default + Copy, A: Alloc + Default> {
+pub struct ExchangeArray<T: Default + Copy, A: GlobalAlloc + Default> {
     rand: XorRand,
     shadow: PhantomData<A>,
     capacity: usize,
     slots: ExchangeArrayVec<T>,
 }
 
-pub struct List<T: Default + Copy, A: Alloc + Default> {
+pub struct List<T: Default + Copy, A: GlobalAlloc + Default> {
     head: AtomicPtr<BufferMeta<T, A>>,
     count: AtomicUsize,
     buffer_cap: usize,
     exchange: ExchangeArray<T, A>,
 }
 
-pub struct ListIterator<T: Default + Copy, A: Alloc + Default> {
+pub struct ListIterator<T: Default + Copy, A: GlobalAlloc + Default> {
     buffer: BufferRef<T, A>,
     current: usize,
 }
 
-impl<T: Default + Copy, A: Alloc + Default> List<T, A> {
+impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
     pub fn new(buffer_cap: usize) -> Self {
         let first_buffer = BufferMeta::new(buffer_cap);
         Self {
@@ -356,7 +357,7 @@ impl<T: Default + Copy, A: Alloc + Default> List<T, A> {
     }
 }
 
-impl<T: Default + Copy, A: Alloc + Default> Drop for List<T, A> {
+impl<T: Default + Copy, A: GlobalAlloc + Default> Drop for List<T, A> {
     fn drop(&mut self) {
         unsafe {
             let mut node_ptr = self.head.load(Relaxed);
@@ -369,7 +370,7 @@ impl<T: Default + Copy, A: Alloc + Default> Drop for List<T, A> {
     }
 }
 
-impl<T: Default, A: Alloc + Default> BufferMeta<T, A> {
+impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
     pub fn new(buffer_cap: usize) -> *mut BufferMeta<T, A> {
         let self_size = mem::size_of::<Self>();
         let meta_size = self_size + align_padding(self_size, CACHE_LINE_SIZE);
@@ -523,17 +524,17 @@ impl<T: Default, A: Alloc + Default> BufferMeta<T, A> {
     }
 }
 
-struct BufferRef<T: Default, A: Alloc + Default> {
+struct BufferRef<T: Default, A: GlobalAlloc + Default> {
     ptr: *mut BufferMeta<T, A>,
 }
 
-impl<T: Default, A: Alloc + Default> Drop for BufferRef<T, A> {
+impl<T: Default, A: GlobalAlloc + Default> Drop for BufferRef<T, A> {
     fn drop(&mut self) {
         BufferMeta::unref(self.ptr);
     }
 }
 
-impl<T: Default, A: Alloc + Default> Deref for BufferRef<T, A> {
+impl<T: Default, A: GlobalAlloc + Default> Deref for BufferRef<T, A> {
     type Target = BufferMeta<T, A>;
 
     fn deref(&self) -> &Self::Target {
@@ -541,7 +542,7 @@ impl<T: Default, A: Alloc + Default> Deref for BufferRef<T, A> {
     }
 }
 
-impl<T: Default + Clone + Copy, A: Alloc + Default> Iterator for ListIterator<T, A> {
+impl<T: Default + Clone + Copy, A: GlobalAlloc + Default> Iterator for ListIterator<T, A> {
     type Item = (usize, T);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -571,11 +572,11 @@ impl<T: Default + Clone + Copy, A: Alloc + Default> Iterator for ListIterator<T,
     }
 }
 
-pub struct WordList<A: Alloc + Default> {
+pub struct WordList<A: GlobalAlloc + Default> {
     inner: List<(), A>,
 }
 
-impl<A: Alloc + Default> WordList<A> {
+impl<A: GlobalAlloc + Default> WordList<A> {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             inner: List::new(cap),
@@ -615,11 +616,11 @@ impl<A: Alloc + Default> WordList<A> {
     }
 }
 
-pub struct ObjectList<T: Default + Copy, A: Alloc + Default> {
+pub struct ObjectList<T: Default + Copy, A: GlobalAlloc + Default> {
     inner: List<T, A>,
 }
 
-impl<T: Default + Copy, A: Alloc + Default> ObjectList<T, A> {
+impl<T: Default + Copy, A: GlobalAlloc + Default> ObjectList<T, A> {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             inner: List::new(cap),
@@ -780,7 +781,7 @@ impl<T: Default + Copy> ExchangeSlot<T> {
 unsafe impl<T: Default + Copy> Sync for ExchangeSlot<T> {}
 unsafe impl<T: Default + Copy> Send for ExchangeSlot<T> {}
 
-impl<T: Default + Copy, A: Alloc + Default> ExchangeArray<T, A> {
+impl<T: Default + Copy, A: GlobalAlloc + Default> ExchangeArray<T, A> {
     pub fn new() -> Self {
         let num_cpus = num_cpus::get();
         let default_capacity = num_cpus >> 3;
@@ -811,24 +812,24 @@ impl<T: Default + Copy, A: Alloc + Default> ExchangeArray<T, A> {
     }
 }
 
-unsafe impl<T: Default + Copy, A: Alloc + Default> Send for ExchangeArray<T, A> {}
-unsafe impl<T: Default + Copy, A: Alloc + Default> Sync for ExchangeArray<T, A> {}
+unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Send for ExchangeArray<T, A> {}
+unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Sync for ExchangeArray<T, A> {}
 
 #[inline]
-pub fn dealloc_mem<A: Alloc + Default>(ptr: usize, size: usize) {
+pub fn dealloc_mem<A: GlobalAlloc + Default>(ptr: usize, size: usize) {
     let mut a = A::default();
     let align = 16;
     let layout = Layout::from_size_align(size, align).unwrap();
-    unsafe { a.dealloc(NonNull::<u8>::new(ptr as *mut u8).unwrap(), layout) }
+    unsafe { a.dealloc(ptr as *mut u8, layout) }
 }
 
 #[inline]
-pub fn alloc_mem<A: Alloc + Default>(size: usize) -> usize {
+pub fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let mut a = A::default();
     let align = 16;
     let layout = Layout::from_size_align(size, align).unwrap();
     // must be all zeroed
-    unsafe { a.alloc_zeroed(layout) }.unwrap().as_ptr() as usize
+    (unsafe { a.alloc_zeroed(layout) }) as usize
 }
 
 #[cfg(test)]

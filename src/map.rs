@@ -16,6 +16,7 @@ use ModOp::Empty;
 use core::hash::Hasher;
 use seahash::SeaHasher;
 use crate::align_padding;
+use std::alloc::System;
 
 pub type EntryTemplate = (usize, usize);
 
@@ -58,7 +59,7 @@ enum ModOp<T> {
     Empty,
 }
 
-pub struct Chunk<V, A: Attachment<V>, ALLOC: Alloc + Default> {
+pub struct Chunk<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     // floating-point multiplication is slow, cache this value and recompute every time when resize
@@ -70,11 +71,11 @@ pub struct Chunk<V, A: Attachment<V>, ALLOC: Alloc + Default> {
     shadow: PhantomData<(V, ALLOC)>,
 }
 
-pub struct ChunkRef<V, A: Attachment<V>, ALLOC: Alloc + Default> {
+pub struct ChunkRef<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     ptr: *mut Chunk<V, A, ALLOC>,
 }
 
-pub struct Table<V, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Default> {
+pub struct Table<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
     old_chunk: AtomicPtr<Chunk<V, A, ALLOC>>,
     new_chunk: AtomicPtr<Chunk<V, A, ALLOC>>,
     val_bit_mask: usize, // 0111111..
@@ -82,7 +83,7 @@ pub struct Table<V, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Defaul
     mark: PhantomData<H>
 }
 
-impl<V: Clone, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Default> Table<V, A, ALLOC, H> {
+impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Table<V, A, ALLOC, H> {
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
             panic!("capacity is not power of 2");
@@ -534,7 +535,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Default> Ta
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Default> Drop for Table<V, A, ALLOC, H> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for Table<V, A, ALLOC, H> {
     fn drop(&mut self) {
         let old_chunk = self.old_chunk.load(Relaxed);
         let new_chunk = self.new_chunk.load(Relaxed);
@@ -550,7 +551,7 @@ impl<V, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Default> Drop for 
 }
 
 impl Value {
-    pub fn new<V, A: Attachment<V>, ALLOC: Alloc + Default, H: Hasher + Default>(
+    pub fn new<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
         val: usize,
         table: &Table<V, A, ALLOC, H>,
     ) -> Self {
@@ -585,7 +586,7 @@ impl ParsedValue {
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: Alloc + Default> Chunk<V, A, ALLOC> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 64);
@@ -660,7 +661,7 @@ impl ModOutput {
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: Alloc + Default> Drop for ChunkRef<V, A, ALLOC> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Drop for ChunkRef<V, A, ALLOC> {
     fn drop(&mut self) {
         unsafe {
             Chunk::unref(self.ptr);
@@ -668,7 +669,7 @@ impl<V, A: Attachment<V>, ALLOC: Alloc + Default> Drop for ChunkRef<V, A, ALLOC>
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: Alloc + Default> Deref for ChunkRef<V, A, ALLOC> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkRef<V, A, ALLOC> {
     type Target = Chunk<V, A, ALLOC>;
 
     fn deref(&self) -> &Self::Target {
@@ -677,7 +678,7 @@ impl<V, A: Attachment<V>, ALLOC: Alloc + Default> Deref for ChunkRef<V, A, ALLOC
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: Alloc + Default> ChunkRef<V, A, ALLOC> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> ChunkRef<V, A, ALLOC> {
     fn null_ref() -> Self {
         Self {
             ptr: 0 as *mut Chunk<V, A, ALLOC>,
@@ -742,16 +743,16 @@ impl Attachment<()> for WordAttachment {
     fn dealloc(&self) {}
 }
 
-pub type WordTable<H: Hasher + Default, ALLOC: Alloc + Default> = Table<(), WordAttachment, H, ALLOC>;
+pub type WordTable<H: Hasher + Default, ALLOC: GlobalAlloc + Default> = Table<(), WordAttachment, H, ALLOC>;
 
-pub struct ObjectAttachment<T, A: Alloc + Default> {
+pub struct ObjectAttachment<T, A: GlobalAlloc + Default> {
     obj_chunk: usize,
     size: usize,
     obj_size: usize,
     shadow: PhantomData<(T, A)>,
 }
 
-impl<T: Clone, A: Alloc + Default> Attachment<T> for ObjectAttachment<T, A> {
+impl<T: Clone, A: GlobalAlloc + Default> Attachment<T> for ObjectAttachment<T, A> {
     fn heap_size_of(cap: usize) -> usize {
         let obj_size = mem::size_of::<T>();
         cap * obj_size
@@ -787,7 +788,7 @@ impl<T: Clone, A: Alloc + Default> Attachment<T> for ObjectAttachment<T, A> {
     fn dealloc(&self) {}
 }
 
-impl<T, A: Alloc + Default> ObjectAttachment<T, A> {
+impl<T, A: GlobalAlloc + Default> ObjectAttachment<T, A> {
     fn addr_by_index(&self, index: usize) -> usize {
         self.obj_chunk + index * self.obj_size
     }
@@ -804,11 +805,11 @@ pub trait Map<K, V> {
 
 const NUM_KEY_FIX: usize = 5;
 
-pub struct ObjectMap<V: Clone, ALLOC: Alloc + Default = Global, H: Hasher + Default = SeaHasher> {
+pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
     table: Table<V, ObjectAttachment<V, ALLOC>, ALLOC, H>,
 }
 
-impl<V: Clone, ALLOC: Alloc + Default, H: Hasher + Default> Map<usize, V> for ObjectMap<V, ALLOC, H> {
+impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> for ObjectMap<V, ALLOC, H> {
     fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
@@ -847,11 +848,11 @@ impl<V: Clone, ALLOC: Alloc + Default, H: Hasher + Default> Map<usize, V> for Ob
     }
 }
 
-pub struct WordMap<ALLOC: Alloc + Default = Global, H: Hasher + Default = SeaHasher> {
+pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
     table: WordTable<ALLOC, H>,
 }
 
-impl<ALLOC: Alloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<ALLOC, H> {
+impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<ALLOC, H> {
     fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
@@ -887,22 +888,22 @@ impl<ALLOC: Alloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<
 }
 
 #[inline(always)]
-fn alloc_mem<A: Alloc + Default>(size: usize) -> usize {
+fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let align = 64;
     let layout = Layout::from_size_align(size, align).unwrap();
     let mut alloc = A::default();
     // must be all zeroed
-    let addr = unsafe { alloc.alloc_zeroed(layout) }.unwrap().as_ptr() as usize;
+    let addr = unsafe { alloc.alloc_zeroed(layout) } as usize;
     debug_assert_eq!(addr % 64, 0);
     addr
 }
 
 #[inline(always)]
-fn dealloc_mem<A: Alloc + Default + Default>(ptr: usize, size: usize) {
+fn dealloc_mem<A: GlobalAlloc + Default + Default>(ptr: usize, size: usize) {
     let align = 64;
     let layout = Layout::from_size_align(size, align).unwrap();
     let mut alloc = A::default();
-    unsafe { alloc.dealloc(NonNull::<u8>::new(ptr as *mut u8).unwrap(), layout) }
+    unsafe { alloc.dealloc(ptr as *mut u8, layout) }
 }
 
 pub struct PassthroughHasher {
