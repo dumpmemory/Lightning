@@ -17,6 +17,7 @@ use core::hash::Hasher;
 use seahash::SeaHasher;
 use crate::align_padding;
 use std::alloc::System;
+use std::os::raw::c_void;
 
 pub type EntryTemplate = (usize, usize);
 
@@ -652,6 +653,46 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     fn cap_mask(&self) -> usize { self.capacity - 1  }
 }
 
+impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone for Table<V, A, ALLOC, H> {
+    fn clone(&self) -> Self {
+        let mut new_table = Table {
+            old_chunk: Default::default(),
+            new_chunk: Default::default(),
+            val_bit_mask: 0,
+            inv_bit_mask: 0,
+            mark: PhantomData
+        };
+        let old_chunk_ptr = self.old_chunk.load(Relaxed);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed);
+        unsafe {
+            // Hold references first so they won't get reclaimed
+            let old_chunk_ref = Chunk::borrow(old_chunk_ptr);
+            let new_chunk_ref = Chunk::borrow(new_chunk_ptr);
+            let old_total_size = old_chunk_ref.total_size;
+            let new_total_size = new_chunk_ref.total_size;
+
+            let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<V, A, ALLOC>;
+            libc::memcpy(cloned_old_ptr as *mut c_void, old_chunk_ptr as *const c_void, old_total_size);
+            let cloned_old_ref = Chunk::borrow(cloned_old_ptr);
+            cloned_old_ref.refs.store(2, Relaxed);
+            new_table.old_chunk.store(cloned_old_ptr, Relaxed);
+
+            if old_chunk_ptr != new_chunk_ptr {
+                let cloned_new_ptr = alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<V, A, ALLOC>;
+                libc::memcpy(cloned_new_ptr as *mut c_void, new_chunk_ptr as *const c_void, new_total_size);
+                let cloned_new_ref = Chunk::borrow(cloned_new_ptr);
+                cloned_new_ref.refs.store(2, Relaxed);
+                new_table.new_chunk.store(cloned_new_ptr, Relaxed);
+            } else {
+                new_table.new_chunk.store(cloned_old_ptr, Relaxed);
+            }
+        }
+        new_table.val_bit_mask = self.val_bit_mask;
+        new_table.inv_bit_mask = self.inv_bit_mask;
+        new_table
+    }
+}
+
 impl ModOutput {
     pub fn new(res: ModResult, idx: usize) -> Self {
         Self {
@@ -805,6 +846,7 @@ pub trait Map<K, V> {
 
 const NUM_KEY_FIX: usize = 5;
 
+#[derive(Clone)]
 pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
     table: Table<V, ObjectAttachment<V, ALLOC>, ALLOC, H>,
 }
@@ -848,6 +890,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> 
     }
 }
 
+#[derive(Clone)]
 pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
     table: WordTable<ALLOC, H>,
 }
