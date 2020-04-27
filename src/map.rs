@@ -110,9 +110,9 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     pub fn get(&self, key: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
-        let mut chunk_ref = self.chunk.load(SeqCst, &guard);
+        let mut chunk_ref = self.chunk.load(Relaxed, &guard);
         if chunk_ref.is_null() {
-            chunk_ref = self.chunk.load(SeqCst, &guard);
+            chunk_ref = self.chunk.load(Relaxed, &guard);
         }
         loop {
             if chunk_ref.is_null() {
@@ -132,7 +132,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                     ))
                 }
                 ParsedValue::Sentinel => {
-                    chunk_ref = self.new_chunk.load(SeqCst, &guard);
+                    chunk_ref = self.new_chunk.load(Relaxed, &guard);
                 }
                 ParsedValue::Empty => return None,
             }
@@ -142,8 +142,8 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     pub fn insert(&self, key: usize, value: usize, attached_val: V) -> Option<(usize)> {
         debug!("Inserting key: {}, value: {}", key, value);
         let guard = crossbeam_epoch::pin();
-        let chunk_ptr = self.chunk.load(SeqCst, &guard);
-        let new_chunk_ptr = self.new_chunk.load(SeqCst, &guard);
+        let chunk_ptr = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         let copying = !new_chunk_ptr.is_null();
         if !copying {
             match self.check_resize(chunk_ptr, &guard) {
@@ -195,8 +195,8 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     pub fn remove(&self, key: usize) -> Option<(usize, V)> {
         let guard = crossbeam_epoch::pin();
-        let new_chunk_ptr = self.new_chunk.load(SeqCst, &guard);
-        let old_chunk_ptr = self.chunk.load(SeqCst, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
         let copying = !new_chunk_ptr.is_null();
         let new_chunk = unsafe { new_chunk_ptr.deref() };
         let old_chunk = unsafe { old_chunk_ptr.deref() };
@@ -390,8 +390,8 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     fn entries(&self) -> Vec<(usize, usize, V)> {
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ref = self.chunk.load(SeqCst, &guard);
-        let new_chunk_ref = self.new_chunk.load(SeqCst, &guard);
+        let old_chunk_ref = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ref = self.new_chunk.load(Relaxed, &guard);
         let old_chunk = unsafe { old_chunk_ref.deref() };
         let new_chunk = unsafe { new_chunk_ref.deref() };
         let mut res = self.all_from_chunk(&*old_chunk);
@@ -644,8 +644,8 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             mark: PhantomData
         };
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ptr = self.chunk.load(SeqCst, &guard);
-        let new_chunk_ptr = self.new_chunk.load(SeqCst, &guard);
+        let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         unsafe {
             // Hold references first so they won't get reclaimed
             let old_chunk = unsafe { old_chunk_ptr.deref() };
@@ -677,8 +677,8 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Dr
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
-            guard.defer_destroy(self.chunk.load(SeqCst, &guard));
-            let new_chunk_ptr = self.new_chunk.load(SeqCst, &guard);
+            guard.defer_destroy(self.chunk.load(Relaxed, &guard));
+            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
             if new_chunk_ptr != Shared::null() {
                 guard.defer_destroy(new_chunk_ptr);
             }
