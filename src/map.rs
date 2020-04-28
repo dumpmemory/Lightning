@@ -20,6 +20,7 @@ use std::alloc::System;
 use std::os::raw::c_void;
 use parking_lot::Mutex;
 use std::collections::hash_map::DefaultHasher;
+use std::sync::atomic::Ordering::Acquire;
 
 pub type EntryTemplate = (usize, usize);
 
@@ -437,6 +438,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                 unsafe {
                     Chunk::unref(new_chunk_ptr);
                 }
+                panic!();
                 return true;
             }
             new_chunk_ptr
@@ -949,9 +951,12 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let layout = Layout::from_size_align(size, align).unwrap();
     let mut alloc = A::default();
     // must be all zeroed
-    let addr = unsafe { alloc.alloc_zeroed(layout) } as usize;
-    debug_assert_eq!(addr % 64, 0);
-    addr
+    unsafe {
+        let addr = alloc.alloc(layout) as usize;
+        libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED);
+        debug_assert_eq!(addr % 64, 0);
+        addr
+    }
 }
 
 #[inline(always)]
