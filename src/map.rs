@@ -18,6 +18,8 @@ use seahash::SeaHasher;
 use crate::align_padding;
 use std::alloc::System;
 use std::os::raw::c_void;
+use parking_lot::Mutex;
+use std::collections::hash_map::DefaultHasher;
 
 pub type EntryTemplate = (usize, usize);
 
@@ -69,7 +71,7 @@ pub struct Chunk<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     refs: AtomicUsize,
     total_size: usize,
     attachment: A,
-    shadow: PhantomData<(V, ALLOC)>,
+    shadow: PhantomData<(V, ALLOC)>
 }
 
 pub struct ChunkRef<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
@@ -81,7 +83,8 @@ pub struct Table<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + 
     new_chunk: AtomicPtr<Chunk<V, A, ALLOC>>,
     val_bit_mask: usize, // 0111111..
     inv_bit_mask: usize, // 1000000..
-    mark: PhantomData<H>
+    mark: PhantomData<H>,
+    alloc_lock: Mutex<()>
 }
 
 impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Table<V, A, ALLOC, H> {
@@ -98,7 +101,8 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             new_chunk: AtomicPtr::new(chunk),
             val_bit_mask,
             inv_bit_mask: !val_bit_mask,
-            mark: PhantomData
+            mark: PhantomData,
+            alloc_lock: Default::default()
         }
     }
 
@@ -418,18 +422,25 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let old_cap = old_chunk_ref.capacity;
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
-        let new_chunk_ptr = Chunk::alloc_chunk(new_cap);
-        if self
-            .new_chunk
-            .compare_and_swap(old_chunk_ptr, new_chunk_ptr, Relaxed)
-            != old_chunk_ptr
-        {
-            // other thread have allocated new chunk and wins the competition, exit
-            unsafe {
-                Chunk::unref(new_chunk_ptr);
+        let new_chunk_ptr = {
+            let _alloc_guard = self.alloc_lock.lock();
+            if self.new_chunk.load(Relaxed) != old_chunk_ptr {
+                return true;
             }
-            return true;
-        }
+            let new_chunk_ptr = Chunk::alloc_chunk(new_cap);
+            if self
+                .new_chunk
+                .compare_and_swap(old_chunk_ptr, new_chunk_ptr, Relaxed)
+                != old_chunk_ptr
+            {
+                // other thread have allocated new chunk and wins the competition, exit
+                unsafe {
+                    Chunk::unref(new_chunk_ptr);
+                }
+                return true;
+            }
+            new_chunk_ptr
+        };
         let new_chunk_ins = unsafe { Chunk::borrow(new_chunk_ptr) };
         let new_base = new_chunk_ins.base;
         let mut old_address = old_chunk_ref.base as usize;
@@ -619,7 +630,7 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     unsafe fn borrow(ptr: *mut Chunk<V, A, ALLOC>) -> ChunkRef<V, A, ALLOC> {
         let chunk = &*ptr;
         chunk.refs.fetch_add(1, Relaxed);
-        ChunkRef { ptr: ptr }
+        ChunkRef { ptr }
     }
 
     unsafe fn borrow_if_cond(ptr: *mut Chunk<V, A, ALLOC>, cond: bool) -> ChunkRef<V, A, ALLOC> {
@@ -660,7 +671,8 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             new_chunk: Default::default(),
             val_bit_mask: 0,
             inv_bit_mask: 0,
-            mark: PhantomData
+            mark: PhantomData,
+            alloc_lock: Default::default()
         };
         let old_chunk_ptr = self.old_chunk.load(Relaxed);
         let new_chunk_ptr = self.new_chunk.load(Relaxed);
@@ -689,6 +701,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
         }
         new_table.val_bit_mask = self.val_bit_mask;
         new_table.inv_bit_mask = self.inv_bit_mask;
+        new_table.alloc_lock = Default::default();
         new_table
     }
 }

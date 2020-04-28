@@ -7,7 +7,7 @@ mod chashmap;
 
 fn main() {
     tracing_subscriber::fmt::init();
-    Workload::new(128, Mix::insert_heavy()).run::<lfmap::TestTable>();
+    Workload::new(128, Mix::read_heavy()).run::<lfmap::TestTable>();
 }
 
 fn test_lfmap() {
