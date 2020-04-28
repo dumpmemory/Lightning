@@ -1,8 +1,11 @@
 use bustle::*;
 use lightling::map::{ObjectMap, WordMap, Map};
+use std::hash::Hash;
+use std::collections::hash_map::DefaultHasher;
+use std::alloc::System;
 
 #[derive(Clone)]
-pub struct TestTable(WordMap);
+pub struct TestTable(WordMap<System, DefaultHasher>);
 
 impl Collection for TestTable {
     type Handle = Self;
