@@ -17,4 +17,4 @@ fn main() {
 //     for n in 1..=num_cpus::get() {
 //         Workload::new(n, Mix::uniform()).run::<lfmap::TestTable>();
 //     }
-}z
+}

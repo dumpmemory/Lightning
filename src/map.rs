@@ -649,6 +649,8 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             let old_total_size = old_chunk.total_size;
 
             let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<V, A, ALLOC>;
+            debug_assert_ne!(cloned_old_ptr as usize, 0);
+            debug_assert_ne!(old_chunk.ptr as usize, 0);
             libc::memcpy(cloned_old_ptr as *mut c_void, old_chunk.ptr as *const c_void, old_total_size);
             let cloned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
             new_table.chunk.store(cloned_old_ref, Relaxed);
