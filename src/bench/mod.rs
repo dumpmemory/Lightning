@@ -9,6 +9,9 @@ fn main() {
     tracing_subscriber::fmt::init();
     // Workload::new(128, Mix::read_heavy()).run::<lfmap::TestTable>();
     test_lfmap();
+    test_chashmap();
+    test_rwlock_std();
+    test_mutex_std();
 }
 
 fn test_lfmap() {

@@ -600,8 +600,11 @@ impl ParsedValue {
     }
 }
 
+const LOAD_FACTOR: f64 = 1.3;
+
 impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
+        let capacity = capacity;
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 64);
         let self_size_aligned = self_size + self_align;
@@ -953,7 +956,11 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     // must be all zeroed
     unsafe {
         let addr = alloc.alloc(layout) as usize;
-        libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED);
+        if size > 1024 {
+            libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED);
+        } else {
+            ptr::write_bytes(addr as *mut u8, 0, size);
+        }
         debug_assert_eq!(addr % 64, 0);
         addr
     }
