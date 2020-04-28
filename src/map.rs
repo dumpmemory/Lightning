@@ -111,13 +111,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     pub fn get(&self, key: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
         let mut chunk_ref = self.chunk.load(Relaxed, &guard);
-        if chunk_ref.is_null() {
-            chunk_ref = self.chunk.load(Relaxed, &guard);
-        }
         loop {
-            if chunk_ref.is_null() {
-                return None;
-            }
             let chunk = unsafe { chunk_ref.deref_mut() };
             let (val, idx) = self.get_from_chunk(&*chunk, key);
             match val.parsed {
@@ -133,6 +127,9 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                 }
                 ParsedValue::Sentinel => {
                     chunk_ref = self.new_chunk.load(Relaxed, &guard);
+                    if chunk_ref.is_null() {
+                        return None;
+                    }
                 }
                 ParsedValue::Empty => return None,
             }
