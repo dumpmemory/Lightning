@@ -3,14 +3,15 @@ use lightling::map::{ObjectMap, WordMap, Map};
 use std::hash::Hash;
 use std::collections::hash_map::DefaultHasher;
 use std::alloc::System;
+use smallvec::alloc::sync::Arc;
 
 #[derive(Clone)]
-pub struct TestTable(WordMap<System, DefaultHasher>);
+pub struct TestTable(Arc<WordMap<System, DefaultHasher>>);
 
 impl Collection for TestTable {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
-        Self(WordMap::with_capacity(capacity))
+        Self(Arc::new(WordMap::with_capacity(capacity)))
     }
 
     fn pin(&self) -> Self::Handle {

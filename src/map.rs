@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use std::collections::hash_map::DefaultHasher;
 use std::sync::atomic::Ordering::Acquire;
 
-pub type EntryTemplate = (usize, usize);
+pub struct EntryTemplate(usize, usize);
 
 const EMPTY_KEY: usize = 0;
 const EMPTY_VALUE: usize = 0;
@@ -67,9 +67,9 @@ pub struct Chunk<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     // floating-point multiplication is slow, cache this value and recompute every time when resize
-    occu_limit: usize,
     occupation: AtomicUsize,
     refs: AtomicUsize,
+    occu_limit: usize,
     total_size: usize,
     attachment: A,
     shadow: PhantomData<(V, ALLOC)>
