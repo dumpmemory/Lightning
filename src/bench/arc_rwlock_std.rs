@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 #[derive(Clone)]
-struct Table<K>(std::sync::Arc<RwLock<HashMap<K, ()>>>);
+pub struct Table<K>(std::sync::Arc<RwLock<HashMap<K, ()>>>);
 
 impl<K> Collection for Table<K>
     where

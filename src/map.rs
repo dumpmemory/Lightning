@@ -17,7 +17,7 @@ use std::os::raw::c_void;
 use crossbeam_epoch::*;
 use std::collections::hash_map::DefaultHasher;
 
-pub type EntryTemplate = (usize, usize);
+pub struct EntryTemplate(usize, usize);
 
 const EMPTY_KEY: usize = 0;
 const SENTINEL_VALUE: usize = 1;
@@ -66,12 +66,11 @@ enum ResizeResult {
 pub struct Chunk<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
-    // floating-point multiplication is slow, cache this value and recompute every time when resize
     occu_limit: usize,
     occupation: AtomicUsize,
     total_size: usize,
     attachment: A,
-    shadow: PhantomData<(V, ALLOC)>,
+    shadow: PhantomData<(V, ALLOC)>
 }
 
 pub struct ChunkPtr<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
@@ -83,7 +82,7 @@ pub struct Table<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + 
     chunk: Atomic<ChunkPtr<V, A, ALLOC>>,
     val_bit_mask: usize, // 0111111..
     inv_bit_mask: usize, // 1000000..
-    mark: PhantomData<H>
+    mark: PhantomData<H>,
 }
 
 impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Table<V, A, ALLOC, H> {
@@ -100,7 +99,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             new_chunk: Atomic::null(),
             val_bit_mask,
             inv_bit_mask: !val_bit_mask,
-            mark: PhantomData
+            mark: PhantomData,
         }
     }
 
@@ -592,8 +591,11 @@ impl ParsedValue {
     }
 }
 
+const LOAD_FACTOR: f64 = 1.3;
+
 impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
+        let capacity = capacity;
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 64);
         let self_size_aligned = self_size + self_align;
@@ -638,7 +640,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             new_chunk: Default::default(),
             val_bit_mask: 0,
             inv_bit_mask: 0,
-            mark: PhantomData
+            mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
         let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
@@ -936,9 +938,16 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let layout = Layout::from_size_align(size, align).unwrap();
     let mut alloc = A::default();
     // must be all zeroed
-    let addr = unsafe { alloc.alloc_zeroed(layout) } as usize;
-    debug_assert_eq!(addr % 64, 0);
-    addr
+    unsafe {
+        let addr = alloc.alloc(layout) as usize;
+        if size > 1024 {
+            libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED);
+        } else {
+            ptr::write_bytes(addr as *mut u8, 0, size);
+        }
+        debug_assert_eq!(addr % 64, 0);
+        addr
+    }
 }
 
 #[inline(always)]
