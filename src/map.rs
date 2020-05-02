@@ -11,11 +11,11 @@ use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use core::hash::Hasher;
-use seahash::SeaHasher;
 use crate::align_padding;
 use std::alloc::System;
 use std::os::raw::c_void;
 use crossbeam_epoch::*;
+use std::collections::hash_map::DefaultHasher;
 
 pub type EntryTemplate = (usize, usize);
 
@@ -847,7 +847,7 @@ pub trait Map<K, V> {
 const NUM_KEY_FIX: usize = 5;
 
 #[derive(Clone)]
-pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
+pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
     table: Table<V, ObjectAttachment<V, ALLOC>, ALLOC, H>,
 }
 
@@ -891,7 +891,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> 
 }
 
 #[derive(Clone)]
-pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
+pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
     table: WordTable<ALLOC, H>,
 }
 

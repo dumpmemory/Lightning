@@ -1,13 +1,14 @@
 use bustle::*;
 use lightling::map::{ObjectMap, WordMap, Map};
+use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct TestTable(WordMap);
+pub struct TestTable(Arc<WordMap>);
 
 impl Collection for TestTable {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
-        Self(WordMap::with_capacity(capacity))
+        Self(Arc::new(WordMap::with_capacity(capacity)))
     }
 
     fn pin(&self) -> Self::Handle {
