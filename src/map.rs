@@ -7,22 +7,19 @@ use core::cmp::Ordering;
 use core::iter::Copied;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::ptr::{NonNull};
-use core::ptr::{drop_in_place, null, null_mut};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize};
 use core::{intrinsics, mem, ptr};
-use ModOp::Empty;
 use core::hash::Hasher;
-use seahash::SeaHasher;
 use crate::align_padding;
 use std::alloc::System;
 use std::os::raw::c_void;
+use crossbeam_epoch::*;
+use std::collections::hash_map::DefaultHasher;
 
 pub type EntryTemplate = (usize, usize);
 
 const EMPTY_KEY: usize = 0;
-const EMPTY_VALUE: usize = 0;
 const SENTINEL_VALUE: usize = 1;
 
 struct Value {
@@ -60,25 +57,30 @@ enum ModOp<T> {
     Empty,
 }
 
+enum ResizeResult {
+    NoNeed,
+    SwapFailed,
+    Done
+}
+
 pub struct Chunk<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     // floating-point multiplication is slow, cache this value and recompute every time when resize
     occu_limit: usize,
     occupation: AtomicUsize,
-    refs: AtomicUsize,
     total_size: usize,
     attachment: A,
     shadow: PhantomData<(V, ALLOC)>,
 }
 
-pub struct ChunkRef<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
+pub struct ChunkPtr<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
     ptr: *mut Chunk<V, A, ALLOC>,
 }
 
 pub struct Table<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
-    old_chunk: AtomicPtr<Chunk<V, A, ALLOC>>,
-    new_chunk: AtomicPtr<Chunk<V, A, ALLOC>>,
+    new_chunk: Atomic<ChunkPtr<V, A, ALLOC>>,
+    chunk: Atomic<ChunkPtr<V, A, ALLOC>>,
     val_bit_mask: usize, // 0111111..
     inv_bit_mask: usize, // 1000000..
     mark: PhantomData<H>
@@ -94,8 +96,8 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let val_bit_mask = !0 << 1 >> 1;
         let chunk = Chunk::alloc_chunk(cap);
         Self {
-            old_chunk: AtomicPtr::new(chunk),
-            new_chunk: AtomicPtr::new(chunk),
+            chunk: Atomic::new(ChunkPtr::new(chunk)),
+            new_chunk: Atomic::null(),
             val_bit_mask,
             inv_bit_mask: !val_bit_mask,
             mark: PhantomData
@@ -107,8 +109,10 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     }
 
     pub fn get(&self, key: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
-        let mut chunk = unsafe { Chunk::borrow(self.old_chunk.load(Relaxed)) };
+        let guard = crossbeam_epoch::pin();
+        let mut chunk_ref = self.chunk.load(Relaxed, &guard);
         loop {
+            let chunk = unsafe { chunk_ref.deref_mut() };
             let (val, idx) = self.get_from_chunk(&*chunk, key);
             match val.parsed {
                 ParsedValue::Prime(val) | ParsedValue::Val(val) => {
@@ -122,8 +126,10 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                     ))
                 }
                 ParsedValue::Sentinel => {
-                    let old_chunk_base = chunk.base;
-                    chunk = unsafe { Chunk::borrow(self.new_chunk.load(Relaxed)) };
+                    chunk_ref = self.new_chunk.load(Relaxed, &guard);
+                    if chunk_ref.is_null() {
+                        return None;
+                    }
                 }
                 ParsedValue::Empty => return None,
             }
@@ -132,21 +138,30 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     pub fn insert(&self, key: usize, value: usize, attached_val: V) -> Option<(usize)> {
         debug!("Inserting key: {}, value: {}", key, value);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed);
-        let old_chunk_ptr = self.old_chunk.load(Relaxed);
-        let copying = new_chunk_ptr != old_chunk_ptr;
-        let old_chunk = unsafe { Chunk::borrow(old_chunk_ptr) };
-        if !copying && self.check_resize(&old_chunk) {
-            debug!("Resized, retry insertion key: {}, value {}", key, value);
-            return self.insert(key, value, attached_val.clone());
+        let guard = crossbeam_epoch::pin();
+        let chunk_ptr = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let copying = !new_chunk_ptr.is_null();
+        if !copying {
+            match self.check_resize(chunk_ptr, &guard) {
+                ResizeResult::Done | ResizeResult::SwapFailed => return self.insert(key, value, attached_val.clone()),
+                ResizeResult::NoNeed => {}
+            }
         }
-        let new_chunk = unsafe { Chunk::borrow(new_chunk_ptr) };
+        let chunk = unsafe { chunk_ptr.deref() };
+        let new_chunk = unsafe { new_chunk_ptr.deref() };
+
+        let modify_chunk = if copying {
+            new_chunk
+        } else {
+            chunk
+        };
         let value_insertion = self.modify_entry(
-            &*new_chunk,
+            &*modify_chunk,
             key,
             ModOp::Insert(value & self.val_bit_mask, attached_val.clone()),
+            &guard
         );
-        let insertion_index = value_insertion.index;
         let mut result = None;
         match value_insertion.result {
             ModResult::Done(_) => {}
@@ -155,9 +170,9 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                 panic!(
                     "Insertion is too fast, copying {}, cap {}, count {}, dump: {}",
                     copying,
-                    new_chunk.capacity,
-                    new_chunk.occupation.load(Relaxed),
-                    self.dump(new_chunk.base, new_chunk.capacity)
+                    modify_chunk.capacity,
+                    modify_chunk.occupation.load(Relaxed),
+                    self.dump(modify_chunk.base, modify_chunk.capacity)
                 );
             }
             ModResult::Sentinel => {
@@ -167,33 +182,39 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             _ => unreachable!("{:?}, copying: {}", value_insertion.result, copying),
         }
         if copying {
-            debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
+            debug_assert_ne!(new_chunk_ptr, chunk_ptr);
             fence(SeqCst);
-            self.modify_entry(&*old_chunk, key, ModOp::Sentinel);
+            self.modify_entry(chunk, key, ModOp::Sentinel, &guard);
         }
-        new_chunk.occupation.fetch_add(1, Relaxed);
+        modify_chunk.occupation.fetch_add(1, Relaxed);
         result
     }
 
     pub fn remove(&self, key: usize) -> Option<(usize, V)> {
-        let new_chunk_ptr = self.new_chunk.load(Relaxed);
-        let old_chunk_ptr = self.old_chunk.load(Relaxed);
-        let copying = new_chunk_ptr != old_chunk_ptr;
-        let new_chunk = unsafe { Chunk::borrow(new_chunk_ptr) };
-        let old_chunk = unsafe { Chunk::borrow_if_cond(old_chunk_ptr, copying) };
-        let mut res = self.modify_entry(&*new_chunk, key, ModOp::Empty);
+        let guard = crossbeam_epoch::pin();
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
+        let copying = !new_chunk_ptr.is_null();
+        let new_chunk = unsafe { new_chunk_ptr.deref() };
+        let old_chunk = unsafe { old_chunk_ptr.deref() };
+        let modify_chunk = if copying {
+            &new_chunk
+        } else {
+            &old_chunk
+        };
+        let mut res = self.modify_entry(&*modify_chunk, key, ModOp::Empty, &guard);
         let mut retr = None;
         match res.result {
             ModResult::Done(v) | ModResult::Replaced(v) => {
-                retr = Some((v, new_chunk.attachment.get(res.index, key)));
+                retr = Some((v, modify_chunk.attachment.get(res.index, key)));
                 if copying {
                     debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
                     fence(SeqCst);
-                    self.modify_entry(&*old_chunk, key, ModOp::Sentinel);
+                    self.modify_entry(&*old_chunk, key, ModOp::Sentinel, &guard);
                 }
             }
             ModResult::NotFound => {
-                let remove_from_old = self.modify_entry(&*old_chunk, key, ModOp::Empty);
+                let remove_from_old = self.modify_entry(&*old_chunk, key, ModOp::Empty, &guard);
                 match remove_from_old.result {
                     ModResult::Done(v) | ModResult::Replaced(v) => {
                         retr = Some((v, new_chunk.attachment.get(res.index, key)));
@@ -237,7 +258,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         return (Value::new(0, self), 0);
     }
 
-    fn modify_entry(&self, chunk: &Chunk<V, A, ALLOC>, key: usize, op: ModOp<V>) -> ModOutput {
+    fn modify_entry<'a>(&self, chunk: &'a Chunk<V, A, ALLOC>, key: usize, op: ModOp<V>, guard: &'a Guard) -> ModOutput {
         let cap = chunk.capacity;
         let base = chunk.base;
         let mut idx = hash::<H>(key);
@@ -365,12 +386,13 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     }
 
     fn entries(&self) -> Vec<(usize, usize, V)> {
-        let old_chunk_ptr = self.old_chunk.load(Relaxed);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed);
-        let old_chunk = unsafe { Chunk::borrow(old_chunk_ptr) };
-        let new_chunk = unsafe { Chunk::borrow(new_chunk_ptr) };
+        let guard = crossbeam_epoch::pin();
+        let old_chunk_ref = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ref = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk = unsafe { old_chunk_ref.deref() };
+        let new_chunk = unsafe { new_chunk_ref.deref() };
         let mut res = self.all_from_chunk(&*old_chunk);
-        if old_chunk_ptr != new_chunk_ptr {
+        if old_chunk_ref != new_chunk_ref {
             res.append(&mut self.all_from_chunk(&*new_chunk));
         }
         return res;
@@ -405,34 +427,32 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         }
     }
 
+    /// Failed return old shared
     #[inline(always)]
-    fn check_resize(&self, old_chunk_ref: &ChunkRef<V, A, ALLOC>) -> bool {
-        let old_chunk_ptr = old_chunk_ref.ptr;
-        let occupation = old_chunk_ref.occupation.load(Relaxed);
-        let occu_limit = old_chunk_ref.occu_limit;
+    fn check_resize<'a>(&self, old_chunk_ptr: Shared<'a, ChunkPtr<V, A, ALLOC>>, guard: &crossbeam_epoch::Guard) -> ResizeResult {
+        let old_chunk = unsafe { old_chunk_ptr.deref() };
+        let occupation = old_chunk.occupation.load(Relaxed);
+        let occu_limit = old_chunk.occu_limit;
         if occupation <= occu_limit {
-            return false;
+            return ResizeResult::NoNeed;
         }
         // resize
         debug!("Resizing");
-        let old_cap = old_chunk_ref.capacity;
+        let old_cap = old_chunk.capacity;
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
-        let new_chunk_ptr = Chunk::alloc_chunk(new_cap);
-        if self
+        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap)));
+        let swap_new = self
             .new_chunk
-            .compare_and_swap(old_chunk_ptr, new_chunk_ptr, Relaxed)
-            != old_chunk_ptr
-        {
+            .compare_and_set(Shared::null(), new_chunk_ptr, SeqCst, guard);
+        if swap_new.is_err() {
             // other thread have allocated new chunk and wins the competition, exit
-            unsafe {
-                Chunk::unref(new_chunk_ptr);
-            }
-            return true;
+            return ResizeResult::SwapFailed;
         }
-        let new_chunk_ins = unsafe { Chunk::borrow(new_chunk_ptr) };
+        let new_chunk_ptr = swap_new.unwrap();
+        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         let new_base = new_chunk_ins.base;
-        let mut old_address = old_chunk_ref.base as usize;
+        let mut old_address = old_chunk.base as usize;
         let boundary = old_address + chunk_size_of(old_cap);
         let mut effective_copy = 0;
         let mut idx = 0;
@@ -450,11 +470,12 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                         // Value should be primed
                         debug!("Moving key: {}, value: {}", key, v);
                         let primed_val = value.raw | self.inv_bit_mask;
-                        let attached_val = old_chunk_ref.attachment.get(idx, key);
+                        let attached_val = old_chunk.attachment.get(idx, key);
                         let new_chunk_insertion = self.modify_entry(
                             &*new_chunk_ins,
                             key,
                             ModOp::AttemptInsert(primed_val, attached_val),
+                            guard
                         );
                         let inserted_addr = match new_chunk_insertion.result {
                             ModResult::Done(addr) => Some(addr), // continue procedure
@@ -481,7 +502,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                                         "Effective copy key: {}, value {}, addr: {}",
                                         key, stripped, new_entry_addr
                                     );
-                                    old_chunk_ref.attachment.erase(idx, key);
+                                    old_chunk.attachment.erase(idx, key);
                                     effective_copy += 1;
                                 }
                             } else {
@@ -509,19 +530,18 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         }
         // resize finished, make changes on the numbers
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
-        debug_assert_ne!(old_chunk_ptr as usize, new_base);
-        if self
-            .old_chunk
-            .compare_and_swap(old_chunk_ptr, new_chunk_ptr, Relaxed)
-            != old_chunk_ptr
-        {
+        debug_assert_ne!(old_chunk.ptr as usize, new_base);
+        let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
+        if swap_old.is_err() {
             panic!();
         }
+        let old_chunk_ptr = swap_old.unwrap();
         debug!("{}", self.dump(new_base, new_cap));
         unsafe {
-            Chunk::unref(old_chunk_ptr);
+            guard.defer_destroy(old_chunk_ptr);
         }
-        return true;
+        self.new_chunk.store(Shared::null(), Relaxed);
+        ResizeResult::Done
     }
 
     fn dump(&self, base: usize, cap: usize) -> &str {
@@ -533,21 +553,6 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             }
         }
         "DUMPED"
-    }
-}
-
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for Table<V, A, ALLOC, H> {
-    fn drop(&mut self) {
-        let old_chunk = self.old_chunk.load(Relaxed);
-        let new_chunk = self.new_chunk.load(Relaxed);
-        unsafe {
-            if old_chunk != null_mut() {
-                Chunk::unref(old_chunk);
-            }
-            if old_chunk != new_chunk && new_chunk != null_mut() {
-                Chunk::unref(new_chunk);
-            }
-        }
     }
 }
 
@@ -607,7 +612,6 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
                     capacity,
                     occupation: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
-                    refs: AtomicUsize::new(1),
                     total_size,
                     attachment: A::new(capacity, attachment_base, attachment_heap),
                     shadow: PhantomData,
@@ -616,33 +620,7 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
         };
         ptr
     }
-    unsafe fn borrow(ptr: *mut Chunk<V, A, ALLOC>) -> ChunkRef<V, A, ALLOC> {
-        let chunk = &*ptr;
-        chunk.refs.fetch_add(1, Relaxed);
-        ChunkRef { ptr: ptr }
-    }
 
-    unsafe fn borrow_if_cond(ptr: *mut Chunk<V, A, ALLOC>, cond: bool) -> ChunkRef<V, A, ALLOC> {
-        if cond {
-            unsafe { Chunk::borrow(ptr) }
-        } else {
-            ChunkRef::null_ref()
-        }
-    }
-
-    unsafe fn unref(ptr: *mut Chunk<V, A, ALLOC>) {
-        // Caller promise this chunk will not be reachable from the outside except snapshot in threads
-        if ptr == null_mut() {
-            return;
-        }
-        let rc = {
-            let chunk = &*ptr;
-            chunk.refs.fetch_sub(1, Relaxed)
-        };
-        if rc == 1 {
-            Self::gc(ptr);
-        }
-    }
     unsafe fn gc(ptr: *mut Chunk<V, A, ALLOC>) {
         let chunk = &*ptr;
         chunk.attachment.dealloc();
@@ -656,40 +634,54 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
 impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone for Table<V, A, ALLOC, H> {
     fn clone(&self) -> Self {
         let mut new_table = Table {
-            old_chunk: Default::default(),
+            chunk: Default::default(),
             new_chunk: Default::default(),
             val_bit_mask: 0,
             inv_bit_mask: 0,
             mark: PhantomData
         };
-        let old_chunk_ptr = self.old_chunk.load(Relaxed);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed);
+        let guard = crossbeam_epoch::pin();
+        let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         unsafe {
             // Hold references first so they won't get reclaimed
-            let old_chunk_ref = Chunk::borrow(old_chunk_ptr);
-            let new_chunk_ref = Chunk::borrow(new_chunk_ptr);
-            let old_total_size = old_chunk_ref.total_size;
-            let new_total_size = new_chunk_ref.total_size;
+            let old_chunk = unsafe { old_chunk_ptr.deref() };
+            let old_total_size = old_chunk.total_size;
 
             let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<V, A, ALLOC>;
-            libc::memcpy(cloned_old_ptr as *mut c_void, old_chunk_ptr as *const c_void, old_total_size);
-            let cloned_old_ref = Chunk::borrow(cloned_old_ptr);
-            cloned_old_ref.refs.store(2, Relaxed);
-            new_table.old_chunk.store(cloned_old_ptr, Relaxed);
+            debug_assert_ne!(cloned_old_ptr as usize, 0);
+            debug_assert_ne!(old_chunk.ptr as usize, 0);
+            libc::memcpy(cloned_old_ptr as *mut c_void, old_chunk.ptr as *const c_void, old_total_size);
+            let cloned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
+            new_table.chunk.store(cloned_old_ref, Relaxed);
 
-            if old_chunk_ptr != new_chunk_ptr {
+            if new_chunk_ptr != Shared::null() {
+                let new_chunk = unsafe { new_chunk_ptr.deref() };
+                let new_total_size = new_chunk.total_size;
                 let cloned_new_ptr = alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<V, A, ALLOC>;
-                libc::memcpy(cloned_new_ptr as *mut c_void, new_chunk_ptr as *const c_void, new_total_size);
-                let cloned_new_ref = Chunk::borrow(cloned_new_ptr);
-                cloned_new_ref.refs.store(2, Relaxed);
-                new_table.new_chunk.store(cloned_new_ptr, Relaxed);
+                libc::memcpy(cloned_new_ptr as *mut c_void, new_chunk.ptr as *const c_void, new_total_size);
+                let cloned_new_ref = Owned::new(ChunkPtr::new(cloned_new_ptr));
+                new_table.new_chunk.store(cloned_new_ref, Relaxed);
             } else {
-                new_table.new_chunk.store(cloned_old_ptr, Relaxed);
+                new_table.new_chunk.store(Shared::null(), Relaxed);
             }
         }
         new_table.val_bit_mask = self.val_bit_mask;
         new_table.inv_bit_mask = self.inv_bit_mask;
         new_table
+    }
+}
+
+impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for Table<V, A, ALLOC, H> {
+    fn drop(&mut self) {
+        let guard = crossbeam_epoch::pin();
+        unsafe {
+            guard.defer_destroy(self.chunk.load(Relaxed, &guard));
+            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            if new_chunk_ptr != Shared::null() {
+                guard.defer_destroy(new_chunk_ptr);
+            }
+        }
     }
 }
 
@@ -702,15 +694,18 @@ impl ModOutput {
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Drop for ChunkRef<V, A, ALLOC> {
+unsafe impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Send for  ChunkPtr<V, A, ALLOC> {}
+unsafe impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Sync for  ChunkPtr<V, A, ALLOC> {}
+
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<V, A, ALLOC> {
     fn drop(&mut self) {
         unsafe {
-            Chunk::unref(self.ptr);
+            Chunk::gc(self.ptr);
         }
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkRef<V, A, ALLOC> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<V, A, ALLOC> {
     type Target = Chunk<V, A, ALLOC>;
 
     fn deref(&self) -> &Self::Target {
@@ -719,10 +714,15 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkRef<V, A,
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> ChunkRef<V, A, ALLOC> {
+impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> ChunkPtr<V, A, ALLOC> {
     fn null_ref() -> Self {
         Self {
             ptr: 0 as *mut Chunk<V, A, ALLOC>,
+        }
+    }
+    fn new(ptr: *mut Chunk<V, A, ALLOC>) -> Self {
+        Self {
+            ptr
         }
     }
 }
@@ -847,7 +847,7 @@ pub trait Map<K, V> {
 const NUM_KEY_FIX: usize = 5;
 
 #[derive(Clone)]
-pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
+pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
     table: Table<V, ObjectAttachment<V, ALLOC>, ALLOC, H>,
 }
 
@@ -891,7 +891,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> 
 }
 
 #[derive(Clone)]
-pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = SeaHasher> {
+pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
     table: WordTable<ALLOC, H>,
 }
 
