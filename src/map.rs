@@ -180,8 +180,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             }
             _ => unreachable!("{:?}, copying: {}", value_insertion.result, copying),
         }
-        if copying {
-            debug_assert_ne!(new_chunk_ptr, chunk_ptr);
+        if copying && chunk_ptr != new_chunk_ptr {
             fence(SeqCst);
             self.modify_entry(chunk, key, ModOp::Sentinel, &guard);
         }
@@ -206,8 +205,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         match res.result {
             ModResult::Done(v) | ModResult::Replaced(v) => {
                 retr = Some((v, modify_chunk.attachment.get(res.index, key)));
-                if copying {
-                    debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
+                if copying && new_chunk_ptr != old_chunk_ptr {
                     fence(SeqCst);
                     self.modify_entry(&*old_chunk, key, ModOp::Sentinel, &guard);
                 }
@@ -940,11 +938,7 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     // must be all zeroed
     unsafe {
         let addr = alloc.alloc(layout) as usize;
-        if size > 1024 {
-            libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED);
-        } else {
-            ptr::write_bytes(addr as *mut u8, 0, size);
-        }
+        ptr::write_bytes(addr as *mut u8, 0, size);
         debug_assert_eq!(addr % 64, 0);
         addr
     }
