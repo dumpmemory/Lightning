@@ -111,7 +111,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let guard = crossbeam_epoch::pin();
         let mut chunk_ref = self.chunk.load(Relaxed, &guard);
         loop {
-            let chunk = unsafe { chunk_ref.deref_mut() };
+            let chunk = unsafe { chunk_ref.deref() };
             let (val, idx) = self.get_from_chunk(&*chunk, key);
             match val.parsed {
                 ParsedValue::Prime(val) | ParsedValue::Val(val) => {
@@ -1161,6 +1161,15 @@ mod tests {
         b.iter(|| {
             map.insert(i, i);
             i += 1;
+        });
+    }
+
+    #[bench]
+    fn default_hasher(b: &mut Bencher) {
+        b.iter(|| {
+            let mut hasher = DefaultHasher::default();
+            hasher.write_u64(123);
+            hasher.finish();
         });
     }
 }
