@@ -370,6 +370,12 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> Drop for List<T, A> {
     }
 }
 
+impl<T: Default + Copy, A: GlobalAlloc + Default> Default for List<T, A> {
+    fn default() -> Self {
+        Self::new(32)
+    }
+}
+
 impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
     pub fn new(buffer_cap: usize) -> *mut BufferMeta<T, A> {
         let self_size = mem::size_of::<Self>();
