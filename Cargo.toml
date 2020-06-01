@@ -1,5 +1,5 @@
 [package]
-name = "lightling"
+name = "lightning"
 version = "0.1.0"
 authors = ["Hao Shi <shisoftgenius@gmail.com>"]
 edition = "2018"
@@ -21,9 +21,9 @@ chashmap = "2.2.2"
 parking_lot = "0.10.2"
 
 [[bin]]
-name = "lighting-bench"
-path = "src/bench/mod.rs"
+name = "lightning-bench"
+path = "test/bench/mod.rs"
 
 [lib]
-name = "lightling"
+name = "lightning"
 path = "src/lib.rs"
