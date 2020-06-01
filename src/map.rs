@@ -154,7 +154,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             ModResult::Done(_) => {}
             ModResult::Replaced(v) | ModResult::Fail(v) => result = Some(v),
             ModResult::TableFull => {
-                panic!(
+                 panic!(
                     "Insertion is too fast, copying {}, cap {}, count {}, dump: {}",
                     copying,
                     new_chunk.capacity,
@@ -409,6 +409,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     #[inline(always)]
     fn check_resize(&self, old_chunk_ref: &ChunkRef<V, A, ALLOC>) -> bool {
+        debug!("Check resize");
         let old_chunk_ptr = old_chunk_ref.ptr;
         let occupation = old_chunk_ref.occupation.load(Relaxed);
         let occu_limit = old_chunk_ref.occu_limit;
@@ -536,10 +537,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     fn dump(&self, base: usize, cap: usize) -> &str {
         for i in 0..cap {
             let addr = base + i * entry_size();
-            debug!("{}-{}\t", self.get_key(addr), self.get_value(addr).raw);
-            if i % 8 == 0 {
-                debug!("")
-            }
+            debug!("{}\t-{}-{}\t", i, self.get_key(addr), self.get_value(addr).raw);
         }
         "DUMPED"
     }
@@ -950,11 +948,8 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     // must be all zeroed
     unsafe {
         let addr = alloc.alloc(layout) as usize;
-        if size > 1024 {
-            libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED);
-        } else {
-            ptr::write_bytes(addr as *mut u8, 0, size);
-        }
+        debug!("Zero space by write bytes");
+        ptr::write_bytes(addr as *mut u8, 0, size);
         debug_assert_eq!(addr % 64, 0);
         addr
     }
@@ -1162,6 +1157,7 @@ mod tests {
 
     #[bench]
     fn lfmap(b: &mut Bencher) {
+        env_logger::try_init();
         let map = WordMap::<System>::with_capacity(128);
         let mut i = 5;
         b.iter(|| {

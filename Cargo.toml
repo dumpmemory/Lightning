@@ -21,6 +21,7 @@ parking_lot = "0.10.2"
 bustle = "0.4.1"
 tracing-subscriber = "0.2"
 page_size = "0.4.2"
+env_logger = "0.7.1"
 
 [[test]]
 name = "lightning-bench"
