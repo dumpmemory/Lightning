@@ -166,7 +166,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             ModResult::Done(_) => {}
             ModResult::Replaced(v) | ModResult::Fail(v) => result = Some(v),
             ModResult::TableFull => {
-                panic!(
+                 panic!(
                     "Insertion is too fast, copying {}, cap {}, count {}, dump: {}",
                     copying,
                     modify_chunk.capacity,
@@ -530,7 +530,10 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         debug_assert_ne!(old_chunk.ptr as usize, new_base);
         let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
         if swap_old.is_err() {
-            panic!();
+            unsafe {
+                // guard.defer_destroy(new_chunk_ptr);
+            }
+            return ResizeResult::SwapFailed;
         }
         let old_chunk_ptr = swap_old.unwrap();
         debug!("{}", self.dump(new_base, new_cap));
@@ -544,10 +547,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     fn dump(&self, base: usize, cap: usize) -> &str {
         for i in 0..cap {
             let addr = base + i * entry_size();
-            debug!("{}-{}\t", self.get_key(addr), self.get_value(addr).raw);
-            if i % 8 == 0 {
-                debug!("")
-            }
+            debug!("{}\t-{}-{}\t", i, self.get_key(addr), self.get_value(addr).raw);
         }
         "DUMPED"
     }
@@ -984,6 +984,7 @@ mod tests {
     use std::alloc::System;
     use std::thread;
     use test::Bencher;
+    use seahash::SeaHasher;
 
     #[test]
     fn will_not_overflow() {
@@ -1146,7 +1147,8 @@ mod tests {
 
     #[bench]
     fn lfmap(b: &mut Bencher) {
-        let map = WordMap::<System>::with_capacity(128);
+        env_logger::try_init();
+        let map = WordMap::<System>::with_capacity(1024);
         let mut i = 5;
         b.iter(|| {
             map.insert(i, i);

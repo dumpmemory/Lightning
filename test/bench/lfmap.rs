@@ -1,5 +1,5 @@
 use bustle::*;
-use lightling::map::{ObjectMap, WordMap, Map};
+use lightning::map::{ObjectMap, WordMap, Map};
 use std::hash::Hash;
 use std::collections::hash_map::DefaultHasher;
 use std::alloc::System;

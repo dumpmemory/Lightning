@@ -12,3 +12,7 @@ Cargo.lock
 callgrind.*
 
 .idea
+
+*.log
+*.out.*
+*.csv
