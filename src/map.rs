@@ -995,6 +995,7 @@ mod tests {
     use std::alloc::System;
     use std::thread;
     use test::Bencher;
+    use seahash::SeaHasher;
 
     #[test]
     fn will_not_overflow() {
@@ -1158,7 +1159,7 @@ mod tests {
     #[bench]
     fn lfmap(b: &mut Bencher) {
         env_logger::try_init();
-        let map = WordMap::<System>::with_capacity(128);
+        let map = WordMap::<System>::with_capacity(1024);
         let mut i = 5;
         b.iter(|| {
             map.insert(i, i);
