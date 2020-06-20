@@ -1,23 +1,18 @@
 // usize lock-free, wait free paged linked list stack
 use crate::rand::XorRand;
-use core::alloc::AllocRef as Alloc;
 use core::ptr;
 use core::{intrinsics, mem};
 use crossbeam_utils::Backoff;
-use core::borrow::{Borrow, BorrowMut};
-use core::cell::{Cell, UnsafeCell};
+use core::borrow::BorrowMut;
+use core::cell::UnsafeCell;
 use core::cmp::{max, min};
-use core::hint::unreachable_unchecked;
-use core::intrinsics::size_of;
 use core::marker::PhantomData;
-use core::mem::transmute;
-use core::ops::{Add, Deref};
+use core::ops::Deref;
 use core::ptr::null_mut;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use core::sync::atomic::{fence, AtomicPtr, AtomicUsize};
 use smallvec::SmallVec;
 use core::alloc::Layout;
-use core::ptr::NonNull;
 use std::time::Instant;
 use crate::align_padding;
 use std::alloc::GlobalAlloc;
@@ -39,7 +34,6 @@ struct BufferMeta<T: Default, A: GlobalAlloc + Default> {
     head: AtomicUsize,
     next: AtomicPtr<BufferMeta<T, A>>,
     refs: AtomicUsize,
-    upper_bound: usize,
     lower_bound: usize,
     tuple_size: usize,
     total_size: usize,
@@ -89,7 +83,6 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
     fn do_push(&self, mut flag: usize, mut data: T) {
         debug_assert_ne!(flag, EMPTY_SLOT);
         debug_assert_ne!(flag, SENTINEL_SLOT);
-        let backoff = Backoff::new();
         loop {
             let obj_size = mem::size_of::<T>();
             let head_ptr = self.head.load(Relaxed);
@@ -148,7 +141,6 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
 
     pub fn exclusive_push(&self, flag: usize, data: T) {
         // user ensure the push is exclusive, thus no CAS except for header
-        let backoff = Backoff::new();
         let obj_size = mem::size_of::<T>();
         loop {
             let head_ptr = self.head.load(Relaxed);
@@ -186,7 +178,6 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
             return None;
         }
         let backoff = Backoff::new();
-        let obj_size = mem::size_of::<T>();
         loop {
             let head_ptr = self.head.load(Relaxed);
             let page = BufferMeta::borrow(head_ptr);
@@ -239,7 +230,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                     {
                         res = Some((new_slot_flag, T::default()));
                         if obj_size != 0 && new_slot_flag != SENTINEL_SLOT {
-                            res.as_mut().map(|(_, obj)| unsafe {
+                            res.as_mut().map(|(_, obj)| {
                                 let obj_ptr = page.object_ptr_of(new_slot_ptr) as *mut T;
                                 *obj = ptr::read(obj_ptr as *mut T)
                             });
@@ -403,7 +394,6 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
                     head: AtomicUsize::new(0),
                     next: AtomicPtr::new(null_mut()),
                     refs: AtomicUsize::new(1),
-                    upper_bound: head_page_addr + total_size,
                     lower_bound: slots_start,
                     tuple_size,
                     total_size,
@@ -672,12 +662,10 @@ impl<T: Default + Copy> ExchangeSlot<T> {
         }
     }
 
-    fn exchange(&self, mut data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
+    fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
         // Memory ordering is somehow important here
         let state = self.state.load(Relaxed);
         let backoff = Backoff::new();
-        let origin_data_flag = data.as_ref().map(|(f, _)| *f);
-        let mut data_content_mut = unsafe { &mut *self.data.get() };
         if state == EXCHANGE_EMPTY {
             self.wait_state_data_until(state, &backoff);
             if self
@@ -725,7 +713,6 @@ impl<T: Default + Copy> ExchangeSlot<T> {
                             unreachable!()
                         }
                     }
-                    backoff.spin();
                 }
             } else {
                 return Err(data);
@@ -760,7 +747,7 @@ impl<T: Default + Copy> ExchangeSlot<T> {
     }
 
     fn store_state_data(&self, data: Option<ExchangeData<T>>) {
-        let mut data_content_ptr = self.data.get();
+        let data_content_ptr = self.data.get();
         unsafe { ptr::write(data_content_ptr, data) }
         fence(SeqCst);
         self.data_state.store(self.state.load(Relaxed), Relaxed);

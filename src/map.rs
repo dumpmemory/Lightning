@@ -1,14 +1,10 @@
 // usize to usize lock-free, wait free table
-use alloc::alloc::Global;
-use alloc::string::String;
 use alloc::vec::Vec;
-use core::alloc::{AllocRef as Alloc, GlobalAlloc, Layout};
-use core::cmp::Ordering;
-use core::iter::Copied;
+use core::alloc::{GlobalAlloc, Layout};
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
-use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize};
+use core::sync::atomic::{fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use core::hash::Hasher;
 use crate::align_padding;
@@ -135,7 +131,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         }
     }
 
-    pub fn insert(&self, key: usize, value: usize, attached_val: V) -> Option<(usize)> {
+    pub fn insert(&self, key: usize, value: usize, attached_val: V) -> Option<usize> {
         debug!("Inserting key: {}, value: {}", key, value);
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.chunk.load(Relaxed, &guard);
@@ -200,7 +196,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         } else {
             &old_chunk
         };
-        let mut res = self.modify_entry(&*modify_chunk, key, ModOp::Empty, &guard);
+        let res = self.modify_entry(&*modify_chunk, key, ModOp::Empty, &guard);
         let mut retr = None;
         match res.result {
             ModResult::Done(v) | ModResult::Replaced(v) => {
@@ -214,11 +210,10 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                 let remove_from_old = self.modify_entry(&*old_chunk, key, ModOp::Empty, &guard);
                 match remove_from_old.result {
                     ModResult::Done(v) | ModResult::Replaced(v) => {
-                        retr = Some((v, new_chunk.attachment.get(res.index, key)));
+                        retr = Some((v, old_chunk.attachment.get(remove_from_old.index, key)));
                     }
                     _ => {}
                 }
-                res = remove_from_old;
             }
             ModResult::TableFull => panic!("need to handle TableFull by remove"),
             _ => {}
@@ -255,7 +250,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         return (Value::new(0, self), 0);
     }
 
-    fn modify_entry<'a>(&self, chunk: &'a Chunk<V, A, ALLOC>, key: usize, op: ModOp<V>, guard: &'a Guard) -> ModOutput {
+    fn modify_entry<'a>(&self, chunk: &'a Chunk<V, A, ALLOC>, key: usize, op: ModOp<V>, _guard: &'a Guard) -> ModOutput {
         let cap = chunk.capacity;
         let base = chunk.base;
         let mut idx = hash::<H>(key);
@@ -337,7 +332,6 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                     }
                     ModOp::Sentinel => put_in_empty(SENTINEL_VALUE, None),
                     ModOp::Empty => return ModOutput::new(ModResult::Fail(0), idx),
-                    _ => unreachable!(),
                 };
                 match &mod_res {
                     ModResult::Fail(_) => {}
@@ -476,7 +470,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                         );
                         let inserted_addr = match new_chunk_insertion.result {
                             ModResult::Done(addr) => Some(addr), // continue procedure
-                            ModResult::Fail(v) => None,
+                            ModResult::Fail(_) => None,
                             ModResult::Replaced(_) => {
                                 unreachable!("Attempt insert does not replace anything");
                             }
@@ -507,7 +501,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
                             }
                         }
                     }
-                    ParsedValue::Prime(v) => {
+                    ParsedValue::Prime(_) => {
                         // Should never have prime in old chunk
                         panic!("Prime in old chunk when resizing")
                     }
@@ -531,7 +525,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
         if swap_old.is_err() {
             unsafe {
-                // guard.defer_destroy(new_chunk_ptr);
+                guard.defer_destroy(new_chunk_ptr);
             }
             return ResizeResult::SwapFailed;
         }
@@ -579,17 +573,6 @@ impl Value {
         }
     }
 }
-
-impl ParsedValue {
-    fn unwrap(&self) -> usize {
-        match self {
-            ParsedValue::Val(v) | ParsedValue::Val(v) => *v,
-            _ => panic!(),
-        }
-    }
-}
-
-const LOAD_FACTOR: f64 = 1.3;
 
 impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
@@ -645,7 +628,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
         let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         unsafe {
             // Hold references first so they won't get reclaimed
-            let old_chunk = unsafe { old_chunk_ptr.deref() };
+            let old_chunk = old_chunk_ptr.deref();
             let old_total_size = old_chunk.total_size;
 
             let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<V, A, ALLOC>;
@@ -656,7 +639,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             new_table.chunk.store(cloned_old_ref, Relaxed);
 
             if new_chunk_ptr != Shared::null() {
-                let new_chunk = unsafe { new_chunk_ptr.deref() };
+                let new_chunk = new_chunk_ptr.deref();
                 let new_total_size = new_chunk.total_size;
                 let cloned_new_ptr = alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<V, A, ALLOC>;
                 libc::memcpy(cloned_new_ptr as *mut c_void, new_chunk.ptr as *const c_void, new_total_size);
@@ -715,11 +698,6 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<V, A,
 }
 
 impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> ChunkPtr<V, A, ALLOC> {
-    fn null_ref() -> Self {
-        Self {
-            ptr: 0 as *mut Chunk<V, A, ALLOC>,
-        }
-    }
     fn new(ptr: *mut Chunk<V, A, ALLOC>) -> Self {
         Self {
             ptr
@@ -767,28 +745,27 @@ pub struct WordAttachment;
 
 // this attachment basically do nothing and sized zero
 impl Attachment<()> for WordAttachment {
-    fn heap_size_of(cap: usize) -> usize { 0 }
+    fn heap_size_of(_cap: usize) -> usize { 0 }
 
-    fn new(cap: usize, heap_ptr: usize, heap_size: usize) -> Self { Self }
-
-    #[inline(always)]
-    fn get(&self, index: usize, key: usize) -> () {}
+    fn new(_cap: usize, _heap_ptr: usize, _heap_size: usize) -> Self { Self }
 
     #[inline(always)]
-    fn set(&self, index: usize, key: usize, att_value: ()) {}
+    fn get(&self, _index: usize, _key: usize) -> () {}
 
     #[inline(always)]
-    fn erase(&self, index: usize, key: usize) {}
+    fn set(&self, _index: usize, _key: usize, _att_value: ()) {}
+
+    #[inline(always)]
+    fn erase(&self, _index: usize, _key: usize) {}
 
     #[inline(always)]
     fn dealloc(&self) {}
 }
 
-pub type WordTable<H: Hasher + Default, ALLOC: GlobalAlloc + Default> = Table<(), WordAttachment, H, ALLOC>;
+pub type WordTable<H, ALLOC> = Table<(), WordAttachment, H, ALLOC>;
 
 pub struct ObjectAttachment<T, A: GlobalAlloc + Default> {
     obj_chunk: usize,
-    size: usize,
     obj_size: usize,
     shadow: PhantomData<(T, A)>,
 }
@@ -799,30 +776,29 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<T> for ObjectAttachment<T, A
         cap * obj_size
     }
 
-    fn new(cap: usize, heap_ptr: usize, heap_size: usize) -> Self {
+    fn new(_cap: usize, heap_ptr: usize, _heap_size: usize) -> Self {
         Self {
             obj_chunk: heap_ptr,
-            size: heap_size,
             obj_size: mem::size_of::<T>(),
             shadow: PhantomData,
         }
     }
 
     #[inline(always)]
-    fn get(&self, index: usize, key: usize) -> T {
+    fn get(&self, index: usize, _key: usize) -> T {
         let addr = self.addr_by_index(index);
         unsafe { (*(addr as *mut T)).clone() }
     }
 
     #[inline(always)]
-    fn set(&self, index: usize, key: usize, att_value: T) {
+    fn set(&self, index: usize, _key: usize, att_value: T) {
         let addr = self.addr_by_index(index);
         unsafe { ptr::write(addr as *mut T, att_value) }
     }
 
     #[inline(always)]
-    fn erase(&self, index: usize, key: usize) {
-        unsafe { drop(self.addr_by_index(index) as *mut T) }
+    fn erase(&self, index: usize, _key: usize) {
+        drop(self.addr_by_index(index) as *mut T)
     }
 
     #[inline(always)]
@@ -934,7 +910,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let align = 64;
     let layout = Layout::from_size_align(size, align).unwrap();
-    let mut alloc = A::default();
+    let alloc = A::default();
     // must be all zeroed
     unsafe {
         let addr = alloc.alloc(layout) as usize;
@@ -948,7 +924,7 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
 fn dealloc_mem<A: GlobalAlloc + Default + Default>(ptr: usize, size: usize) {
     let align = 64;
     let layout = Layout::from_size_align(size, align).unwrap();
-    let mut alloc = A::default();
+    let alloc = A::default();
     unsafe { alloc.dealloc(ptr as *mut u8, layout) }
 }
 
@@ -961,7 +937,7 @@ impl Hasher for PassthroughHasher {
         self.num
     }
 
-    fn write(&mut self, bytes: &[u8]) {
+    fn write(&mut self, _bytes: &[u8]) {
         unimplemented!()
     }
 
@@ -984,7 +960,6 @@ mod tests {
     use std::alloc::System;
     use std::thread;
     use test::Bencher;
-    use seahash::SeaHasher;
 
     #[test]
     fn will_not_overflow() {
@@ -1147,7 +1122,7 @@ mod tests {
 
     #[bench]
     fn lfmap(b: &mut Bencher) {
-        env_logger::try_init();
+        let _ = env_logger::try_init();
         let map = WordMap::<System>::with_capacity(1024);
         let mut i = 5;
         b.iter(|| {
