@@ -178,7 +178,9 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         }
         if copying && chunk_ptr != new_chunk_ptr {
             fence(SeqCst);
-            self.modify_entry(chunk, key, ModOp::Sentinel, &guard);
+            if self.chunk.load(Relaxed, &guard) == chunk_ptr {
+                self.modify_entry(chunk, key, ModOp::Sentinel, &guard);
+            }
         }
         modify_chunk.occupation.fetch_add(1, Relaxed);
         result
@@ -1051,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_hybird() {
+    fn parallel_hyrid() {
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         for i in 5..128 {
             map.insert(i, i * 10);
