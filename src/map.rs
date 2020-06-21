@@ -56,6 +56,7 @@ enum ModOp<T> {
 enum ResizeResult {
     NoNeed,
     SwapFailed,
+    ChunkChanged,
     Done
 }
 
@@ -107,6 +108,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let guard = crossbeam_epoch::pin();
         let mut chunk_ref = self.chunk.load(Relaxed, &guard);
         loop {
+            debug_assert!(!chunk_ref.is_null());
             let chunk = unsafe { chunk_ref.deref() };
             let (val, idx) = self.get_from_chunk(&*chunk, key);
             match val.parsed {
@@ -139,7 +141,10 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let copying = !new_chunk_ptr.is_null();
         if !copying {
             match self.check_resize(chunk_ptr, &guard) {
-                ResizeResult::Done | ResizeResult::SwapFailed => return self.insert(key, value, attached_val.clone()),
+                ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
+                    drop(guard);
+                    return self.insert(key, value, attached_val.clone());
+                },
                 ResizeResult::NoNeed => {}
             }
         }
@@ -434,15 +439,23 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let old_cap = old_chunk.capacity;
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
-        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap)));
+        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         let swap_new = self
             .new_chunk
             .compare_and_set(Shared::null(), new_chunk_ptr, SeqCst, guard);
-        if swap_new.is_err() {
+        if let Err(e) = swap_new {
             // other thread have allocated new chunk and wins the competition, exit
+            trace!("Conflict on swapping new chunk, expecting it is null: {:?}", e);
+            unsafe {
+                guard.defer_destroy(new_chunk_ptr);     
+            }
             return ResizeResult::SwapFailed;
         }
-        let new_chunk_ptr = swap_new.unwrap();
+        if self.chunk.load(Relaxed, guard) != old_chunk_ptr {
+            trace!("RARE: Old chunk ptr changed after new chunk lock obtained");
+            return ResizeResult::ChunkChanged;
+        }
+        // let new_chunk_ptr = swap_new.unwrap();
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         let new_base = new_chunk_ins.base;
         let mut old_address = old_chunk.base as usize;
@@ -524,12 +537,12 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         // resize finished, make changes on the numbers
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
         debug_assert_ne!(old_chunk.ptr as usize, new_base);
+        debug_assert!(!new_chunk_ptr.is_null());
         let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
-        if swap_old.is_err() {
-            unsafe {
-                guard.defer_destroy(new_chunk_ptr);
-            }
-            return ResizeResult::SwapFailed;
+        if let Err(e) = swap_old {
+            error!("Resize swap pointer failed, defer destory new chunk: {:?}", e);
+            // Should not happend, we cannot fix this
+            panic!();
         }
         let old_chunk_ptr = swap_old.unwrap();
         debug!("{}", self.dump(new_base, new_cap));
@@ -1053,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_hyrid() {
+    fn parallel_hybrid() {
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         for i in 5..128 {
             map.insert(i, i * 10);
