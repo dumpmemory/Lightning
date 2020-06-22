@@ -12,6 +12,7 @@ use std::alloc::System;
 use std::os::raw::c_void;
 use crossbeam_epoch::*;
 use std::collections::hash_map::DefaultHasher;
+use std::intrinsics::unreachable;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -547,11 +548,9 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         debug_assert!(!new_chunk_ptr.is_null());
         let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
         if let Err(e) = swap_old {
-            error!("Resize swap pointer failed, defer destory new chunk: {:?}", e);
             // Should not happend, we cannot fix this
-            panic!();
+            unreachable("Resize swap pointer failed")!;
         }
-        debug!("{}", self.dump(new_base, new_cap));
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
@@ -1076,7 +1075,7 @@ mod tests {
 
     #[test]
     fn parallel_hybrid() {
-        let map = Arc::new(WordMap::<System>::with_capacity(32));
+        let map = Arc::new(WordMap::<System>::with_capacity(4));
         for i in 5..128 {
             map.insert(i, i * 10);
         }
@@ -1107,31 +1106,32 @@ mod tests {
         }
     }
 
+    #[derive(Copy, Clone)]
+    struct Obj {
+        a: usize,
+        b: usize,
+        c: usize,
+        d: usize,
+    }
+    impl Obj {
+        fn new(num: usize) -> Self {
+            Obj {
+                a: num,
+                b: num + 1,
+                c: num + 2,
+                d: num + 3,
+            }
+        }
+        fn validate(&self, num: usize) {
+            assert_eq!(self.a, num);
+            assert_eq!(self.b, num + 1);
+            assert_eq!(self.c, num + 2);
+            assert_eq!(self.d, num + 3);
+        }
+    }
+
     #[test]
     fn obj_map() {
-        #[derive(Copy, Clone)]
-        struct Obj {
-            a: usize,
-            b: usize,
-            c: usize,
-            d: usize,
-        }
-        impl Obj {
-            fn new(num: usize) -> Self {
-                Obj {
-                    a: num,
-                    b: num + 1,
-                    c: num + 2,
-                    d: num + 3,
-                }
-            }
-            fn validate(&self, num: usize) {
-                assert_eq!(self.a, num);
-                assert_eq!(self.b, num + 1);
-                assert_eq!(self.c, num + 2);
-                assert_eq!(self.d, num + 3);
-            }
-        }
         let map = ObjectMap::<Obj>::with_capacity(16);
         for i in 5..2048 {
             map.insert(i, Obj::new(i));
@@ -1140,6 +1140,43 @@ mod tests {
             match map.get(i) {
                 Some(r) => r.validate(i),
                 None => panic!("{}", i),
+            }
+        }
+    }
+
+
+    #[test]
+    fn parallel_obj_hybrid() {
+        let map = Arc::new(ObjectMap::<Obj>::with_capacity(4));
+        for i in 5..128 {
+            map.insert(i, Obj::new(i * 10));
+        }
+        let mut threads = vec![];
+        for i in 256..265 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..60 {
+                    map.insert(i * 10 + j, Obj::new(10));
+                }
+            }));
+        }
+        for i in 5..8 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..8 {
+                    map.remove(i * j);
+                }
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        for i in 256..265 {
+            for j in 5..60 {
+                match map.get(i * 10 + j) {
+                    Some(r) => r.validate(10),
+                    None => panic!("{}", i)
+                }
             }
         }
     }
