@@ -12,7 +12,6 @@ use std::alloc::System;
 use std::os::raw::c_void;
 use crossbeam_epoch::*;
 use std::collections::hash_map::DefaultHasher;
-use std::intrinsics::unreachable;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -549,7 +548,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
         if let Err(e) = swap_old {
             // Should not happend, we cannot fix this
-            unreachable("Resize swap pointer failed")!;
+            unreachable!("Resize swap pointer failed: {:?}", e);
         }
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
