@@ -229,6 +229,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     }
 
     fn get_from_chunk(&self, chunk: &Chunk<V, A, ALLOC>, key: usize) -> (Value, usize) {
+        assert_ne!(chunk as *const Chunk<V, A, ALLOC> as usize, 0);
         let mut idx = hash::<H>(key);
         let entry_size = mem::size_of::<EntryTemplate>();
         let cap = chunk.capacity;
@@ -542,6 +543,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         // resize finished, make changes on the numbers
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
         debug_assert_ne!(old_chunk.ptr as usize, new_base);
+        debug_assert_ne!(old_chunk.ptr, unsafe { new_chunk_ptr.deref().ptr });
         debug_assert!(!new_chunk_ptr.is_null());
         let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
         if let Err(e) = swap_old {
@@ -549,7 +551,6 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             // Should not happend, we cannot fix this
             panic!();
         }
-        let old_chunk_ptr = swap_old.unwrap();
         debug!("{}", self.dump(new_base, new_cap));
         unsafe {
             guard.defer_destroy(old_chunk_ptr);

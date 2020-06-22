@@ -928,6 +928,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     pub fn exchange() {
         let exchg = Arc::new(ExchangeSlot::new());
         let exchg_1 = exchg.clone();
