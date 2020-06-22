@@ -398,11 +398,13 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     #[inline(always)]
     fn get_key(&self, entry_addr: usize) -> usize {
+        debug_assert!(entry_addr > 0);
         unsafe { intrinsics::atomic_load_relaxed(entry_addr as *mut usize) }
     }
 
     #[inline(always)]
     fn get_value(&self, entry_addr: usize) -> Value {
+        debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let val = unsafe { intrinsics::atomic_load_relaxed(addr as *mut usize) };
         Value::new(val, self)
@@ -410,15 +412,18 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     #[inline(always)]
     fn set_tombstone(&self, entry_addr: usize, original: usize) -> bool {
+        debug_assert!(entry_addr > 0);
         self.cas_value(entry_addr, original, 0)
     }
     #[inline(always)]
     fn set_sentinel(&self, entry_addr: usize) {
+        debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, SENTINEL_VALUE) }
     }
     #[inline(always)]
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
+        debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe {
             intrinsics::atomic_cxchg_relaxed(addr as *mut usize, original, value).0 == original
@@ -620,6 +625,7 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     }
 
     unsafe fn gc(ptr: *mut Chunk<V, A, ALLOC>) {
+        debug_assert_ne!(ptr as usize, 0);
         let chunk = &*ptr;
         chunk.attachment.dealloc();
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
@@ -697,6 +703,7 @@ unsafe impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Sync for  ChunkP
 
 impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<V, A, ALLOC> {
     fn drop(&mut self) {
+        debug_assert_ne!(self.ptr as usize, 0);
         unsafe {
             Chunk::gc(self.ptr);
         }
@@ -707,13 +714,14 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<V, A,
     type Target = Chunk<V, A, ALLOC>;
 
     fn deref(&self) -> &Self::Target {
-        debug_assert_ne!(self.ptr as usize, 0);
+        debug_assert_ne!(self.ptr as usize, 0); 
         unsafe { &*self.ptr }
     }
 }
 
 impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> ChunkPtr<V, A, ALLOC> {
     fn new(ptr: *mut Chunk<V, A, ALLOC>) -> Self {
+        debug_assert_ne!(ptr as usize, 0);
         Self {
             ptr
         }
