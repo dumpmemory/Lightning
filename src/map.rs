@@ -60,29 +60,29 @@ enum ResizeResult {
     Done
 }
 
-pub struct Chunk<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
+pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     occu_limit: usize,
     occupation: AtomicUsize,
     total_size: usize,
     attachment: A,
-    shadow: PhantomData<(V, ALLOC)>
+    shadow: PhantomData<(K, V, ALLOC)>
 }
 
-pub struct ChunkPtr<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> {
-    ptr: *mut Chunk<V, A, ALLOC>,
+pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+    ptr: *mut Chunk<K, V, A, ALLOC>,
 }
 
-pub struct Table<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
-    new_chunk: Atomic<ChunkPtr<V, A, ALLOC>>,
-    chunk: Atomic<ChunkPtr<V, A, ALLOC>>,
+pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
+    new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
+    chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     val_bit_mask: usize, // 0111111..
     inv_bit_mask: usize, // 1000000..
     mark: PhantomData<H>,
 }
 
-impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Table<V, A, ALLOC, H> {
+impl<K, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Table<K, V, A, ALLOC, H> {
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
             panic!("capacity is not power of 2");
@@ -228,8 +228,8 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         retr
     }
 
-    fn get_from_chunk(&self, chunk: &Chunk<V, A, ALLOC>, key: usize) -> (Value, usize) {
-        assert_ne!(chunk as *const Chunk<V, A, ALLOC> as usize, 0);
+    fn get_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>, key: usize) -> (Value, usize) {
+        assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash::<H>(key);
         let entry_size = mem::size_of::<EntryTemplate>();
         let cap = chunk.capacity;
@@ -258,7 +258,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         return (Value::new(0, self), 0);
     }
 
-    fn modify_entry<'a>(&self, chunk: &'a Chunk<V, A, ALLOC>, key: usize, op: ModOp<V>, _guard: &'a Guard) -> ModOutput {
+    fn modify_entry<'a>(&self, chunk: &'a Chunk<K, V, A, ALLOC>, key: usize, op: ModOp<V>, _guard: &'a Guard) -> ModOutput {
         let cap = chunk.capacity;
         let base = chunk.base;
         let mut idx = hash::<H>(key);
@@ -357,7 +357,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
         }
     }
 
-    fn all_from_chunk(&self, chunk: &Chunk<V, A, ALLOC>) -> Vec<(usize, usize, V)> {
+    fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(usize, usize, V)> {
         let mut idx = 0;
         let entry_size = mem::size_of::<EntryTemplate>();
         let cap = chunk.capacity;
@@ -433,7 +433,7 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 
     /// Failed return old shared
     #[inline(always)]
-    fn check_resize<'a>(&self, old_chunk_ptr: Shared<'a, ChunkPtr<V, A, ALLOC>>, guard: &crossbeam_epoch::Guard) -> ResizeResult {
+    fn check_resize<'a>(&self, old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>, guard: &crossbeam_epoch::Guard) -> ResizeResult {
         let old_chunk = unsafe { old_chunk_ptr.deref() };
         let occupation = old_chunk.occupation.load(Relaxed);
         let occu_limit = old_chunk.occu_limit;
@@ -567,9 +567,9 @@ impl<V: Clone, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 }
 
 impl Value {
-    pub fn new<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
+    pub fn new<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
         val: usize,
-        table: &Table<V, A, ALLOC, H>,
+        table: &Table<K, V, A, ALLOC, H>,
     ) -> Self {
         let res = {
             if val == 0 {
@@ -593,7 +593,7 @@ impl Value {
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
         let capacity = capacity;
         let self_size = mem::size_of::<Self>();
@@ -623,7 +623,7 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
         ptr
     }
 
-    unsafe fn gc(ptr: *mut Chunk<V, A, ALLOC>) {
+    unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);
         let chunk = &*ptr;
         chunk.attachment.dealloc();
@@ -634,7 +634,7 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Chunk<V, A, ALLOC> {
     fn cap_mask(&self) -> usize { self.capacity - 1  }
 }
 
-impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone for Table<V, A, ALLOC, H> {
+impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone for Table<K, V, A, ALLOC, H> {
     fn clone(&self) -> Self {
         let mut new_table = Table {
             chunk: Default::default(),
@@ -651,7 +651,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             let old_chunk = old_chunk_ptr.deref();
             let old_total_size = old_chunk.total_size;
 
-            let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<V, A, ALLOC>;
+            let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<K, V, A, ALLOC>;
             debug_assert_ne!(cloned_old_ptr as usize, 0);
             debug_assert_ne!(old_chunk.ptr as usize, 0);
             libc::memcpy(cloned_old_ptr as *mut c_void, old_chunk.ptr as *const c_void, old_total_size);
@@ -661,7 +661,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
             if new_chunk_ptr != Shared::null() {
                 let new_chunk = new_chunk_ptr.deref();
                 let new_total_size = new_chunk.total_size;
-                let cloned_new_ptr = alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<V, A, ALLOC>;
+                let cloned_new_ptr = alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<K, V, A, ALLOC>;
                 libc::memcpy(cloned_new_ptr as *mut c_void, new_chunk.ptr as *const c_void, new_total_size);
                 let cloned_new_ref = Owned::new(ChunkPtr::new(cloned_new_ptr));
                 new_table.new_chunk.store(cloned_new_ref, Relaxed);
@@ -675,7 +675,7 @@ impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Cl
     }
 }
 
-impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for Table<V, A, ALLOC, H> {
+impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for Table<K, V, A, ALLOC, H> {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
@@ -697,10 +697,10 @@ impl ModOutput {
     }
 }
 
-unsafe impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Send for  ChunkPtr<V, A, ALLOC> {}
-unsafe impl <V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Sync for  ChunkPtr<V, A, ALLOC> {}
+unsafe impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Send for  ChunkPtr<K, V, A, ALLOC> {}
+unsafe impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync for  ChunkPtr<K, V, A, ALLOC> {}
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<V, A, ALLOC> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<K, V, A, ALLOC> {
     fn drop(&mut self) {
         debug_assert_ne!(self.ptr as usize, 0);
         unsafe {
@@ -709,8 +709,8 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<V, A, 
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<V, A, ALLOC> {
-    type Target = Chunk<V, A, ALLOC>;
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<K, V, A, ALLOC> {
+    type Target = Chunk<K, V, A, ALLOC>;
 
     fn deref(&self) -> &Self::Target {
         debug_assert_ne!(self.ptr as usize, 0); 
@@ -718,8 +718,8 @@ impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<V, A,
     }
 }
 
-impl<V, A: Attachment<V>, ALLOC: GlobalAlloc + Default> ChunkPtr<V, A, ALLOC> {
-    fn new(ptr: *mut Chunk<V, A, ALLOC>) -> Self {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<K, V, A, ALLOC> {
+    fn new(ptr: *mut Chunk<K, V, A, ALLOC>) -> Self {
         debug_assert_ne!(ptr as usize, 0);
         Self {
             ptr
@@ -754,19 +754,20 @@ pub fn hash<H: Hasher + Default>(num: usize) -> usize {
     hasher.finish() as usize
 }
 
-pub trait Attachment<V> {
+pub trait Attachment<K, V> {
     fn heap_size_of(cap: usize) -> usize;
     fn new(cap: usize, heap_ptr: usize, heap_size: usize) -> Self;
     fn get(&self, index: usize, key: usize) -> V;
     fn set(&self, index: usize, key: usize, att_value: V);
     fn erase(&self, index: usize, key: usize);
     fn dealloc(&self);
+    fn probe(&self, index: usize, probe_key: &K) -> bool;
 }
 
 pub struct WordAttachment;
 
 // this attachment basically do nothing and sized zero
-impl Attachment<()> for WordAttachment {
+impl Attachment<(), ()> for WordAttachment {
     fn heap_size_of(_cap: usize) -> usize { 0 }
 
     fn new(_cap: usize, _heap_ptr: usize, _heap_size: usize) -> Self { Self }
@@ -782,17 +783,20 @@ impl Attachment<()> for WordAttachment {
 
     #[inline(always)]
     fn dealloc(&self) {}
+
+    #[inline(always)]
+    fn probe(&self, index: usize, value: &()) -> bool { true }
 }
 
-pub type WordTable<H, ALLOC> = Table<(), WordAttachment, H, ALLOC>;
+pub type WordTable<H, ALLOC> = Table<(), (), WordAttachment, H, ALLOC>;
 
-pub struct ObjectAttachment<T, A: GlobalAlloc + Default> {
+pub struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
     obj_chunk: usize,
     obj_size: usize,
     shadow: PhantomData<(T, A)>,
 }
 
-impl<T: Clone, A: GlobalAlloc + Default> Attachment<T> for ObjectAttachment<T, A> {
+impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachment<T, A> {
     fn heap_size_of(cap: usize) -> usize {
         let obj_size = mem::size_of::<T>();
         cap * obj_size
@@ -825,9 +829,11 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<T> for ObjectAttachment<T, A
 
     #[inline(always)]
     fn dealloc(&self) {}
+
+    fn probe(&self, index: usize, value: &()) -> bool { true }
 }
 
-impl<T, A: GlobalAlloc + Default> ObjectAttachment<T, A> {
+impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     fn addr_by_index(&self, index: usize) -> usize {
         self.obj_chunk + index * self.obj_size
     }
@@ -846,7 +852,7 @@ const NUM_KEY_FIX: usize = 5;
 
 #[derive(Clone)]
 pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
-    table: Table<V, ObjectAttachment<V, ALLOC>, ALLOC, H>,
+    table: Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>,
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> for ObjectMap<V, ALLOC, H> {
