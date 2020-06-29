@@ -136,8 +136,10 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
 
     pub fn insert(&self, key: &K, mut value: V, fkey: usize, fvalue: usize) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
+        let mut round = 0;
         loop {
             let guard = crossbeam_epoch::pin();
+            round += 1;
             debug!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Relaxed, &guard);
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
@@ -145,12 +147,15 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             if !copying {
                 match self.check_resize(chunk_ptr, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
-                        drop(guard);
                         backoff.spin();
                         continue;
                     },
                     ResizeResult::NoNeed => {}
                 }
+            }
+            if round > 100 {
+                panic!("Insertion failed, too many retry. Copying {}, old chunk {:?}, new chunk {:?}", 
+                        copying, chunk_ptr, new_chunk_ptr);
             }
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = unsafe { new_chunk_ptr.deref() };
