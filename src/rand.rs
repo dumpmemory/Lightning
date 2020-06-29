@@ -1,5 +1,5 @@
 use core::sync::atomic::Ordering::Relaxed;
-use core::sync::atomic::{fence, AtomicUsize};
+use core::sync::atomic::AtomicUsize;
 
 pub struct XorRand {
     x: AtomicUsize,
