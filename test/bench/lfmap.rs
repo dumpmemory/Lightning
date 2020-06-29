@@ -24,25 +24,25 @@ impl CollectionHandle for TestTable {
 
     fn get(&mut self, key: &Self::Key) -> bool {
         let k = *key as usize;
-        self.0.get(k).is_some()
+        self.0.get(&k).is_some()
     }
 
     fn insert(&mut self, key: &Self::Key) -> bool {
         let k = *key as usize;
-        self.0.insert(k, k).is_none()
+        self.0.insert(&k, k).is_none()
     }
 
     fn remove(&mut self, key: &Self::Key) -> bool {
         let k = *key as usize;
-        self.0.remove(k).is_some()
+        self.0.remove(&k).is_some()
     }
 
     fn update(&mut self, key: &Self::Key) -> bool {
         use std::collections::hash_map::Entry;
         let k = *key as usize;
         let mut map = &mut self.0;
-        if map.contains(k) {
-            map.insert(k, k);
+        if map.contains(&k) {
+            map.insert(&k, k);
             true
         } else {
             false
