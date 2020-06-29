@@ -38,7 +38,7 @@ enum ModResult<V> {
     Sentinel,
     NotFound,
     Done(usize, Option<V>),
-    TableFull,
+    TableFull(usize, V),
 }
 
 struct ModOutput<V> {
@@ -134,69 +134,77 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         }
     }
 
-    pub fn insert(&self, key: &K, value: V, fkey: usize, fvalue: usize) -> Option<(usize, V)> {
-        debug!("Inserting key: {}, value: {}", fkey, fvalue);
-        let guard = crossbeam_epoch::pin();
-        let chunk_ptr = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
-        let copying = !new_chunk_ptr.is_null();
-        if !copying {
-            match self.check_resize(chunk_ptr, &guard) {
-                ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
-                    drop(guard);
-                    return self.insert(key, value, fkey, fvalue);
-                },
-                ResizeResult::NoNeed => {}
+    pub fn insert(&self, key: &K, mut value: V, fkey: usize, fvalue: usize) -> Option<(usize, V)> {
+        let backoff = crossbeam_utils::Backoff::new();
+        loop {
+            let guard = crossbeam_epoch::pin();
+            debug!("Inserting key: {}, value: {}", fkey, fvalue);
+            let chunk_ptr = self.chunk.load(Relaxed, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            let copying = !new_chunk_ptr.is_null();
+            if !copying {
+                match self.check_resize(chunk_ptr, &guard) {
+                    ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
+                        drop(guard);
+                        backoff.spin();
+                        continue;
+                    },
+                    ResizeResult::NoNeed => {}
+                }
             }
-        }
-        let chunk = unsafe { chunk_ptr.deref() };
-        let new_chunk = unsafe { new_chunk_ptr.deref() };
+            let chunk = unsafe { chunk_ptr.deref() };
+            let new_chunk = unsafe { new_chunk_ptr.deref() };
 
-        let modify_chunk = if copying {
-            new_chunk
-        } else {
-            chunk
-        };
-        let value_insertion = self.modify_entry(
-            &*modify_chunk,
-            key,
-            fkey,
-            ModOp::Insert(fvalue & self.val_bit_mask, value),
-            &guard
-        );
-        let mut result = None;
-        match value_insertion.result {
-            ModResult::Done(_, _) => {}
-            ModResult::Replaced(fv, v) => result = Some((fv, v)),
-            ModResult::Fail(_, Some(value)) => {
-                // If fail insertion then retry
-                drop(guard);
-                return self.insert(key, value, fkey, fvalue);
-            },
-            ModResult::Fail(_, None) => unreachable!(),
-            ModResult::TableFull => {
-                 panic!(
-                    "Insertion is too fast, copying {}, cap {}, count {}, dump: {}",
-                    copying,
-                    modify_chunk.capacity,
-                    modify_chunk.occupation.load(Relaxed),
-                    self.dump(modify_chunk.base, modify_chunk.capacity)
-                );
+            let modify_chunk = if copying {
+                new_chunk
+            } else {
+                chunk
+            };
+            let value_insertion = self.modify_entry(
+                &*modify_chunk,
+                key,
+                fkey,
+                ModOp::Insert(fvalue & self.val_bit_mask, value),
+                &guard
+            );
+            let mut result = None;
+            match value_insertion.result {
+                ModResult::Done(_, _) => {}
+                ModResult::Replaced(fv, v) => result = Some((fv, v)),
+                ModResult::Fail(_, Some(rvalue)) => {
+                    // If fail insertion then retry
+                    value = rvalue;
+                    backoff.spin();
+                    continue;
+                },
+                ModResult::Fail(_, None) => unreachable!(),
+                ModResult::TableFull(_, rvalue) => {
+                    warn!(
+                        "Insertion is too fast, copying {}, cap {}, count {}, dump: {}",
+                        copying,
+                        modify_chunk.capacity,
+                        modify_chunk.occupation.load(Relaxed),
+                        self.dump(modify_chunk.base, modify_chunk.capacity)
+                    );
+                    value = rvalue;
+                    backoff.spin();
+                    continue;
+                }
+                ModResult::Sentinel => {
+                    debug!("Insert new and see sentinel, abort");
+                    return None;
+                },
+                ModResult::NotFound => unreachable!("Not Found on insertion is impossible")
             }
-            ModResult::Sentinel => {
-                debug!("Insert new and see sentinel, abort");
-                return None;
+            if copying && chunk_ptr != new_chunk_ptr {
+                fence(SeqCst);
+                if self.chunk.load(Relaxed, &guard) == chunk_ptr {
+                    self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+                }
             }
-            _ => unreachable!("copying: {}", copying),
+            modify_chunk.occupation.fetch_add(1, Relaxed);
+            return result;
         }
-        if copying && chunk_ptr != new_chunk_ptr {
-            fence(SeqCst);
-            if self.chunk.load(Relaxed, &guard) == chunk_ptr {
-                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
-            }
-        }
-        modify_chunk.occupation.fetch_add(1, Relaxed);
-        result
     }
 
     pub fn remove(&self, key: &K, fkey: usize) -> Option<(usize, V)> {
@@ -232,7 +240,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                     _ => {}
                 }
             }
-            ModResult::TableFull => panic!("need to handle TableFull by remove"),
+            ModResult::TableFull(_, _) => unreachable!("TableFull on remove is not possible"),
             _ => {}
         };
         retr
@@ -275,7 +283,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         let entry_size = mem::size_of::<EntryTemplate>();
         let mut count = 0;
         let cap_mask = chunk.cap_mask();
-        let mut insertion = false;
         let attempt_insertion = match &op {
             &ModOp::AttemptInsert(_, _) => true,
             _ => false
@@ -285,7 +292,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             let addr = base + idx * entry_size;
             let k = self.get_fast_key(addr);
             if k == fkey && chunk.attachment.probe(idx, &key) {
-                // Probing non-empty entry
+                // Probing non-empty entry  
                 let val = self.get_fast_value(addr);
                 match &val.parsed {
                     ParsedValue::Val(v) | ParsedValue::Prime(v) => {
@@ -332,7 +339,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             } else if k == EMPTY_KEY {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
-                        insertion = true;
                         debug!(
                             "Inserting entry key: {}, value: {}, raw: {:b}, addr: {}",
                             fkey,
@@ -368,10 +374,9 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             idx += 1; // reprobe
             count += 1;
         }
-        if insertion {
-            ModOutput::new(ModResult::TableFull, 0)
-        } else {
-            ModOutput::new(ModResult::NotFound, 0)   
+        match op {
+            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => ModOutput::new(ModResult::TableFull(fv, v), 0),
+            _ => ModOutput::new(ModResult::NotFound, 0)
         }
     }
 
@@ -518,8 +523,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                             ModResult::Sentinel => {
                                 unreachable!("New chunk should not have sentinel");
                             }
-                            ModResult::NotFound => unreachable!(),
-                            ModResult::TableFull => panic!(),
+                            ModResult::NotFound => unreachable!("Not found on resize"),
+                            ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
                         };
                         if let Some(new_entry_addr) = inserted_addr {
                             fence(SeqCst);
