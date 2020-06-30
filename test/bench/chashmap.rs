@@ -1,14 +1,14 @@
 use bustle::*;
+use chashmap::CHashMap;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use chashmap::CHashMap;
 
 #[derive(Clone)]
 pub struct Table<K>(std::sync::Arc<CHashMap<K, ()>>);
 
 impl<K> Collection for Table<K>
-    where
-        K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq + Sync,
+where
+    K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq + Sync,
 {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
@@ -21,8 +21,8 @@ impl<K> Collection for Table<K>
 }
 
 impl<K> CollectionHandle for Table<K>
-    where
-        K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
+where
+    K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
 {
     type Key = K;
 

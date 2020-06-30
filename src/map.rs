@@ -1,18 +1,18 @@
 // usize to usize lock-free, wait free table
+use crate::align_padding;
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
+use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use core::sync::atomic::{fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
-use core::hash::Hasher;
-use crate::align_padding;
-use std::alloc::System;
-use std::os::raw::c_void;
 use crossbeam_epoch::*;
+use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
+use std::os::raw::c_void;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -42,7 +42,7 @@ enum ModResult<V> {
 }
 
 struct ModOutput<V> {
-    result: ModResult<V>
+    result: ModResult<V>,
 }
 
 #[derive(Debug)]
@@ -57,7 +57,7 @@ enum ResizeResult {
     NoNeed,
     SwapFailed,
     ChunkChanged,
-    Done
+    Done,
 }
 
 pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
@@ -67,7 +67,7 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     occupation: AtomicUsize,
     total_size: usize,
     attachment: A,
-    shadow: PhantomData<(K, V, ALLOC)>
+    shadow: PhantomData<(K, V, ALLOC)>,
 }
 
 pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
@@ -82,7 +82,14 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     mark: PhantomData<H>,
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Table<K, V, A, ALLOC, H> {
+impl<
+        K: Clone + Hash + Eq,
+        V: Clone,
+        A: Attachment<K, V>,
+        ALLOC: GlobalAlloc + Default,
+        H: Hasher + Default,
+    > Table<K, V, A, ALLOC, H>
+{
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
             panic!("capacity is not power of 2");
@@ -148,28 +155,26 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
                         backoff.spin();
                         continue;
-                    },
+                    }
                     ResizeResult::NoNeed => {}
                 }
             }
             if round > 100 {
-                panic!("Insertion failed, too many retry. Copying {}, old chunk {:?}, new chunk {:?}", 
-                        copying, chunk_ptr, new_chunk_ptr);
+                panic!(
+                    "Insertion failed, too many retry. Copying {}, old chunk {:?}, new chunk {:?}",
+                    copying, chunk_ptr, new_chunk_ptr
+                );
             }
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = unsafe { new_chunk_ptr.deref() };
 
-            let modify_chunk = if copying {
-                new_chunk
-            } else {
-                chunk
-            };
+            let modify_chunk = if copying { new_chunk } else { chunk };
             let value_insertion = self.modify_entry(
                 &*modify_chunk,
                 key,
                 fkey,
                 ModOp::Insert(fvalue & self.val_bit_mask, value),
-                &guard
+                &guard,
             );
             let mut result = None;
             match value_insertion.result {
@@ -180,13 +185,13 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                     value = rvalue;
                     backoff.spin();
                     continue;
-                },
+                }
                 ModResult::Fail(_, None) => unreachable!(),
                 ModResult::TableFull(_, rvalue) => {
                     warn!(
                         "Insertion is too fast, copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
                         copying,
-                        modify_chunk.capacity,  
+                        modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
                         self.dump(modify_chunk.base, modify_chunk.capacity),
                         chunk_ptr,
@@ -199,8 +204,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                 ModResult::Sentinel => {
                     debug!("Insert new and see sentinel, abort");
                     return None;
-                },
-                ModResult::NotFound => unreachable!("Not Found on insertion is impossible")
+                }
+                ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
             }
             if copying && chunk_ptr != new_chunk_ptr {
                 fence(SeqCst);
@@ -220,11 +225,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         let copying = !new_chunk_ptr.is_null();
         let new_chunk = unsafe { new_chunk_ptr.deref() };
         let old_chunk = unsafe { old_chunk_ptr.deref() };
-        let modify_chunk = if copying {
-            &new_chunk
-        } else {
-            &old_chunk
-        };
+        let modify_chunk = if copying { &new_chunk } else { &old_chunk };
         let res = self.modify_entry(&*modify_chunk, key, fkey, ModOp::Empty, &guard);
         let mut retr = None;
         match res.result {
@@ -237,7 +238,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             }
             ModResult::Done(_, None) => unreachable!(),
             ModResult::NotFound => {
-                let remove_from_old = self.modify_entry(&*old_chunk, key, fkey, ModOp::Empty, &guard);
+                let remove_from_old =
+                    self.modify_entry(&*old_chunk, key, fkey, ModOp::Empty, &guard);
                 match remove_from_old.result {
                     ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value) => {
                         retr = Some((fvalue, value));
@@ -252,13 +254,18 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         retr
     }
 
-    fn get_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>, key: &K, fkey: usize) -> (Value, usize) {
+    fn get_from_chunk(
+        &self,
+        chunk: &Chunk<K, V, A, ALLOC>,
+        key: &K,
+        fkey: usize,
+    ) -> (Value, usize) {
         assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash::<H>(fkey);
         let entry_size = mem::size_of::<EntryTemplate>();
         let cap = chunk.capacity;
         let base = chunk.base;
-        let cap_mask  = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask();
         let mut counter = 0;
         while counter < cap {
             idx &= cap_mask;
@@ -282,7 +289,14 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         return (Value::new(0, self), 0);
     }
 
-    fn modify_entry<'a>(&self, chunk: &'a Chunk<K, V, A, ALLOC>, key: &K, fkey: usize, mut op: ModOp<V>, _guard: &'a Guard) -> ModOutput<V> {
+    fn modify_entry<'a>(
+        &self,
+        chunk: &'a Chunk<K, V, A, ALLOC>,
+        key: &K,
+        fkey: usize,
+        mut op: ModOp<V>,
+        _guard: &'a Guard,
+    ) -> ModOutput<V> {
         let cap = chunk.capacity;
         let base = chunk.base;
         let mut idx = hash::<H>(fkey);
@@ -291,14 +305,14 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         let cap_mask = chunk.cap_mask();
         let attempt_insertion = match &op {
             &ModOp::AttemptInsert(_, _) => true,
-            _ => false
+            _ => false,
         };
         while count <= cap {
             idx &= cap_mask;
             let addr = base + idx * entry_size;
             let k = self.get_fast_key(addr);
             if k == fkey && chunk.attachment.probe(idx, &key) {
-                // Probing non-empty entry  
+                // Probing non-empty entry
                 let val = self.get_fast_value(addr);
                 match &val.parsed {
                     ParsedValue::Val(v) | ParsedValue::Prime(v) => {
@@ -327,7 +341,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                 if self.cas_value(addr, val.raw, *fv) {
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.set(idx, key.clone(), v.clone());
-                                    return ModOutput::new(ModResult::Replaced(*fv, value))
+                                    return ModOutput::new(ModResult::Replaced(*fv, value));
                                 }
                             }
                             &ModOp::AttemptInsert(_, _) => {
@@ -351,12 +365,12 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                             fval & self.val_bit_mask,
                             fval,
                             addr
-                        );         
+                        );
                         if self.cas_value(addr, 0, fval) {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), val);
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
-                            return ModOutput::new(ModResult::Done(addr, None))
+                            return ModOutput::new(ModResult::Done(addr, None));
                         } else {
                             op = if attempt_insertion {
                                 ModOp::AttemptInsert(fval, val)
@@ -369,7 +383,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                         if self.cas_value(addr, 0, SENTINEL_VALUE) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
-                            return ModOutput::new(ModResult::Done(addr, None))
+                            return ModOutput::new(ModResult::Done(addr, None));
                         } else {
                             op = ModOp::Sentinel
                         }
@@ -381,8 +395,10 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             count += 1;
         }
         match op {
-            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => ModOutput::new(ModResult::TableFull(fv, v)),
-            _ => ModOutput::new(ModResult::NotFound)
+            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => {
+                ModOutput::new(ModResult::TableFull(fv, v))
+            }
+            _ => ModOutput::new(ModResult::NotFound),
         }
     }
 
@@ -463,7 +479,11 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
 
     /// Failed return old shared
     #[inline(always)]
-    fn check_resize<'a>(&self, old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>, guard: &crossbeam_epoch::Guard) -> ResizeResult {
+    fn check_resize<'a>(
+        &self,
+        old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        guard: &crossbeam_epoch::Guard,
+    ) -> ResizeResult {
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let occupation = old_chunk_ins.occupation.load(Relaxed);
         let occu_limit = old_chunk_ins.occu_limit;
@@ -475,7 +495,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         let old_cap = old_chunk_ins.capacity;
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
-        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
+        let new_chunk_ptr =
+            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
             warn!("Resize old chunk precheck failed");
             return ResizeResult::ChunkChanged;
@@ -485,9 +506,12 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             .compare_and_set(Shared::null(), new_chunk_ptr, SeqCst, guard);
         if let Err(e) = swap_new {
             // other thread have allocated new chunk and wins the competition, exit
-            trace!("Conflict on swapping new chunk, expecting it is null: {:?}", e);
+            trace!(
+                "Conflict on swapping new chunk, expecting it is null: {:?}",
+                e
+            );
             unsafe {
-                guard.defer_destroy(new_chunk_ptr);     
+                guard.defer_destroy(new_chunk_ptr);
             }
             return ResizeResult::SwapFailed;
         }
@@ -498,7 +522,9 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
         debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
         debug_assert!(!new_chunk_ptr.is_null());
-        let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
+        let swap_old = self
+            .chunk
+            .compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
         if let Err(e) = swap_old {
             // Should not happend, we cannot fix this
             unreachable!("Resize swap pointer failed: {:?}", e);
@@ -506,15 +532,18 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
-        assert!(self.new_chunk.compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard).is_ok());
+        assert!(self
+            .new_chunk
+            .compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard)
+            .is_ok());
         ResizeResult::Done
     }
 
     fn migrate_entries(
-        &self, 
-        old_chunk_ins: &Chunk<K, V, A, ALLOC>, 
-        new_chunk_ins: &Chunk<K, V, A, ALLOC>, 
-        guard: &crossbeam_epoch::Guard
+        &self,
+        old_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        new_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        guard: &crossbeam_epoch::Guard,
     ) -> usize {
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
@@ -540,7 +569,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                             &key,
                             fkey,
                             ModOp::AttemptInsert(primed_fval, value),
-                            guard
+                            guard,
                         );
                         let inserted_addr = match new_chunk_insertion.result {
                             ModResult::Done(addr, _) => Some(addr), // continue procedure
@@ -566,7 +595,9 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                 if self.cas_value(new_entry_addr, primed_fval, stripped) {
                                     trace!(
                                         "Effective copy key: {}, value {}, addr: {}",
-                                        fkey, stripped, new_entry_addr
+                                        fkey,
+                                        stripped,
+                                        new_entry_addr
                                     );
                                     old_chunk_ins.attachment.erase(idx);
                                     effective_copy += 1;
@@ -603,7 +634,12 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
     fn dump(&self, base: usize, cap: usize) -> &str {
         for i in 0..cap {
             let addr = base + i * entry_size();
-            trace!("{}\t-{}-{}\t", i, self.get_fast_key(addr), self.get_fast_value(addr).raw);
+            trace!(
+                "{}\t-{}-{}\t",
+                i,
+                self.get_fast_key(addr),
+                self.get_fast_value(addr).raw
+            );
         }
         "DUMPED"
     }
@@ -674,10 +710,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline]
-    fn cap_mask(&self) -> usize { self.capacity - 1  }
+    fn cap_mask(&self) -> usize {
+        self.capacity - 1
+    }
 }
 
-impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone for Table<K, V, A, ALLOC, H> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
+    for Table<K, V, A, ALLOC, H>
+{
     fn clone(&self) -> Self {
         let mut new_table = Table {
             chunk: Default::default(),
@@ -697,15 +737,24 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
             let cloned_old_ptr = alloc_mem::<ALLOC>(old_total_size) as *mut Chunk<K, V, A, ALLOC>;
             debug_assert_ne!(cloned_old_ptr as usize, 0);
             debug_assert_ne!(old_chunk.ptr as usize, 0);
-            libc::memcpy(cloned_old_ptr as *mut c_void, old_chunk.ptr as *const c_void, old_total_size);
+            libc::memcpy(
+                cloned_old_ptr as *mut c_void,
+                old_chunk.ptr as *const c_void,
+                old_total_size,
+            );
             let cloned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
             new_table.chunk.store(cloned_old_ref, Relaxed);
 
             if new_chunk_ptr != Shared::null() {
                 let new_chunk = new_chunk_ptr.deref();
                 let new_total_size = new_chunk.total_size;
-                let cloned_new_ptr = alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<K, V, A, ALLOC>;
-                libc::memcpy(cloned_new_ptr as *mut c_void, new_chunk.ptr as *const c_void, new_total_size);
+                let cloned_new_ptr =
+                    alloc_mem::<ALLOC>(new_total_size) as *mut Chunk<K, V, A, ALLOC>;
+                libc::memcpy(
+                    cloned_new_ptr as *mut c_void,
+                    new_chunk.ptr as *const c_void,
+                    new_total_size,
+                );
                 let cloned_new_ref = Owned::new(ChunkPtr::new(cloned_new_ptr));
                 new_table.new_chunk.store(cloned_new_ref, Relaxed);
             } else {
@@ -718,7 +767,9 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     }
 }
 
-impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for Table<K, V, A, ALLOC, H> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for Table<K, V, A, ALLOC, H>
+{
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
@@ -731,21 +782,25 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
     }
 }
 
-impl <V>ModOutput<V> {
+impl<V> ModOutput<V> {
     pub fn new(res: ModResult<V>) -> Self {
-        Self {
-            result: res
-        }
+        Self { result: res }
     }
 }
 
-unsafe impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Send for  ChunkPtr<K, V, A, ALLOC> {}
-unsafe impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync for  ChunkPtr<K, V, A, ALLOC> {}
+unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Send
+    for ChunkPtr<K, V, A, ALLOC>
+{
+}
+unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync
+    for ChunkPtr<K, V, A, ALLOC>
+{
+}
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<K, V, A, ALLOC> {
     fn drop(&mut self) {
         debug_assert_ne!(self.ptr as usize, 0);
-        
+
         unsafe {
             Chunk::gc(self.ptr);
         }
@@ -756,7 +811,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr
     type Target = Chunk<K, V, A, ALLOC>;
 
     fn deref(&self) -> &Self::Target {
-        debug_assert_ne!(self.ptr as usize, 0); 
+        debug_assert_ne!(self.ptr as usize, 0);
         unsafe { &*self.ptr }
     }
 }
@@ -764,9 +819,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<K, V, A, ALLOC> {
     fn new(ptr: *mut Chunk<K, V, A, ALLOC>) -> Self {
         debug_assert_ne!(ptr as usize, 0);
-        Self {
-            ptr
-        }
+        Self { ptr }
     }
 }
 
@@ -818,12 +871,18 @@ pub struct WordAttachment;
 
 // this attachment basically do nothing and sized zero
 impl Attachment<(), ()> for WordAttachment {
-    fn heap_size_of(_cap: usize) -> usize { 0 }
+    fn heap_size_of(_cap: usize) -> usize {
+        0
+    }
 
-    fn new(_cap: usize, _heap_ptr: usize, _heap_size: usize) -> Self { Self }
+    fn new(_cap: usize, _heap_ptr: usize, _heap_size: usize) -> Self {
+        Self
+    }
 
     #[inline(always)]
-    fn get(&self, _index: usize) -> ((), ()) { ((), ()) }
+    fn get(&self, _index: usize) -> ((), ()) {
+        ((), ())
+    }
 
     #[inline(always)]
     fn set(&self, _index: usize, _key: (), _value: ()) {}
@@ -835,7 +894,9 @@ impl Attachment<(), ()> for WordAttachment {
     fn dealloc(&self) {}
 
     #[inline(always)]
-    fn probe(&self, _index: usize, _value: &()) -> bool { true }
+    fn probe(&self, _index: usize, _value: &()) -> bool {
+        true
+    }
 }
 
 pub type WordTable<H, ALLOC> = Table<(), (), WordAttachment, H, ALLOC>;
@@ -881,10 +942,13 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     #[inline(always)]
     fn dealloc(&self) {}
 
-    fn probe(&self, _index: usize, _value: &()) -> bool { true }
+    fn probe(&self, _index: usize, _value: &()) -> bool {
+        true
+    }
 }
 
-pub type HashTable<K, V, ALLOC> = Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
+pub type HashTable<K, V, ALLOC> =
+    Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     obj_chunk: usize,
@@ -892,7 +956,9 @@ pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     shadow: PhantomData<(K, V, A)>,
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V> for HashKVAttachment<K, V, A> {
+impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
+    for HashKVAttachment<K, V, A>
+{
     fn heap_size_of(cap: usize) -> usize {
         let obj_size = mem::size_of::<(K, V)>();
         cap * obj_size
@@ -926,7 +992,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V> 
     #[inline(always)]
     fn dealloc(&self) {}
 
-    fn probe(&self, index: usize, key: &K) -> bool { 
+    fn probe(&self, index: usize, key: &K) -> bool {
         let addr = self.addr_by_index(index);
         let pos_key = unsafe { &*(addr as *mut K) };
         pos_key == key
@@ -939,25 +1005,30 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<
     }
 }
 
-pub struct HashMap<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+pub struct HashMap<
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default = System,
+    H: Hasher + Default = DefaultHasher,
+> {
     table: HashTable<K, V, ALLOC>,
-    shadow: PhantomData<H>
+    shadow: PhantomData<H>,
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V> for HashMap<K, V, ALLOC, H> {
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
+    for HashMap<K, V, ALLOC, H>
+{
     fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
-            shadow: PhantomData
+            shadow: PhantomData,
         }
     }
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
         let hash = hash_key::<K, H>(key);
-        self.table
-            .get(key, hash, true)
-            .map(|v| v.1.unwrap())
+        self.table.get(key, hash, true).map(|v| v.1.unwrap())
     }
 
     #[inline(always)]
@@ -1006,11 +1077,17 @@ pub trait Map<K, V> {
 const NUM_KEY_FIX: usize = 5;
 
 #[derive(Clone)]
-pub struct ObjectMap<V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+pub struct ObjectMap<
+    V: Clone,
+    ALLOC: GlobalAlloc + Default = System,
+    H: Hasher + Default = DefaultHasher,
+> {
     table: Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>,
 }
 
-impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> for ObjectMap<V, ALLOC, H> {
+impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
+    for ObjectMap<V, ALLOC, H>
+{
     fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
@@ -1026,7 +1103,9 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V> 
 
     #[inline(always)]
     fn insert(&self, key: &usize, value: V) -> Option<V> {
-        self.table.insert(&(), value, key + NUM_KEY_FIX, !0).map(|(_, v)| v)
+        self.table
+            .insert(&(), value, key + NUM_KEY_FIX, !0)
+            .map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -1068,12 +1147,14 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 
     #[inline(always)]
     fn insert(&self, key: &usize, value: usize) -> Option<usize> {
-        self.table.insert(&(), (), key + NUM_KEY_FIX, value).map(|(v, _)| v)
+        self.table
+            .insert(&(), (), key + NUM_KEY_FIX, value)
+            .map(|(v, _)| v)
     }
 
     #[inline(always)]
     fn remove(&self, key: &usize) -> Option<usize> {
-        self.table.remove(&(), key + NUM_KEY_FIX).map(|(v, _,)| v)
+        self.table.remove(&(), key + NUM_KEY_FIX).map(|(v, _)| v)
     }
     fn entries(&self) -> Vec<(usize, usize)> {
         self.table
@@ -1112,7 +1193,7 @@ fn dealloc_mem<A: GlobalAlloc + Default + Default>(ptr: usize, size: usize) {
 }
 
 pub struct PassthroughHasher {
-    num: u64
+    num: u64,
 }
 
 impl Hasher for PassthroughHasher {
@@ -1137,10 +1218,10 @@ impl Default for PassthroughHasher {
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
     use crate::map::*;
-    use std::collections::HashMap;
+    use alloc::sync::Arc;
     use std::alloc::System;
+    use std::collections::HashMap;
     use std::thread;
     use test::Bencher;
 
@@ -1304,12 +1385,11 @@ mod tests {
         }
     }
 
-
     #[test]
     fn parallel_obj_hybrid() {
         let map = Arc::new(ObjectMap::<Obj>::with_capacity(4));
         for i in 5..128 {
-            map.insert(&    i, Obj::new(i * 10));
+            map.insert(&i, Obj::new(i * 10));
         }
         let mut threads = vec![];
         for i in 256..265 {
@@ -1335,7 +1415,7 @@ mod tests {
             for j in 5..60 {
                 match map.get(&(i * 10 + j)) {
                     Some(r) => r.validate(10),
-                    None => panic!("{}", i)
+                    None => panic!("{}", i),
                 }
             }
         }
@@ -1371,7 +1451,7 @@ mod tests {
             for j in 5..60 {
                 match map.get(&(i * 10 + j)) {
                     Some(r) => r.validate(10),
-                    None => panic!("{}", i)
+                    None => panic!("{}", i),
                 }
             }
         }

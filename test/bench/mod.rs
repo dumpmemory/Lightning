@@ -1,9 +1,9 @@
-use bustle::{Workload, Mix};
+use bustle::{Mix, Workload};
 
-mod lfmap;
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
+mod lfmap;
 
 fn main() {
     tracing_subscriber::fmt::init();

@@ -6,8 +6,8 @@ use std::sync::Mutex;
 pub struct Table<K>(std::sync::Arc<Mutex<HashMap<K, ()>>>);
 
 impl<K> Collection for Table<K>
-    where
-        K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
+where
+    K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
 {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
@@ -22,8 +22,8 @@ impl<K> Collection for Table<K>
 }
 
 impl<K> CollectionHandle for Table<K>
-    where
-        K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
+where
+    K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
 {
     type Key = K;
 

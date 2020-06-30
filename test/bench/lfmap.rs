@@ -1,9 +1,9 @@
 use bustle::*;
-use lightning::map::{ObjectMap, WordMap, Map};
-use std::hash::Hash;
-use std::collections::hash_map::DefaultHasher;
-use std::alloc::System;
+use lightning::map::{Map, ObjectMap, WordMap};
 use smallvec::alloc::sync::Arc;
+use std::alloc::System;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
 
 #[derive(Clone)]
 pub struct TestTable(Arc<WordMap<System, DefaultHasher>>);
