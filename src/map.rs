@@ -13,7 +13,7 @@ use std::os::raw::c_void;
 use crossbeam_epoch::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
-use std::thread;
+use std::sync::atomic::AtomicBool;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -68,12 +68,12 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     occupation: AtomicUsize,
     total_size: usize,
     attachment: A,
+    reclaimed: AtomicBool,
     shadow: PhantomData<(K, V, ALLOC)>
 }
 
 pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     ptr: *mut Chunk<K, V, A, ALLOC>,
-    home: AtomicUsize
 }
 
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
@@ -478,6 +478,11 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
+        fence(SeqCst);
+        if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
+            warn!("Resize old chunk precheck failed");
+            return ResizeResult::ChunkChanged;
+        }
         let swap_new = self
             .new_chunk
             .compare_and_set(Shared::null(), new_chunk_ptr, SeqCst, guard);
@@ -489,7 +494,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             }
             return ResizeResult::SwapFailed;
         }
-        if self.chunk.load(Relaxed, guard) != old_chunk_ptr {
+        if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
             warn!("Old chunk ptr changed after new chunk lock obtained");
             assert!(self.new_chunk.compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard).is_ok());
             let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
@@ -670,6 +675,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     occu_limit: occupation_limit(capacity),
                     total_size,
                     attachment: A::new(capacity, attachment_base, attachment_heap),
+                    reclaimed: AtomicBool::new(false),
                     shadow: PhantomData,
                 },
             )
@@ -776,8 +782,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<K, V, A, 
     fn new(ptr: *mut Chunk<K, V, A, ALLOC>) -> Self {
         debug_assert_ne!(ptr as usize, 0);
         Self {
-            ptr,
-            home: AtomicUsize::new(0)
+            ptr
         }
     }
 }
