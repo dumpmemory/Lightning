@@ -478,7 +478,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
-        fence(SeqCst);
         if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
             warn!("Resize old chunk precheck failed");
             return ResizeResult::ChunkChanged;
