@@ -13,7 +13,6 @@ use std::os::raw::c_void;
 use crossbeam_epoch::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
-use std::sync::atomic::AtomicBool;
 
 pub struct EntryTemplate(usize, usize);
 
