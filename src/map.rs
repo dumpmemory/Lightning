@@ -13,6 +13,7 @@ use std::os::raw::c_void;
 use crossbeam_epoch::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
+use std::thread;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -72,6 +73,7 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 
 pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     ptr: *mut Chunk<K, V, A, ALLOC>,
+    home: AtomicUsize
 }
 
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
@@ -490,6 +492,10 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         if self.chunk.load(Relaxed, guard) != old_chunk_ptr {
             warn!("Old chunk ptr changed after new chunk lock obtained");
             assert!(self.new_chunk.compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard).is_ok());
+            let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
+            // new_chunk.home.store(self as *const Self as usize, Relaxed);
+            let migrated = self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
+            warn!("Recovered {} entries to old chunk", migrated);
             unsafe {
                 guard.defer_destroy(new_chunk_ptr);     
             }
@@ -520,7 +526,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         old_chunk_ins: &Chunk<K, V, A, ALLOC>, 
         new_chunk_ins: &Chunk<K, V, A, ALLOC>, 
         guard: &crossbeam_epoch::Guard
-    ) {
+    ) -> usize {
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
         let mut effective_copy = 0;
@@ -554,7 +560,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                 unreachable!("Attempt insert does not replace anything");
                             }
                             ModResult::Sentinel => {
-                                unreachable!("New chunk should not have sentinel");
+                                warn!("New chunk should not have sentinel");
+                                None
                             }
                             ModResult::NotFound => unreachable!("Not found on resize"),
                             ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
@@ -599,7 +606,9 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             idx += 1;
         }
         // resize finished, make changes on the numbers
+        debug!("Migrated {} entries to new chunk", effective_copy);
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
+        return effective_copy;
     }
 
     fn dump(&self, base: usize, cap: usize) -> &str {
@@ -747,6 +756,7 @@ unsafe impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync for  
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<K, V, A, ALLOC> {
     fn drop(&mut self) {
         debug_assert_ne!(self.ptr as usize, 0);
+        
         unsafe {
             Chunk::gc(self.ptr);
         }
@@ -766,7 +776,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<K, V, A, 
     fn new(ptr: *mut Chunk<K, V, A, ALLOC>) -> Self {
         debug_assert_ne!(ptr as usize, 0);
         Self {
-            ptr
+            ptr,
+            home: AtomicUsize::new(0)
         }
     }
 }
