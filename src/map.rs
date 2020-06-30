@@ -464,15 +464,15 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
     /// Failed return old shared
     #[inline(always)]
     fn check_resize<'a>(&self, old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>, guard: &crossbeam_epoch::Guard) -> ResizeResult {
-        let old_chunk = unsafe { old_chunk_ptr.deref() };
-        let occupation = old_chunk.occupation.load(Relaxed);
-        let occu_limit = old_chunk.occu_limit;
+        let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
+        let occupation = old_chunk_ins.occupation.load(Relaxed);
+        let occu_limit = old_chunk_ins.occu_limit;
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
         }
         // resize
         debug!("Resizing");
-        let old_cap = old_chunk.capacity;
+        let old_cap = old_chunk_ins.capacity;
         let mult = if old_cap < 2048 { 4 } else { 1 };
         let new_cap = old_cap << mult;
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
@@ -488,14 +488,41 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             return ResizeResult::SwapFailed;
         }
         if self.chunk.load(Relaxed, guard) != old_chunk_ptr {
-            warn!("RARE: Old chunk ptr changed after new chunk lock obtained");
+            warn!("Old chunk ptr changed after new chunk lock obtained");
+            assert!(self.new_chunk.compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard).is_ok());
+            unsafe {
+                guard.defer_destroy(new_chunk_ptr);     
+            }
             return ResizeResult::ChunkChanged;
         }
         // let new_chunk_ptr = swap_new.unwrap();
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        let new_base = new_chunk_ins.base;
-        let mut old_address = old_chunk.base as usize;
-        let boundary = old_address + chunk_size_of(old_cap);
+        // Migrate entries
+        self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
+        // Assertion check
+        debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
+        debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
+        debug_assert!(!new_chunk_ptr.is_null());
+        let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
+        if let Err(e) = swap_old {
+            // Should not happend, we cannot fix this
+            unreachable!("Resize swap pointer failed: {:?}", e);
+        }
+        unsafe {
+            guard.defer_destroy(old_chunk_ptr);
+        }
+        assert!(self.new_chunk.compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard).is_ok());
+        ResizeResult::Done
+    }
+
+    fn migrate_entries(
+        &self, 
+        old_chunk_ins: &Chunk<K, V, A, ALLOC>, 
+        new_chunk_ins: &Chunk<K, V, A, ALLOC>, 
+        guard: &crossbeam_epoch::Guard
+    ) {
+        let mut old_address = old_chunk_ins.base as usize;
+        let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
         let mut effective_copy = 0;
         let mut idx = 0;
         while old_address < boundary {
@@ -512,7 +539,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                         // Value should be primed
                         trace!("Moving key: {}, value: {}", fkey, v);
                         let primed_fval = fvalue.raw | self.inv_bit_mask;
-                        let (key, value) = old_chunk.attachment.get(idx);
+                        let (key, value) = old_chunk_ins.attachment.get(idx);
                         let new_chunk_insertion = self.modify_entry(
                             &*new_chunk_ins,
                             &key,
@@ -545,7 +572,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                         "Effective copy key: {}, value {}, addr: {}",
                                         fkey, stripped, new_entry_addr
                                     );
-                                    old_chunk.attachment.erase(idx);
+                                    old_chunk_ins.attachment.erase(idx);
                                     effective_copy += 1;
                                 }
                             } else {
@@ -573,19 +600,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         }
         // resize finished, make changes on the numbers
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
-        debug_assert_ne!(old_chunk.ptr as usize, new_base);
-        debug_assert_ne!(old_chunk.ptr, unsafe { new_chunk_ptr.deref().ptr });
-        debug_assert!(!new_chunk_ptr.is_null());
-        let swap_old = self.chunk.compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
-        if let Err(e) = swap_old {
-            // Should not happend, we cannot fix this
-            unreachable!("Resize swap pointer failed: {:?}", e);
-        }
-        unsafe {
-            guard.defer_destroy(old_chunk_ptr);
-        }
-        self.new_chunk.store(Shared::null(), Relaxed);
-        ResizeResult::Done
     }
 
     fn dump(&self, base: usize, cap: usize) -> &str {
