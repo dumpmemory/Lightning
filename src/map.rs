@@ -42,8 +42,7 @@ enum ModResult<V> {
 }
 
 struct ModOutput<V> {
-    result: ModResult<V>,
-    index: usize,
+    result: ModResult<V>
 }
 
 #[derive(Debug)]
@@ -140,7 +139,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
         loop {
             let guard = crossbeam_epoch::pin();
             round += 1;
-            debug!("Inserting key: {}, value: {}", fkey, fvalue);
+            trace!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Relaxed, &guard);
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
             let copying = !new_chunk_ptr.is_null();
@@ -185,11 +184,13 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                 ModResult::Fail(_, None) => unreachable!(),
                 ModResult::TableFull(_, rvalue) => {
                     warn!(
-                        "Insertion is too fast, copying {}, cap {}, count {}, dump: {}",
+                        "Insertion is too fast, copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
                         copying,
-                        modify_chunk.capacity,
+                        modify_chunk.capacity,  
                         modify_chunk.occupation.load(Relaxed),
-                        self.dump(modify_chunk.base, modify_chunk.capacity)
+                        self.dump(modify_chunk.base, modify_chunk.capacity),
+                        chunk_ptr,
+                        new_chunk_ptr
                     );
                     value = rvalue;
                     backoff.spin();
@@ -306,7 +307,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                 self.set_sentinel(addr);
                                 let (_, value) = chunk.attachment.get(idx);
                                 chunk.attachment.erase(idx);
-                                return ModOutput::new(ModResult::Done(*v, Some(value)), idx);
+                                return ModOutput::new(ModResult::Done(*v, Some(value)));
                             }
                             &ModOp::Empty => {
                                 if !self.set_tombstone(addr, val.raw) {
@@ -314,37 +315,37 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                     // other thread changed the value (empty)
                                     // should fail
                                     let (_, value) = chunk.attachment.get(idx);
-                                    return ModOutput::new(ModResult::Fail(*v, Some(value)), idx);
+                                    return ModOutput::new(ModResult::Fail(*v, Some(value)));
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
-                                    return ModOutput::new(ModResult::Replaced(*v, value), idx);
+                                    return ModOutput::new(ModResult::Replaced(*v, value));
                                 }
                             }
                             &ModOp::Insert(ref fv, ref v) => {
                                 if self.cas_value(addr, val.raw, *fv) {
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.set(idx, key.clone(), v.clone());
-                                    return ModOutput::new(ModResult::Replaced(*fv, value), idx)
+                                    return ModOutput::new(ModResult::Replaced(*fv, value))
                                 }
                             }
                             &ModOp::AttemptInsert(_, _) => {
                                 // Attempting insert existed entry, skip
                                 let (_, value) = chunk.attachment.get(idx);
-                                return ModOutput::new(ModResult::Fail(*v, Some(value)), idx);
+                                return ModOutput::new(ModResult::Fail(*v, Some(value)));
                             }
                         }
                     }
                     ParsedValue::Empty => {
                         // found the key with empty value, shall do nothing and continue probing
                     }
-                    ParsedValue::Sentinel => return ModOutput::new(ModResult::Sentinel, idx), // should not reachable for insertion happens on new list
+                    ParsedValue::Sentinel => return ModOutput::new(ModResult::Sentinel), // should not reachable for insertion happens on new list
                 }
             } else if k == EMPTY_KEY {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
-                        debug!(
+                        trace!(
                             "Inserting entry key: {}, value: {}, raw: {:b}, addr: {}",
                             fkey,
                             fval & self.val_bit_mask,
@@ -355,7 +356,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), val);
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
-                            return ModOutput::new(ModResult::Done(addr, None), idx)
+                            return ModOutput::new(ModResult::Done(addr, None))
                         } else {
                             op = if attempt_insertion {
                                 ModOp::AttemptInsert(fval, val)
@@ -368,20 +369,20 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                         if self.cas_value(addr, 0, SENTINEL_VALUE) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
-                            return ModOutput::new(ModResult::Done(addr, None), idx)
+                            return ModOutput::new(ModResult::Done(addr, None))
                         } else {
                             op = ModOp::Sentinel
                         }
                     }
-                    ModOp::Empty => return ModOutput::new(ModResult::Fail(0, None), idx),
+                    ModOp::Empty => return ModOutput::new(ModResult::Fail(0, None)),
                 };
             }
             idx += 1; // reprobe
             count += 1;
         }
         match op {
-            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => ModOutput::new(ModResult::TableFull(fv, v), 0),
-            _ => ModOutput::new(ModResult::NotFound, 0)
+            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => ModOutput::new(ModResult::TableFull(fv, v)),
+            _ => ModOutput::new(ModResult::NotFound)
         }
     }
 
@@ -487,7 +488,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             return ResizeResult::SwapFailed;
         }
         if self.chunk.load(Relaxed, guard) != old_chunk_ptr {
-            trace!("RARE: Old chunk ptr changed after new chunk lock obtained");
+            warn!("RARE: Old chunk ptr changed after new chunk lock obtained");
             return ResizeResult::ChunkChanged;
         }
         // let new_chunk_ptr = swap_new.unwrap();
@@ -509,7 +510,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                     ParsedValue::Val(v) => {
                         // Insert entry into new chunk, in case of failure, skip this entry
                         // Value should be primed
-                        debug!("Moving key: {}, value: {}", fkey, v);
+                        trace!("Moving key: {}, value: {}", fkey, v);
                         let primed_fval = fvalue.raw | self.inv_bit_mask;
                         let (key, value) = old_chunk.attachment.get(idx);
                         let new_chunk_insertion = self.modify_entry(
@@ -540,7 +541,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                                 let stripped = primed_fval & self.val_bit_mask;
                                 debug_assert_ne!(stripped, SENTINEL_VALUE);
                                 if self.cas_value(new_entry_addr, primed_fval, stripped) {
-                                    debug!(
+                                    trace!(
                                         "Effective copy key: {}, value {}, addr: {}",
                                         fkey, stripped, new_entry_addr
                                     );
@@ -559,11 +560,11 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
                     ParsedValue::Sentinel => {
                         // Sentinel, skip
                         // Sentinel in old chunk implies its new value have already in the new chunk
-                        debug!("Skip copy sentinel");
+                        trace!("Skip copy sentinel");
                     }
                     ParsedValue::Empty => {
                         // Empty, skip
-                        debug!("Skip copy empty, key: {}", fkey);
+                        trace!("Skip copy empty, key: {}", fkey);
                     }
                 }
             }
@@ -590,7 +591,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
     fn dump(&self, base: usize, cap: usize) -> &str {
         for i in 0..cap {
             let addr = base + i * entry_size();
-            debug!("{}\t-{}-{}\t", i, self.get_fast_key(addr), self.get_fast_value(addr).raw);
+            trace!("{}\t-{}-{}\t", i, self.get_fast_key(addr), self.get_fast_value(addr).raw);
         }
         "DUMPED"
     }
@@ -719,10 +720,9 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defau
 }
 
 impl <V>ModOutput<V> {
-    pub fn new(res: ModResult<V>, idx: usize) -> Self {
+    pub fn new(res: ModResult<V>) -> Self {
         Self {
-            result: res,
-            index: idx,
+            result: res
         }
     }
 }
