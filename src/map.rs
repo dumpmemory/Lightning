@@ -68,7 +68,6 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     occupation: AtomicUsize,
     total_size: usize,
     attachment: A,
-    reclaimed: AtomicBool,
     shadow: PhantomData<(K, V, ALLOC)>
 }
 
@@ -493,19 +492,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: Attachment<K, V>, ALLOC: GlobalAlloc + D
             }
             return ResizeResult::SwapFailed;
         }
-        if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
-            warn!("Old chunk ptr changed after new chunk lock obtained");
-            assert!(self.new_chunk.compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard).is_ok());
-            let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-            // new_chunk.home.store(self as *const Self as usize, Relaxed);
-            let migrated = self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
-            warn!("Recovered {} entries to old chunk", migrated);
-            unsafe {
-                guard.defer_destroy(new_chunk_ptr);     
-            }
-            return ResizeResult::ChunkChanged;
-        }
-        // let new_chunk_ptr = swap_new.unwrap();
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -674,7 +660,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     occu_limit: occupation_limit(capacity),
                     total_size,
                     attachment: A::new(capacity, attachment_base, attachment_heap),
-                    reclaimed: AtomicBool::new(false),
                     shadow: PhantomData,
                 },
             )
