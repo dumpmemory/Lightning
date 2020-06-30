@@ -1342,6 +1342,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parallel_hashmap_hybrid() {
+        let map = Arc::new(super::HashMap::<u32, Obj>::with_capacity(4));
+        for i in 5..128u32 {
+            map.insert(&i, Obj::new((i * 10) as usize));
+        }
+        let mut threads = vec![];
+        for i in 256..265u32 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..60u32 {
+                    map.insert(&(i * 10 + j), Obj::new(10usize));
+                }
+            }));
+        }
+        for i in 5..8 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..8 {
+                    map.remove(&(i * j));
+                }
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        for i in 256..265 {
+            for j in 5..60 {
+                match map.get(&(i * 10 + j)) {
+                    Some(r) => r.validate(10),
+                    None => panic!("{}", i)
+                }
+            }
+        }
+    }
+
     #[bench]
     fn lfmap(b: &mut Bencher) {
         let _ = env_logger::try_init();
