@@ -1,21 +1,21 @@
 // usize lock-free, wait free paged linked list stack
+use crate::align_padding;
 use crate::rand::XorRand;
-use core::ptr;
-use core::{intrinsics, mem};
-use crossbeam_utils::Backoff;
+use core::alloc::Layout;
 use core::borrow::BorrowMut;
 use core::cell::UnsafeCell;
 use core::cmp::{max, min};
 use core::marker::PhantomData;
 use core::ops::Deref;
+use core::ptr;
 use core::ptr::null_mut;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use core::sync::atomic::{fence, AtomicPtr, AtomicUsize};
+use core::{intrinsics, mem};
+use crossbeam_utils::Backoff;
 use smallvec::SmallVec;
-use core::alloc::Layout;
-use std::time::Instant;
-use crate::align_padding;
 use std::alloc::GlobalAlloc;
+use std::time::Instant;
 
 const CACHE_LINE_SIZE: usize = 64;
 const EMPTY_SLOT: usize = 0;
@@ -99,7 +99,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                 if self.head.compare_and_swap(head_ptr, new_head, Relaxed) != head_ptr {
                     BufferMeta::unref(new_head);
                 }
-                // either case, retry
+            // either case, retry
             } else {
                 // in this part, we will try to reason about the push on an buffer
                 // It will first try to CAS the head then write the item, finally store a
@@ -156,7 +156,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                 if self.head.compare_and_swap(head_ptr, new_head, Relaxed) != head_ptr {
                     BufferMeta::unref(new_head);
                 }
-                // either case, retry
+            // either case, retry
             } else {
                 page.head.store(next_pos, Relaxed);
                 let slot_ptr = page.flag_ptr_of(slot_pos);
@@ -212,7 +212,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                         &mut 0,
                     );
                     debug_assert_eq!(dropped_next.unwrap_or(null_mut()), next_buffer_ptr);
-                    // don't need to unref here for drop out did this for us
+                // don't need to unref here for drop out did this for us
                 } else {
                     backoff.spin();
                 }
@@ -272,8 +272,8 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
         }
     }
     pub fn drop_out_all<F>(&self, mut retain: Option<F>)
-        where
-            F: FnMut((usize, T)),
+    where
+        F: FnMut((usize, T)),
     {
         let count = self.count.load(Relaxed);
         if count == 0 {
@@ -425,8 +425,8 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
     // only use when the buffer is about to be be dead
     // this require reference checking
     fn flush_buffer<F>(buffer: &Self, retain: &mut Option<F>, counter: &mut usize)
-        where
-            F: FnMut((usize, T)),
+    where
+        F: FnMut((usize, T)),
     {
         let size_of_obj = mem::size_of::<T>();
         let data_bound = buffer.head.load(Relaxed);
@@ -459,8 +459,8 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
         retain: &mut Option<F>,
         counter: &mut usize,
     ) -> Option<*mut Self>
-        where
-            F: FnMut((usize, T)),
+    where
+        F: FnMut((usize, T)),
     {
         let buffer = BufferMeta::borrow(buffer_ptr);
         let next_ptr = buffer.next.load(Relaxed);
@@ -596,8 +596,8 @@ impl<A: GlobalAlloc + Default> WordList<A> {
     }
 
     pub fn drop_out_all<F>(&self, retain: Option<F>)
-        where
-            F: FnMut((usize, ())),
+    where
+        F: FnMut((usize, ())),
     {
         self.inner.drop_out_all(retain);
     }
@@ -636,8 +636,8 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> ObjectList<T, A> {
     }
 
     pub fn drop_out_all<F>(&self, retain: Option<F>)
-        where
-            F: FnMut((usize, T)),
+    where
+        F: FnMut((usize, T)),
     {
         self.inner.drop_out_all(retain)
     }
@@ -778,7 +778,10 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> ExchangeArray<T, A> {
     pub fn new() -> Self {
         let num_cpus = num_cpus::get();
         let default_capacity = num_cpus >> 3;
-        Self::with_capacity(min(max(default_capacity, 2) as usize, MAXIMUM_EXCHANGE_SLOTS))
+        Self::with_capacity(min(
+            max(default_capacity, 2) as usize,
+            MAXIMUM_EXCHANGE_SLOTS,
+        ))
     }
 
     pub fn with_capacity(cap: usize) -> Self {
@@ -829,11 +832,11 @@ pub fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
 mod test {
     use crate::list::*;
     use std::alloc::{Global, System};
-    use std::thread;
-    use std::sync::{Arc, Mutex};
     use std::collections::BTreeSet;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     #[test]
     pub fn general() {

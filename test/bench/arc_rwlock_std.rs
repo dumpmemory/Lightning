@@ -6,8 +6,8 @@ use std::sync::RwLock;
 pub struct Table<K>(std::sync::Arc<RwLock<HashMap<K, ()>>>);
 
 impl<K> Collection for Table<K>
-    where
-        K: Send + Sync + From<u64> + Copy + 'static + std::hash::Hash + Eq + std::fmt::Debug,
+where
+    K: Send + Sync + From<u64> + Copy + 'static + std::hash::Hash + Eq + std::fmt::Debug,
 {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
@@ -22,8 +22,8 @@ impl<K> Collection for Table<K>
 }
 
 impl<K> CollectionHandle for Table<K>
-    where
-        K: Send + Sync + From<u64> + Copy + 'static + std::hash::Hash + Eq + std::fmt::Debug,
+where
+    K: Send + Sync + From<u64> + Copy + 'static + std::hash::Hash + Eq + std::fmt::Debug,
 {
     type Key = K;
 
