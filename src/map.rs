@@ -38,7 +38,7 @@ enum ModResult<V> {
     Sentinel,
     NotFound,
     Done(usize, Option<V>),
-    TableFull(usize, V),
+    TableFull(usize, Option<V>),
     Aborted
 }
 
@@ -49,6 +49,12 @@ enum ModOp<V> {
     SwapFastVal(Box<dyn Fn(usize) -> Option<usize>>),
     Sentinel,
     Empty,
+}
+
+pub enum InsertOp {
+    Insert,
+    UpsertFast,
+    Swap(Box<dyn Fn(usize) -> Option<usize>>)
 }
 
 enum ResizeResult {
@@ -139,7 +145,7 @@ impl<
         }
     }
 
-    pub fn insert(&self, key: &K, mut value: V, fkey: usize, fvalue: usize) -> Option<(usize, V)> {
+    pub fn insert(&self, op: InsertOp, key: &K, mut value: Option<V>, fkey: usize, fvalue: usize) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let guard = crossbeam_epoch::pin();
@@ -161,12 +167,17 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
 
             let modify_chunk = if copying { new_chunk } else { chunk };
+            let mod_op = match op {
+                InsertOp::Insert => ModOp::Insert(fvalue & self.val_bit_mask, value.unwrap()),
+                InsertOp::UpsertFast => ModOp::UpsertFastVal(fvalue & self.val_bit_mask),
+                _ => unreachable!()
+            };
             let value_insertion = self.modify_entry(
                 &*modify_chunk,
                 key,
                 fkey,
-                ModOp::Insert(fvalue & self.val_bit_mask, value),
-                &guard,
+                mod_op,
+                &guard
             );
             let mut result = None;
             match value_insertion {
@@ -174,16 +185,23 @@ impl<
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                 }
                 ModResult::Replaced(fv, v) => result = Some((fv, v)),
-                ModResult::Fail(_, Some(rvalue)) => {
+                ModResult::Fail(_, rvalue) => {
                     // If fail insertion then retry
+                    warn!("Insertion failed, retry. Copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
+                        copying,
+                        modify_chunk.capacity,
+                        modify_chunk.occupation.load(Relaxed),
+                        self.dump(modify_chunk.base, modify_chunk.capacity),
+                        chunk_ptr,
+                        new_chunk_ptr
+                    );
                     value = rvalue;
                     backoff.spin();
                     continue;
                 }
-                ModResult::Fail(_, None) => unreachable!(),
                 ModResult::TableFull(_, rvalue) => {
                     warn!(
-                        "Insertion is too fast, copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
+                        "Insertion is too fast, copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}.",
                         copying,
                         modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
@@ -410,6 +428,7 @@ impl<
                         );
                         if self.cas_value(addr, 0, fval) {
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
+                            return ModResult::Done(addr, None);
                         } else {
                             op = ModOp::UpsertFastVal(fval);
                         }
@@ -431,9 +450,8 @@ impl<
             count += 1;
         }
         match op {
-            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => {
-                ModResult::TableFull(fv, v)
-            }
+            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => ModResult::TableFull(fv, Some(v)),
+            ModOp::UpsertFastVal(fv) => ModResult::TableFull(fv, None),
             _ => ModResult::NotFound,
         }
     }
@@ -1071,7 +1089,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn insert(&self, key: &K, value: V) -> Option<V> {
         let hash = hash_key::<K, H>(&key);
-        self.table.insert(key, value, hash, !0).map(|(_, v)| v)
+        self.table.insert(InsertOp::Insert, key, Some(value), hash, !0).map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -1141,7 +1159,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     #[inline(always)]
     fn insert(&self, key: &usize, value: V) -> Option<V> {
         self.table
-            .insert(&(), value, key + NUM_KEY_FIX, !0)
+            .insert(InsertOp::Insert, &(), Some(value), key + NUM_KEY_FIX, !0)
             .map(|(_, v)| v)
     }
 
@@ -1185,7 +1203,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     #[inline(always)]
     fn insert(&self, key: &usize, value: usize) -> Option<usize> {
         self.table
-            .insert(&(), (), key + NUM_KEY_FIX, value)
+            .insert(InsertOp::UpsertFast, &(), None, key + NUM_KEY_FIX, value)
             .map(|(v, _)| v)
     }
 
