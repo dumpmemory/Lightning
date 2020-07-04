@@ -63,6 +63,7 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     base: usize,
     occu_limit: usize,
     occupation: AtomicUsize,
+    empty_entries: AtomicUsize,
     total_size: usize,
     attachment: A,
     shadow: PhantomData<(K, V, ALLOC)>,
@@ -334,6 +335,7 @@ impl<
                                     // we have put tombstone on the value, get the attachment and erase it
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
+                                    chunk.empty_entries.fetch_add(1, Relaxed);
                                     return ModResult::Replaced(*v, value);
                                 }
                             }
@@ -372,6 +374,7 @@ impl<
                             &ModOp::Insert(_, _) => {
                                 // Insert with attachment should insert into new slot
                                 // When duplicate key discovered, put tombstone
+                                chunk.empty_entries.fetch_add(1, Relaxed);
                                 self.set_tombstone(addr, val.raw);
                             }
                         }
@@ -526,15 +529,22 @@ impl<
     ) -> ResizeResult {
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let occupation = old_chunk_ins.occupation.load(Relaxed);
+        let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let occu_limit = old_chunk_ins.occu_limit;
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
         }
-        // resize
-        debug!("Resizing");
         let old_cap = old_chunk_ins.capacity;
-        let mult = if old_cap < 2048 { 4 } else { 1 };
-        let new_cap = old_cap << mult;
+        let new_cap = if empty_entries > (old_cap >> 1) {
+            // clear empty
+            debug!("Clearing empty entries");
+            old_cap
+        } else {
+            // resize
+            debug!("Resizing");
+            let mult = if old_cap < 2048 { 4 } else { 1 };
+            old_cap << mult
+        };
         // Swap in old chunk as placeholder for the lock
         if let Err(e) = self
             .new_chunk
@@ -731,6 +741,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     base: data_base,
                     capacity,
                     occupation: AtomicUsize::new(0),
+                    empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
                     total_size,
                     attachment: A::new(capacity, attachment_base, attachment_heap),
