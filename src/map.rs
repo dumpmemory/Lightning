@@ -178,7 +178,9 @@ impl<
             );
             let mut result = None;
             match value_insertion {
-                ModResult::Done(_, _) => {}
+                ModResult::Done(_, _) => {
+                    modify_chunk.occupation.fetch_add(1, Relaxed);
+                }
                 ModResult::Replaced(fv, v) => result = Some((fv, v)),
                 ModResult::Fail(_, Some(rvalue)) => {
                     // If fail insertion then retry
@@ -214,7 +216,6 @@ impl<
                     self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
                 }
             }
-            modify_chunk.occupation.fetch_add(1, Relaxed);
             return result;
         }
     }
