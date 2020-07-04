@@ -44,8 +44,9 @@ enum ModResult<V> {
 
 enum ModOp<V> {
     Insert(usize, V),
+    UpsertFastVal(usize),
     AttemptInsert(usize, V),
-    Swap(Box<dyn Fn(usize, V) -> Option<(usize, Option<V>)>>),
+    SwapFastVal(Box<dyn Fn(usize) -> Option<usize>>),
     Sentinel,
     Empty,
 }
@@ -336,10 +337,9 @@ impl<
                                     return ModResult::Replaced(*v, value);
                                 }
                             }
-                            &ModOp::Insert(ref fv, ref v) => {
+                            &ModOp::UpsertFastVal(ref fv) => {
                                 if self.cas_value(addr, val.raw, *fv) {
                                     let (_, value) = chunk.attachment.get(idx);
-                                    chunk.attachment.set(idx, key.clone(), v.clone());
                                     return ModResult::Replaced(*fv, value);
                                 }
                             }
@@ -348,17 +348,14 @@ impl<
                                 let (_, value) = chunk.attachment.get(idx);
                                 return ModResult::Fail(*v, Some(value));
                             }
-                            &ModOp::Swap(ref swap) => {
+                            &ModOp::SwapFastVal(ref swap) => {
                                 let val = self.get_fast_value(addr);
                                 match &val.parsed {
                                     ParsedValue::Val(pval) => {
                                         let aval = chunk.attachment.get(idx).1;
-                                        if let Some((v, av)) = swap(val.raw, aval.clone()) {
+                                        if let Some(v) = swap(val.raw) {
                                             if self.cas_value(addr, *pval, v) {
                                                 // swap success
-                                                if let Some(av) = av {
-                                                    chunk.attachment.set(idx, key.clone(), av);
-                                                }
                                                 return ModResult::Replaced(val.raw, aval);
                                             } else {
                                                 return ModResult::Fail(*pval, Some(aval));
@@ -371,6 +368,11 @@ impl<
                                         return ModResult::Fail(val.raw, None);
                                     }
                                 }
+                            }
+                            &ModOp::Insert(_, _) => {
+                                // Insert with attachment should insert into new slot
+                                // When duplicate key discovered, put tombstone
+                                self.set_tombstone(addr, val.raw);
                             }
                         }
                     }
@@ -402,6 +404,20 @@ impl<
                             }
                         }
                     }
+                    ModOp::UpsertFastVal(fval) => {
+                        trace!(
+                            "Upserting entry key: {}, value: {}, raw: {:b}, addr: {}",
+                            fkey,
+                            fval & self.val_bit_mask,
+                            fval,
+                            addr
+                        );
+                        if self.cas_value(addr, 0, fval) {
+                            unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
+                        } else {
+                            op = ModOp::UpsertFastVal(fval);
+                        }
+                    }
                     ModOp::Sentinel => {
                         if self.cas_value(addr, 0, SENTINEL_VALUE) {
                             // CAS value succeed, shall store key
@@ -412,7 +428,7 @@ impl<
                         }
                     }
                     ModOp::Empty => return ModResult::Fail(0, None),
-                    ModOp::Swap(_) => return ModResult::NotFound
+                    ModOp::SwapFastVal(_) => return ModResult::NotFound
                 };
             }
             idx += 1; // reprobe
