@@ -1322,7 +1322,7 @@ impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut for WordMu
 
 impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
-        self.table.insert(InsertOp::UpsertFast, &(), None, self.key, self.value);
+        self.table.insert(InsertOp::UpsertFast, &(), None, self.key & WORD_MUTEX_DATA_BIT_MASK, self.value);
     }
 }
 
