@@ -1285,7 +1285,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & table.val_bit_mask;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        let mut value = 0;
+        let value;
         loop {
             let swap_res = table.swap(
                 key,
@@ -1306,14 +1306,13 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                     value = val & WORD_MUTEX_DATA_BIT_MASK;
                     break;
                 }
-                SwapResult::Failed => {
+                SwapResult::Failed | SwapResult::Aborted => {
                     backoff.spin();
                     continue;
                 }
                 SwapResult::NotFound => {
                     return None;
                 }
-                SwapResult::Aborted => unreachable!(),
             }
         }
         debug_assert_ne!(value, 0);
