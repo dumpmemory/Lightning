@@ -1276,7 +1276,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 
 const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
-pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
+pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default  = System, H: Hasher + Default = DefaultHasher> {
     table: &'a WordTable<ALLOC, H>,
     key: usize,
     value: usize,
