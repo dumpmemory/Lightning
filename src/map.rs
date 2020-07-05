@@ -12,8 +12,8 @@ use crossbeam_epoch::*;
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
-use std::os::raw::c_void;
 use std::ops::DerefMut;
+use std::os::raw::c_void;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -40,7 +40,7 @@ enum ModResult<V> {
     NotFound,
     Done(usize, Option<V>),
     TableFull(usize, Option<V>),
-    Aborted
+    Aborted,
 }
 
 enum ModOp<V> {
@@ -52,7 +52,7 @@ enum ModOp<V> {
     Empty,
 }
 
-pub enum  InsertOp {
+pub enum InsertOp {
     Insert,
     UpsertFast,
 }
@@ -67,7 +67,7 @@ enum ResizeResult {
 enum SwapResult {
     Succeed(usize),
     NotFound,
-    Failed,   
+    Failed,
     Aborted,
 }
 
@@ -152,7 +152,14 @@ impl<
         }
     }
 
-    pub fn insert(&self, op: InsertOp, key: &K, mut value: Option<V>, fkey: usize, fvalue: usize) -> Option<(usize, V)> {
+    pub fn insert(
+        &self,
+        op: InsertOp,
+        key: &K,
+        mut value: Option<V>,
+        fkey: usize,
+        fvalue: usize,
+    ) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         loop {
@@ -178,13 +185,7 @@ impl<
                 InsertOp::Insert => ModOp::Insert(fvalue & self.val_bit_mask, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(fvalue & self.val_bit_mask),
             };
-            let value_insertion = self.modify_entry(
-                &*modify_chunk,
-                key,
-                fkey,
-                mod_op,
-                &guard
-            );
+            let value_insertion = self.modify_entry(&*modify_chunk, key, fkey, mod_op, &guard);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _) => {
@@ -224,7 +225,7 @@ impl<
                     return None;
                 }
                 ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
-                ModResult::Aborted => unreachable!("Should no abort")
+                ModResult::Aborted => unreachable!("Should no abort"),
             }
             if copying && chunk_ptr != new_chunk_ptr {
                 fence(SeqCst);
@@ -236,23 +237,38 @@ impl<
         }
     }
 
-    fn is_copying(chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>, new_chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>) -> bool {
+    fn is_copying(
+        chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
+        new_chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
+    ) -> bool {
         !new_chunk_ptr.is_null() || chunk_ptr == new_chunk_ptr
     }
 
-    fn swap<'a, F: Fn(usize) -> Option<usize> + 'static>(&self, fkey: usize, key: &K, func: F, guard: &'a Guard) -> SwapResult {
+    fn swap<'a, F: Fn(usize) -> Option<usize> + 'static>(
+        &self,
+        fkey: usize,
+        key: &K,
+        func: F,
+        guard: &'a Guard,
+    ) -> SwapResult {
         let chunk_ptr = self.chunk.load(Relaxed, &guard);
         let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
         let chunk = unsafe { chunk_ptr.deref() };
         let new_chunk = unsafe { new_chunk_ptr.deref() };
         let modify_chunk = if copying { new_chunk } else { chunk };
-        match self.modify_entry(&modify_chunk, key, fkey, ModOp::SwapFastVal(Box::new(func)), guard) {
+        match self.modify_entry(
+            &modify_chunk,
+            key,
+            fkey,
+            ModOp::SwapFastVal(Box::new(func)),
+            guard,
+        ) {
             ModResult::Replaced(v, _) => SwapResult::Succeed(v & self.val_bit_mask),
             ModResult::Aborted => SwapResult::Aborted,
             ModResult::Fail(_, _) => SwapResult::Failed,
             ModResult::NotFound => SwapResult::NotFound,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -400,9 +416,9 @@ impl<
                                                 return ModResult::Fail(*pval, Some(aval));
                                             }
                                         } else {
-                                            return ModResult::Aborted
+                                            return ModResult::Aborted;
                                         }
-                                    },
+                                    }
                                     _ => {
                                         return ModResult::Fail(val.raw, None);
                                     }
@@ -469,7 +485,7 @@ impl<
                         }
                     }
                     ModOp::Empty => return ModResult::Fail(0, None),
-                    ModOp::SwapFastVal(_) => return ModResult::NotFound
+                    ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
             idx += 1; // reprobe
@@ -588,7 +604,10 @@ impl<
             .compare_and_set(Shared::null(), old_chunk_ptr, SeqCst, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
-            warn!("Conflict on swapping new chunk, expecting it is null: {:?}", e);
+            warn!(
+                "Conflict on swapping new chunk, expecting it is null: {:?}",
+                e
+            );
             return ResizeResult::SwapFailed;
         }
         if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
@@ -668,7 +687,7 @@ impl<
                             }
                             ModResult::NotFound => unreachable!("Not found on resize"),
                             ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
-                            ModResult::Aborted => unreachable!("Should never abort")
+                            ModResult::Aborted => unreachable!("Should never abort"),
                         };
                         if let Some(new_entry_addr) = inserted_addr {
                             fence(SeqCst);
@@ -1115,7 +1134,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn insert(&self, key: &K, value: V) -> Option<V> {
         let hash = hash_key::<K, H>(&key);
-        self.table.insert(InsertOp::Insert, key, Some(value), hash, !0).map(|(_, v)| v)
+        self.table
+            .insert(InsertOp::Insert, key, Some(value), hash, !0)
+            .map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -1254,22 +1275,22 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
 pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
-    table: &'a WordTable<ALLOC, H>, 
+    table: &'a WordTable<ALLOC, H>,
     key: usize,
-    value: usize
+    value: usize,
 }
 
-impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
+impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     pub fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
-         let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & table.val_bit_mask;
-         let backoff = crossbeam_utils::Backoff::new();
-         let guard = crossbeam_epoch::pin();
-         let mut value = 0;
-         loop {
-             let swap_res = table.swap(
-                 key, 
-                 &(),
-                 move |fast_value| {
+        let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & table.val_bit_mask;
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let mut value = 0;
+        loop {
+            let swap_res = table.swap(
+                key,
+                &(),
+                move |fast_value| {
                     if fast_value & lock_bit_mask > 0 {
                         // Locked, unchanged
                         None
@@ -1284,7 +1305,7 @@ impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, 
                 SwapResult::Succeed(val) => {
                     value = val & WORD_MUTEX_DATA_BIT_MASK;
                     break;
-                },
+                }
                 SwapResult::Failed => {
                     backoff.spin();
                     continue;
@@ -1292,11 +1313,11 @@ impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, 
                 SwapResult::NotFound => {
                     return None;
                 }
-                SwapResult::Aborted => unreachable!()
+                SwapResult::Aborted => unreachable!(),
             }
-         }
-         debug_assert_ne!(value, 0);
-         Some(Self { table, key, value })
+        }
+        debug_assert_ne!(value, 0);
+        Some(Self { table, key, value })
     }
 
     pub fn remove(self) -> usize {
@@ -1306,7 +1327,7 @@ impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, 
     }
 }
 
-impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexGuard<'a, ALLOC, H> {
+impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexGuard<'a, ALLOC, H> {
     type Target = usize;
 
     fn deref(&self) -> &Self::Target {
@@ -1314,19 +1335,27 @@ impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutex
     }
 }
 
-impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut for WordMutexGuard<'a, ALLOC, H> {
+impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+    for WordMutexGuard<'a, ALLOC, H>
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl <'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
+impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
-        self.table.insert(InsertOp::UpsertFast, &(), None, self.key & WORD_MUTEX_DATA_BIT_MASK, self.value);
+        self.table.insert(
+            InsertOp::UpsertFast,
+            &(),
+            None,
+            self.key & WORD_MUTEX_DATA_BIT_MASK,
+            self.value,
+        );
     }
 }
 
-impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default>WordMap<ALLOC, H> {
+impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     fn lock(&self, key: &usize) -> Option<WordMutexGuard<ALLOC, H>> {
         WordMutexGuard::new(&self.table, *key)
     }
