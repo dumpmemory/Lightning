@@ -257,6 +257,7 @@ impl<
         let chunk = unsafe { chunk_ptr.deref() };
         let new_chunk = unsafe { new_chunk_ptr.deref() };
         let modify_chunk = if copying { new_chunk } else { chunk };
+        trace!("Swaping for key {}, copying {}", fkey, copying);
         match self.modify_entry(
             &modify_chunk,
             key,
@@ -405,10 +406,11 @@ impl<
                             }
                             &ModOp::SwapFastVal(ref swap) => {
                                 let val = self.get_fast_value(addr);
+                                trace!("Swaping found key {} have original value {}", fkey, val.raw);
                                 match &val.parsed {
                                     ParsedValue::Val(pval) => {
                                         let aval = chunk.attachment.get(idx).1;
-                                        if let Some(v) = swap(val.raw) {
+                                        if let Some(v) = swap(*pval) {
                                             if self.cas_value(addr, *pval, v) {
                                                 // swap success
                                                 return ModResult::Replaced(val.raw, aval);
@@ -1099,6 +1101,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     }
 }
 
+const NUM_FIX: usize = 5;
+
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
     fn addr_by_index(&self, index: usize) -> usize {
         self.obj_chunk + index * self.obj_size
@@ -1146,11 +1150,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn entries(&self) -> Vec<(usize, V)> {
+    fn entries(&self) -> Vec<(K, V)> {
         self.table
             .entries()
             .into_iter()
-            .map(|(_, k, _, v)| (k - NUM_KEY_FIX, v))
+            .map(|(_, _, k, v)| (k, v))
             .collect()
     }
 
@@ -1172,11 +1176,9 @@ pub trait Map<K, V> {
     fn get(&self, key: &K) -> Option<V>;
     fn insert(&self, key: &K, value: V) -> Option<V>;
     fn remove(&self, key: &K) -> Option<V>;
-    fn entries(&self) -> Vec<(usize, V)>;
+    fn entries(&self) -> Vec<(K, V)>;
     fn contains(&self, key: &K) -> bool;
 }
-
-const NUM_KEY_FIX: usize = 5;
 
 #[derive(Clone)]
 pub struct ObjectMap<
@@ -1199,20 +1201,20 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     #[inline(always)]
     fn get(&self, key: &usize) -> Option<V> {
         self.table
-            .get(&(), key + NUM_KEY_FIX, true)
+            .get(&(), key + NUM_FIX, true)
             .map(|v| v.1.unwrap())
     }
 
     #[inline(always)]
     fn insert(&self, key: &usize, value: V) -> Option<V> {
         self.table
-            .insert(InsertOp::Insert, &(), Some(value), key + NUM_KEY_FIX, !0)
+            .insert(InsertOp::Insert, &(), Some(value), key + NUM_FIX, !0)
             .map(|(_, v)| v)
     }
 
     #[inline(always)]
     fn remove(&self, key: &usize) -> Option<V> {
-        self.table.remove(&(), key + NUM_KEY_FIX).map(|(_, v)| v)
+        self.table.remove(&(), key + NUM_FIX).map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -1220,13 +1222,13 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
         self.table
             .entries()
             .into_iter()
-            .map(|(_, k, _, v)| (k - NUM_KEY_FIX, v))
+            .map(|(_, k, _, v)| (k - NUM_FIX, v))
             .collect()
     }
 
     #[inline(always)]
     fn contains(&self, key: &usize) -> bool {
-        self.table.get(&(), key + NUM_KEY_FIX, false).is_some()
+        self.table.get(&(), key + NUM_FIX, false).is_some()
     }
 }
 
@@ -1244,25 +1246,25 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 
     #[inline(always)]
     fn get(&self, key: &usize) -> Option<usize> {
-        self.table.get(&(), key + NUM_KEY_FIX, false).map(|v| v.0)
+        self.table.get(&(), key + NUM_FIX, false).map(|v| v.0 - NUM_FIX)
     }
 
     #[inline(always)]
     fn insert(&self, key: &usize, value: usize) -> Option<usize> {
         self.table
-            .insert(InsertOp::UpsertFast, &(), None, key + NUM_KEY_FIX, value)
+            .insert(InsertOp::UpsertFast, &(), None, key + NUM_FIX, value + NUM_FIX)
             .map(|(v, _)| v)
     }
 
     #[inline(always)]
     fn remove(&self, key: &usize) -> Option<usize> {
-        self.table.remove(&(), key + NUM_KEY_FIX).map(|(v, _)| v)
+        self.table.remove(&(), key + NUM_FIX).map(|(v, _)| v - NUM_FIX)
     }
     fn entries(&self) -> Vec<(usize, usize)> {
         self.table
             .entries()
             .into_iter()
-            .map(|(k, v, _, _)| (k - NUM_KEY_FIX, v))
+            .map(|(k, v, _, _)| (k - NUM_FIX, v - NUM_FIX))
             .collect()
     }
 
@@ -1282,6 +1284,7 @@ pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     pub fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
+        let key = key + NUM_FIX;
         let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & table.val_bit_mask;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
@@ -1291,11 +1294,14 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 key,
                 &(),
                 move |fast_value| {
+                    trace!("Key {} have value {}", key, fast_value);
                     if fast_value & lock_bit_mask > 0 {
                         // Locked, unchanged
+                        trace!("Key {} have locked, unchanged and try again", key);
                         None
                     } else {
                         // Obtain lock
+                        trace!("Key {} have obtained, with value {}", key, fast_value & WORD_MUTEX_DATA_BIT_MASK);
                         Some(fast_value | lock_bit_mask)
                     }
                 },
@@ -1303,19 +1309,23 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             );
             match swap_res {
                 SwapResult::Succeed(val) => {
+                    trace!("Lock on {} succeed with value {}", key, val);
                     value = val & WORD_MUTEX_DATA_BIT_MASK;
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
+                    trace!("Lock on {} failed, retry", key);
                     backoff.spin();
                     continue;
                 }
                 SwapResult::NotFound => {
+                    debug!("Cannot found key {} to lock", key);
                     return None;
                 }
             }
         }
         debug_assert_ne!(value, 0);
+        let value = value - NUM_FIX;
         Some(Self { table, key, value })
     }
 
@@ -1344,12 +1354,14 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
+        self.value += NUM_FIX;
+        trace!("Release lock for key {} with value {}", self.key, self.value);
         self.table.insert(
             InsertOp::UpsertFast,
             &(),
             None,
-            self.key & WORD_MUTEX_DATA_BIT_MASK,
-            self.value,
+            self.key,
+            self.value & WORD_MUTEX_DATA_BIT_MASK,
         );
     }
 }
@@ -1540,6 +1552,26 @@ mod tests {
                 assert_eq!(map.get(&(i * 10 + j)), Some(10))
             }
         }
+    }
+
+    #[test]
+    fn parallel_mutex() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        map.insert(&1, 0);
+        let mut threads = vec![];
+        let num_threads = 256;
+        for _ in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let mut guard = map.lock(&1).unwrap();
+                *guard += 1;
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        assert_eq!(map.get(&1).unwrap(), num_threads);
     }
 
     #[derive(Copy, Clone)]
