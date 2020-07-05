@@ -1367,7 +1367,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
-    fn lock(&self, key: &usize) -> Option<WordMutexGuard<ALLOC, H>> {
+    pub fn lock(&self, key: &usize) -> Option<WordMutexGuard<ALLOC, H>> {
         WordMutexGuard::new(&self.table, *key)
     }
 }
