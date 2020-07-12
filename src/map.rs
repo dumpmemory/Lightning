@@ -89,6 +89,7 @@ pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
     new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
+    count: AtomicUsize,
     val_bit_mask: usize, // 0111111..
     inv_bit_mask: usize, // 1000000..
     mark: PhantomData<H>,
@@ -113,6 +114,7 @@ impl<
         Self {
             chunk: Atomic::new(ChunkPtr::new(chunk)),
             new_chunk: Atomic::null(),
+            count: AtomicUsize::new(0),
             val_bit_mask,
             inv_bit_mask: !val_bit_mask,
             mark: PhantomData,
@@ -190,6 +192,7 @@ impl<
             match value_insertion {
                 ModResult::Done(_, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
+                    self.count.fetch_add(1, Relaxed);
                 }
                 ModResult::Replaced(fv, v) => result = Some((fv, v)),
                 ModResult::Fail(_, rvalue) => {
@@ -290,6 +293,7 @@ impl<
                     fence(SeqCst);
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Sentinel, &guard);
                 }
+                self.count.fetch_sub(1, Relaxed);
             }
             ModResult::Done(_, None) => unreachable!(),
             ModResult::NotFound => {
@@ -307,6 +311,10 @@ impl<
             _ => {}
         };
         retr
+    }
+
+    pub fn len(&self) -> usize {
+        self.count.load(Relaxed)
     }
 
     fn get_from_chunk(
@@ -830,6 +838,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
         let mut new_table = Table {
             chunk: Default::default(),
             new_chunk: Default::default(),
+            count: AtomicUsize::new(0),
             val_bit_mask: 0,
             inv_bit_mask: 0,
             mark: PhantomData,
@@ -871,6 +880,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
         }
         new_table.val_bit_mask = self.val_bit_mask;
         new_table.inv_bit_mask = self.inv_bit_mask;
+        new_table.count.store(self.count.load(Relaxed), SeqCst);
         new_table
     }
 }
@@ -1163,6 +1173,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let hash = hash_key::<K, H>(&key);
         self.table.get(key, hash, false).is_some()
     }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.table.len()
+    }
 }
 
 impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
@@ -1178,6 +1193,7 @@ pub trait Map<K, V> {
     fn remove(&self, key: &K) -> Option<V>;
     fn entries(&self) -> Vec<(K, V)>;
     fn contains(&self, key: &K) -> bool;
+    fn len(&self) -> usize;
 }
 
 #[derive(Clone)]
@@ -1230,6 +1246,11 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     fn contains(&self, key: &usize) -> bool {
         self.table.get(&(), key + NUM_FIX, false).is_some()
     }
+    
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.table.len()
+    }
 }
 
 #[derive(Clone)]
@@ -1271,6 +1292,11 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     #[inline(always)]
     fn contains(&self, key: &usize) -> bool {
         self.get(key).is_some()
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.table.len()
     }
 }
 
