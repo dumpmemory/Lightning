@@ -35,6 +35,7 @@ enum ParsedValue {
 #[derive(Debug)]
 enum ModResult<V> {
     Replaced(usize, V),
+    Existed(usize, V),
     Fail(usize, Option<V>),
     Sentinel,
     NotFound,
@@ -55,6 +56,7 @@ enum ModOp<V> {
 pub enum InsertOp {
     Insert,
     UpsertFast,
+    TryInsert
 }
 
 enum ResizeResult {
@@ -183,9 +185,11 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
 
             let modify_chunk = if copying { new_chunk } else { chunk };
+            let masked_value = fvalue & self.val_bit_mask;
             let mod_op = match op {
-                InsertOp::Insert => ModOp::Insert(fvalue & self.val_bit_mask, value.unwrap()),
-                InsertOp::UpsertFast => ModOp::UpsertFastVal(fvalue & self.val_bit_mask),
+                InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
+                InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
+                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap())
             };
             let value_insertion = self.modify_entry(&*modify_chunk, key, fkey, mod_op, &guard);
             let mut result = None;
@@ -194,7 +198,7 @@ impl<
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, Relaxed);
                 }
-                ModResult::Replaced(fv, v) => result = Some((fv, v)),
+                ModResult::Replaced(fv, v) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail(_, rvalue) => {
                     // If fail insertion then retry
                     warn!("Insertion failed, retry. Copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
@@ -407,10 +411,10 @@ impl<
                                     return ModResult::Replaced(*fv, value);
                                 }
                             }
-                            &ModOp::AttemptInsert(_, _) => {
-                                // Attempting insert existed entry, skip
+                            &ModOp::AttemptInsert(iv, _) => {
+                                trace!("Attempting insert existed entry {}, {}, have key {}, skip", k, iv, v);
                                 let (_, value) = chunk.attachment.get(idx);
-                                return ModResult::Fail(*v, Some(value));
+                                return ModResult::Existed(*v, value);
                             }
                             &ModOp::SwapFastVal(ref swap) => {
                                 let val = self.get_fast_value(addr);
@@ -687,7 +691,8 @@ impl<
                         );
                         let inserted_addr = match new_chunk_insertion {
                             ModResult::Done(addr, _) => Some(addr), // continue procedure
-                            ModResult::Fail(_, _) => None,
+                            ModResult::Existed(_, _) => None,
+                            ModResult::Fail(_, _) => unreachable!("Should not fail"),
                             ModResult::Replaced(_, _) => {
                                 unreachable!("Attempt insert does not replace anything");
                             }
@@ -697,7 +702,7 @@ impl<
                             }
                             ModResult::NotFound => unreachable!("Not found on resize"),
                             ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
-                            ModResult::Aborted => unreachable!("Should never abort"),
+                            ModResult::Aborted => unreachable!("Should not abort"),
                         };
                         if let Some(new_entry_addr) = inserted_addr {
                             fence(SeqCst);
@@ -1129,6 +1134,15 @@ pub struct HashMap<
     shadow: PhantomData<H>,
 }
 
+impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> HashMap<K, V, ALLOC, H> {
+    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
+        let hash = hash_key::<K, H>(&key);
+        self.table
+            .insert(op, key, Some(value), hash, !0)
+            .map(|(_, v)| v)
+    }
+}
+
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
     for HashMap<K, V, ALLOC, H>
 {
@@ -1147,10 +1161,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn insert(&self, key: &K, value: V) -> Option<V> {
-        let hash = hash_key::<K, H>(&key);
-        self.table
-            .insert(InsertOp::Insert, key, Some(value), hash, !0)
-            .map(|(_, v)| v)
+        self.insert_with_op(InsertOp::Insert, key, value)
+    }
+
+    #[inline(always)]
+    fn try_insert(&self, key: &K, value: V) -> Option<V> {
+        self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
@@ -1190,6 +1206,7 @@ pub trait Map<K, V> {
     fn with_capacity(cap: usize) -> Self;
     fn get(&self, key: &K) -> Option<V>;
     fn insert(&self, key: &K, value: V) -> Option<V>;
+    fn try_insert(&self, key: &K, value: V) -> Option<V>;
     fn remove(&self, key: &K) -> Option<V>;
     fn entries(&self) -> Vec<(K, V)>;
     fn contains(&self, key: &K) -> bool;
@@ -1203,6 +1220,14 @@ pub struct ObjectMap<
     H: Hasher + Default = DefaultHasher,
 > {
     table: Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>,
+}
+
+impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
+    fn insert_with_op(&self, op: InsertOp, key: &usize, value: V) -> Option<V>{
+        self.table
+            .insert(op, &(), Some(value), key + NUM_FIX, !0)
+            .map(|(_, v)| v)
+    }
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
@@ -1223,9 +1248,12 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
 
     #[inline(always)]
     fn insert(&self, key: &usize, value: V) -> Option<V> {
-        self.table
-            .insert(InsertOp::Insert, &(), Some(value), key + NUM_FIX, !0)
-            .map(|(_, v)| v)
+        self.insert_with_op(InsertOp::Insert, key, value)
+    }
+
+    #[inline(always)]
+    fn try_insert(&self, key: &usize, value: V) -> Option<V> {
+        self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
@@ -1258,6 +1286,14 @@ pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = 
     table: WordTable<ALLOC, H>,
 }
 
+impl <ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
+    fn insert_with_op(&self, op: InsertOp, key: &usize, value: usize) -> Option<usize> {
+        self.table
+        .insert(op, &(), None, key + NUM_FIX, value + NUM_FIX)
+        .map(|(v, _)| v)
+    }
+}
+
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<ALLOC, H> {
     fn with_capacity(cap: usize) -> Self {
         Self {
@@ -1272,11 +1308,14 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 
     #[inline(always)]
     fn insert(&self, key: &usize, value: usize) -> Option<usize> {
-        self.table
-            .insert(InsertOp::UpsertFast, &(), None, key + NUM_FIX, value + NUM_FIX)
-            .map(|(v, _)| v)
+        self.insert_with_op(InsertOp::UpsertFast, key, value)
     }
 
+    #[inline(always)]
+    fn try_insert(&self, key: &usize, value: usize) -> Option<usize> {
+        self.insert_with_op(InsertOp::TryInsert, key, value)
+    }
+    
     #[inline(always)]
     fn remove(&self, key: &usize) -> Option<usize> {
         self.table.remove(&(), key + NUM_FIX).map(|(v, _)| v - NUM_FIX)
