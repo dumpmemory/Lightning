@@ -34,7 +34,7 @@ enum ParsedValue {
 
 #[derive(Debug)]
 enum ModResult<V> {
-    Replaced(usize, V),
+    Replaced(usize, V, usize),
     Existed(usize, V),
     Fail(usize, Option<V>),
     Sentinel,
@@ -66,8 +66,8 @@ enum ResizeResult {
     Done,
 }
 
-enum SwapResult {
-    Succeed(usize),
+enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+    Succeed(usize, usize, Shared<'a, ChunkPtr<K, V, A, ALLOC>>),
     NotFound,
     Failed,
     Aborted,
@@ -198,7 +198,7 @@ impl<
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, Relaxed);
                 }
-                ModResult::Replaced(fv, v) | ModResult::Existed(fv, v) => result = Some((fv, v)),
+                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail(_, rvalue) => {
                     // If fail insertion then retry
                     warn!("Insertion failed, retry. Copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
@@ -257,22 +257,20 @@ impl<
         key: &K,
         func: F,
         guard: &'a Guard,
-    ) -> SwapResult {
+    ) -> SwapResult<'a, K, V, A, ALLOC> {
         let chunk_ptr = self.chunk.load(Relaxed, &guard);
         let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
-        let chunk = unsafe { chunk_ptr.deref() };
-        let new_chunk = unsafe { new_chunk_ptr.deref() };
-        let modify_chunk = if copying { new_chunk } else { chunk };
+        let modify_chunk = if copying { new_chunk_ptr } else { chunk_ptr };
         trace!("Swaping for key {}, copying {}", fkey, copying);
         match self.modify_entry(
-            &modify_chunk,
+            unsafe { modify_chunk.deref() },
             key,
             fkey,
             ModOp::SwapFastVal(Box::new(func)),
             guard,
         ) {
-            ModResult::Replaced(v, _) => SwapResult::Succeed(v & self.val_bit_mask),
+            ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v & self.val_bit_mask, idx, modify_chunk),
             ModResult::Aborted => SwapResult::Aborted,
             ModResult::Fail(_, _) => SwapResult::Failed,
             ModResult::NotFound => SwapResult::NotFound,
@@ -291,7 +289,7 @@ impl<
         let res = self.modify_entry(&*modify_chunk, key, fkey, ModOp::Empty, &guard);
         let mut retr = None;
         match res {
-            ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value) => {
+            ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
                 retr = Some((fvalue, value));
                 if copying && new_chunk_ptr != old_chunk_ptr {
                     fence(SeqCst);
@@ -304,7 +302,7 @@ impl<
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Empty, &guard);
                 match remove_from_old {
-                    ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value) => {
+                    ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
                         retr = Some((fvalue, value));
                     }
                     ModResult::Done(_, None) => unreachable!(),
@@ -402,13 +400,13 @@ impl<
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
                                     chunk.empty_entries.fetch_add(1, Relaxed);
-                                    return ModResult::Replaced(*v, value);
+                                    return ModResult::Replaced(*v, value, idx);
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
                                 if self.cas_value(addr, val.raw, *fv) {
                                     let (_, value) = chunk.attachment.get(idx);
-                                    return ModResult::Replaced(*fv, value);
+                                    return ModResult::Replaced(*fv, value, idx);
                                 }
                             }
                             &ModOp::AttemptInsert(iv, _) => {
@@ -425,7 +423,7 @@ impl<
                                         if let Some(v) = swap(*pval) {
                                             if self.cas_value(addr, *pval, v) {
                                                 // swap success
-                                                return ModResult::Replaced(val.raw, aval);
+                                                return ModResult::Replaced(val.raw, aval, idx);
                                             } else {
                                                 return ModResult::Fail(*pval, Some(aval));
                                             }
@@ -693,7 +691,7 @@ impl<
                             ModResult::Done(addr, _) => Some(addr), // continue procedure
                             ModResult::Existed(_, _) => None,
                             ModResult::Fail(_, _) => unreachable!("Should not fail"),
-                            ModResult::Replaced(_, _) => {
+                            ModResult::Replaced(_, _, _) => {
                                 unreachable!("Attempt insert does not replace anything");
                             }
                             ModResult::Sentinel => {
@@ -1116,7 +1114,20 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     }
 }
 
+pub trait Map<K, V> {
+    fn with_capacity(cap: usize) -> Self;
+    fn get(&self, key: &K) -> Option<V>;
+    fn insert(&self, key: &K, value: V) -> Option<V>;
+    fn try_insert(&self, key: &K, value: V) -> Option<V>;
+    fn remove(&self, key: &K) -> Option<V>;
+    fn entries(&self) -> Vec<(K, V)>;
+    fn contains(&self, key: &K) -> bool;
+    fn len(&self) -> usize;
+}
+
+
 const NUM_FIX: usize = 5;
+const PLACEHOLDER_VAL: usize = NUM_FIX + 1;
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
     fn addr_by_index(&self, index: usize) -> usize {
@@ -1138,7 +1149,7 @@ impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + 
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
         let hash = hash_key::<K, H>(&key);
         self.table
-            .insert(op, key, Some(value), hash, !0)
+            .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 }
@@ -1202,17 +1213,6 @@ impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     }
 }
 
-pub trait Map<K, V> {
-    fn with_capacity(cap: usize) -> Self;
-    fn get(&self, key: &K) -> Option<V>;
-    fn insert(&self, key: &K, value: V) -> Option<V>;
-    fn try_insert(&self, key: &K, value: V) -> Option<V>;
-    fn remove(&self, key: &K) -> Option<V>;
-    fn entries(&self) -> Vec<(K, V)>;
-    fn contains(&self, key: &K) -> bool;
-    fn len(&self) -> usize;
-}
-
 #[derive(Clone)]
 pub struct ObjectMap<
     V: Clone,
@@ -1225,7 +1225,7 @@ pub struct ObjectMap<
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
     fn insert_with_op(&self, op: InsertOp, key: &usize, value: V) -> Option<V>{
         self.table
-            .insert(op, &(), Some(value), key + NUM_FIX, !0)
+            .insert(op, &(), Some(value), key + NUM_FIX, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 }
@@ -1341,7 +1341,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
 
 const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
-pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default  = System, H: Hasher + Default = DefaultHasher> {
+pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
     table: &'a WordTable<ALLOC, H>,
     key: usize,
     value: usize,
@@ -1373,7 +1373,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &guard,
             );
             match swap_res {
-                SwapResult::Succeed(val) => {
+                SwapResult::Succeed(val, _idx, _chunk) => {
                     trace!("Lock on {} succeed with value {}", key, val);
                     value = val & WORD_MUTEX_DATA_BIT_MASK;
                     break;
@@ -1435,6 +1435,93 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     pub fn lock(&self, key: &usize) -> Option<WordMutexGuard<ALLOC, H>> {
         WordMutexGuard::new(&self.table, *key)
     }
+}
+
+pub struct HashMapReadGuard<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+    table: &'a HashTable<K, V, ALLOC>,
+    hash: usize,
+    key: K,
+    value: V,
+    _mark: PhantomData<H>
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> HashMapReadGuard<'a, K, V, ALLOC, H> {
+    fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let hash = hash_key::<K, H>(&key);
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                hash, key, 
+                move |fast_value| {
+                    if fast_value != PLACEHOLDER_VAL - 1 {
+                        // Not write locked, can bump it by one
+                        trace!("Key hash {} is not write locked, will read lock", hash);
+                        Some(fast_value + 1)
+                    } else {
+                        trace!("Key hash {} is write locked, unchanged", hash);
+                        None
+                    }
+                }, 
+                &guard
+            );
+            match swap_res {
+                SwapResult::Succeed(_, idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let (_, v) = chunk_ref.attachment.get(idx);
+                    value = v;
+                    break;
+                },
+                SwapResult::Failed | SwapResult::Aborted => {
+                    debug!("Lock on key hash {} failed, retry", hash);
+                    backoff.spin();
+                    continue;
+                },
+                SwapResult::NotFound => {
+                    debug!("Cannot found hash key {} to lock", hash);
+                    return None
+                }
+            }
+        }
+        Some(Self { 
+            table, 
+            key: key.clone(), 
+            value,
+            hash,
+            _mark: Default::default()
+        })
+    }
+
+    pub fn remove(self) -> V {
+        let res = self.table.remove(&self.key, self.hash).unwrap().1;
+        mem::forget(self);
+        res
+    }
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for HashMapReadGuard<'a, K, V, ALLOC, H> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for HashMapReadGuard<'a, K, V, ALLOC, H> {
+    fn drop(&mut self) {
+        trace!("Release read lock for hash key {}", self.hash);
+        let guard = crossbeam_epoch::pin();
+        self.table.swap(
+            self.hash, 
+            &self.key,
+            |fast_value| {
+                debug_assert!(fast_value > PLACEHOLDER_VAL);
+                Some(fast_value - 1)
+            },
+            &guard
+        );
+     }
 }
 
 #[inline(always)]
