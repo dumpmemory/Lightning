@@ -1152,6 +1152,13 @@ impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + 
             .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
+
+    pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
+        HashMapWriteGuard::new(&self.table, key)
+    }
+    pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
+        HashMapReadGuard::new(&self.table, key)
+    }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
@@ -1492,12 +1499,6 @@ impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hashe
             _mark: Default::default()
         })
     }
-
-    pub fn remove(self) -> V {
-        let res = self.table.remove(&self.key, self.hash).unwrap().1;
-        mem::forget(self);
-        res
-    }
 }
 
 impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for HashMapReadGuard<'a, K, V, ALLOC, H> {
@@ -1521,6 +1522,91 @@ impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hashe
             },
             &guard
         );
+     }
+}
+
+pub struct HashMapWriteGuard<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+    table: &'a HashTable<K, V, ALLOC>,
+    hash: usize,
+    key: K,
+    value: V,
+    _mark: PhantomData<H>
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> HashMapWriteGuard<'a, K, V, ALLOC, H> {
+    fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let hash = hash_key::<K, H>(&key);
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                hash, key, 
+                move |fast_value| {
+                    if fast_value == PLACEHOLDER_VAL {
+                        // Not write locked, can bump it by one
+                        trace!("Key hash {} is write lockable, will write lock", hash);
+                        Some(fast_value - 1)
+                    } else {
+                        trace!("Key hash {} is write locked, unchanged", hash);
+                        None
+                    }
+                }, 
+                &guard
+            );
+            match swap_res {
+                SwapResult::Succeed(_, idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let (_, v) = chunk_ref.attachment.get(idx);
+                    value = v;
+                    break;
+                },
+                SwapResult::Failed | SwapResult::Aborted => {
+                    debug!("Lock on key hash {} failed, retry", hash);
+                    backoff.spin();
+                    continue;
+                },
+                SwapResult::NotFound => {
+                    debug!("Cannot found hash key {} to lock", hash);
+                    return None
+                }
+            }
+        }
+        Some(Self { 
+            table, 
+            key: key.clone(), 
+            value,
+            hash,
+            _mark: Default::default()
+        })
+    }
+
+    pub fn remove(self) -> V {
+        let res = self.table.remove(&self.key, self.hash).unwrap().1;
+        mem::forget(self);
+        res
+    }
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for HashMapWriteGuard<'a, K, V, ALLOC, H> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut for HashMapWriteGuard<'a, K, V, ALLOC, H> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for HashMapWriteGuard<'a, K, V, ALLOC, H> {
+    fn drop(&mut self) {
+        trace!("Release read lock for hash key {}", self.hash);
+        let hash = hash_key::<K, H>(&self.key);
+        self.table.insert(InsertOp::Insert, &self.key, Some(self.value.clone()), hash, PLACEHOLDER_VAL);
      }
 }
 
