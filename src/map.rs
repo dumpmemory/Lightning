@@ -1220,13 +1220,15 @@ impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     }
 }
 
+type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
+
 #[derive(Clone)]
 pub struct ObjectMap<
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>,
+    table: ObjectTable<V, ALLOC, H>,
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
@@ -1607,6 +1609,166 @@ impl <'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hashe
         trace!("Release read lock for hash key {}", self.hash);
         let hash = hash_key::<K, H>(&self.key);
         self.table.insert(InsertOp::Insert, &self.key, Some(self.value.clone()), hash, PLACEHOLDER_VAL);
+     }
+}
+
+pub struct ObjectMapReadGuard<'a, V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+    table: &'a ObjectTable<V, ALLOC, H>,
+    key: usize,
+    value: V,
+    _mark: PhantomData<H>
+}
+
+impl <'a, V: Eq + Hash + Clone, ALLOC: Clone + GlobalAlloc + Default, H: Hasher + GlobalAlloc + Default> ObjectMapReadGuard<'a, V, ALLOC, H> {
+    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let hash = hash_key::<usize, H>(&key);
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                key, &(), 
+                move |fast_value| {
+                    if fast_value != PLACEHOLDER_VAL - 1 {
+                        // Not write locked, can bump it by one
+                        trace!("Key {} is not write locked, will read lock", hash);
+                        Some(fast_value + 1)
+                    } else {
+                        trace!("Key {} is write locked, unchanged", hash);
+                        None
+                    }
+                }, 
+                &guard
+            );
+            match swap_res {
+                SwapResult::Succeed(_, idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let (_, v) = chunk_ref.attachment.get(idx);
+                    value = v;
+                    break;
+                },
+                SwapResult::Failed | SwapResult::Aborted => {
+                    debug!("Lock on key {} failed, retry", hash);
+                    backoff.spin();
+                    continue;
+                },
+                SwapResult::NotFound => {
+                    debug!("Cannot found hash key {} to lock", hash);
+                    return None
+                }
+            }
+        }
+        Some(Self { 
+            table, 
+            key,
+            value,
+            _mark: Default::default()
+        })
+    }
+}
+
+impl <'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for ObjectMapReadGuard<'a, V, ALLOC, H> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl <'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for ObjectMapReadGuard<'a, V, ALLOC, H> {
+    fn drop(&mut self) {
+        trace!("Release read lock for hash key {}", self.key);
+        let guard = crossbeam_epoch::pin();
+        self.table.swap(
+            self.key, 
+            &(),
+            |fast_value| {
+                debug_assert!(fast_value > PLACEHOLDER_VAL);
+                Some(fast_value - 1)
+            },
+            &guard
+        );
+     }
+}
+
+pub struct ObjectMapWriteGuard<'a, V: Clone, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+    table: &'a ObjectTable<V, ALLOC, H>,
+    key: usize,
+    value: V,
+    _mark: PhantomData<H>
+}
+
+impl <'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMapWriteGuard<'a, V, ALLOC, H> {
+    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                key, &(), 
+                move |fast_value| {
+                    if fast_value == PLACEHOLDER_VAL {
+                        // Not write locked, can bump it by one
+                        trace!("Key {} is write lockable, will write lock", key);
+                        Some(fast_value - 1)
+                    } else {
+                        trace!("Key {} is write locked, unchanged", key);
+                        None
+                    }
+                }, 
+                &guard
+            );
+            match swap_res {
+                SwapResult::Succeed(_, idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let (_, v) = chunk_ref.attachment.get(idx);
+                    value = v;
+                    break;
+                },
+                SwapResult::Failed | SwapResult::Aborted => {
+                    debug!("Lock on key {} failed, retry", key);
+                    backoff.spin();
+                    continue;
+                },
+                SwapResult::NotFound => {
+                    debug!("Cannot found key {} to lock", key);
+                    return None
+                }
+            }
+        }
+        Some(Self { 
+            table, 
+            key, 
+            value,
+            _mark: Default::default()
+        })
+    }
+
+    pub fn remove(self) -> V {
+        let res = self.table.remove(&(), self.key).unwrap().1;
+        mem::forget(self);
+        res
+    }
+}
+
+impl <'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for ObjectMapWriteGuard<'a, V, ALLOC, H> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl <'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut for ObjectMapWriteGuard<'a, V, ALLOC, H> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl <'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for ObjectMapWriteGuard<'a, V, ALLOC, H> {
+    fn drop(&mut self) {
+        trace!("Release read lock for key {}", self.key);
+        self.table.insert(InsertOp::Insert, &(), Some(self.value.clone()), self.key, PLACEHOLDER_VAL);
      }
 }
 
