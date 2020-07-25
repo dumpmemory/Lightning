@@ -752,8 +752,8 @@ impl<
                         }
                     }
                     ParsedValue::Prime(_) => {
-                        // Should never have prime in old chunk
-                        panic!("Prime in old chunk when resizing")
+                        // Happends when the entry value is been changed, retry
+                        continue;
                     }
                     ParsedValue::Sentinel => {
                         // Sentinel, skip
