@@ -382,6 +382,12 @@ impl<
             if k == fkey && chunk.attachment.probe(idx, &key) {
                 // Probing non-empty entry
                 let val = self.get_fast_value(addr);
+                let is_primed = val.raw & self.inv_bit_mask > 0;
+                if is_primed {
+                    // Upon discovered prime, retry
+                    trace!("Discovered prime on mod for {}, skip", fkey);
+                    continue;
+                }
                 match &val.parsed {
                     ParsedValue::Val(v) | ParsedValue::Prime(v) => {
                         match &op {
@@ -425,7 +431,7 @@ impl<
                             &ModOp::SwapFastVal(ref swap) => {
                                 let val = self.get_fast_value(addr);
                                 trace!(
-                                    "Swaping found key {} have original value {}",
+                                    "Swaping found key {} have original value {:#064b}",
                                     fkey,
                                     val.raw
                                 );
@@ -448,11 +454,18 @@ impl<
                                     }
                                 }
                             }
-                            &ModOp::Insert(_, _) => {
-                                // Insert with attachment should insert into new slot
-                                // When duplicate key discovered, put tombstone
-                                chunk.empty_entries.fetch_add(1, Relaxed);
-                                self.set_tombstone(addr, val.raw);
+                            &ModOp::Insert(fval, ref v) => {
+                                // Insert with attachment should prime value first when
+                                // duplicate key discovered
+                                let primed_fval = fval | self.inv_bit_mask;
+                                if self.cas_value(addr, val.raw, primed_fval) {
+                                    chunk.attachment.set(idx, key.clone(), v.clone());
+                                    debug_assert!(self.cas_value(addr, primed_fval, fval));
+                                    return ModResult::Done(addr, None);
+                                } else {
+                                    trace!("Cannot insert in place for {}", fkey);
+                                    return ModResult::Fail(val.raw, None);
+                                }
                             }
                         }
                     }
@@ -1250,6 +1263,14 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, A
             .insert(op, &(), Some(value), key + NUM_FIX, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
+
+    pub fn read(&self, key: usize) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
+        ObjectMapReadGuard::new(&self.table, key)
+    } 
+
+    pub fn write(&self, key: usize) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
+        ObjectMapWriteGuard::new(&self.table, key)
+    }
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
@@ -1689,9 +1710,9 @@ pub struct ObjectMapReadGuard<
 
 impl<
         'a,
-        V: Eq + Hash + Clone,
-        ALLOC: Clone + GlobalAlloc + Default,
-        H: Hasher + GlobalAlloc + Default,
+        V: Clone,
+        ALLOC: GlobalAlloc + Default,
+        H: Hasher + Default,
     > ObjectMapReadGuard<'a, V, ALLOC, H>
 {
     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
@@ -1789,6 +1810,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
+        let key = key + NUM_FIX;
         loop {
             let swap_res = table.swap(
                 key,
@@ -2054,7 +2076,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_mutex() {
+    fn parallel_word_map_mutex() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
         map.insert(&1, 0);
@@ -2071,6 +2093,29 @@ mod tests {
             let _ = thread.join();
         }
         assert_eq!(map.get(&1).unwrap(), num_threads);
+    }
+
+    #[test]
+    fn parallel_obj_map_rwlock() {
+        let _ = env_logger::try_init();
+        let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
+        let map = Arc::new(map_cont);
+        map.insert(&1, Obj::new(0));
+        let mut threads = vec![];
+        let num_threads = 256;
+        for i in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let mut guard = map.write(1).unwrap();
+                let val = guard.get();
+                guard.set(val + 1);
+                trace!("Dealt with {}", i);
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        map.get(&1).unwrap().validate(num_threads);
     }
 
     #[derive(Copy, Clone)]
@@ -2094,6 +2139,12 @@ mod tests {
             assert_eq!(self.b, num + 1);
             assert_eq!(self.c, num + 2);
             assert_eq!(self.d, num + 3);
+        }
+        fn get(&self) -> usize {
+            self.a
+        }
+        fn set(&mut self, num: usize) {
+            *self = Self::new(num)
         }
     }
 
