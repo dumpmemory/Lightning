@@ -34,7 +34,7 @@ enum ParsedValue {
 
 #[derive(Debug)]
 enum ModResult<V> {
-    Replaced(usize, V, usize),
+    Replaced(usize, V, usize), // (origin fval, val, index)
     Existed(usize, V),
     Fail(usize, Option<V>),
     Sentinel,
@@ -383,13 +383,8 @@ impl<
                 // Probing non-empty entry
                 let val = self.get_fast_value(addr);
                 let is_primed = val.raw & self.inv_bit_mask > 0;
-                if is_primed {
-                    // Upon discovered prime, retry
-                    trace!("Discovered prime on mod for {}, skip", fkey);
-                    continue;
-                }
                 match &val.parsed {
-                    ParsedValue::Val(v) | ParsedValue::Prime(v) => {
+                    ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
                                 self.set_sentinel(addr);
@@ -429,7 +424,6 @@ impl<
                                 return ModResult::Existed(*v, value);
                             }
                             &ModOp::SwapFastVal(ref swap) => {
-                                let val = self.get_fast_value(addr);
                                 trace!(
                                     "Swaping found key {} have original value {:#064b}",
                                     fkey,
@@ -457,11 +451,13 @@ impl<
                             &ModOp::Insert(fval, ref v) => {
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
+                                debug!("Inserting in place for {}", fkey);
                                 let primed_fval = fval | self.inv_bit_mask;
                                 if self.cas_value(addr, val.raw, primed_fval) {
+                                    let (_, prev_val) = chunk.attachment.get(idx);
                                     chunk.attachment.set(idx, key.clone(), v.clone());
                                     debug_assert!(self.cas_value(addr, primed_fval, fval));
-                                    return ModResult::Done(addr, None);
+                                    return ModResult::Replaced(val.raw, prev_val, idx);
                                 } else {
                                     trace!("Cannot insert in place for {}", fkey);
                                     return ModResult::Fail(val.raw, None);
@@ -471,8 +467,13 @@ impl<
                     }
                     ParsedValue::Empty => {
                         // found the key with empty value, shall do nothing and continue probing
+                        // because other thread is trying to write value into it
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel, // should not reachable for insertion happens on new list
+                    ParsedValue::Prime(v) => {
+                        trace!("Discovered prime for key {} with value {}, retry", fkey, v);
+                        continue;
+                    }
                 }
             } else if k == EMPTY_KEY {
                 match op {
@@ -1542,7 +1543,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
-                    debug!("Lock on key hash {} failed, retry", hash);
+                    trace!("Lock on key hash {} failed, retry", hash);
                     backoff.spin();
                     continue;
                 }
@@ -1636,7 +1637,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
-                    debug!("Lock on key hash {} failed, retry", hash);
+                    trace!("Lock on key hash {} failed, retry", hash);
                     backoff.spin();
                     continue;
                 }
@@ -1744,7 +1745,7 @@ impl<
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
-                    debug!("Lock on key {} failed, retry", hash);
+                    trace!("Lock on key {} failed, retry", hash);
                     backoff.spin();
                     continue;
                 }
@@ -1835,7 +1836,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
-                    debug!("Lock on key {} failed, retry", key);
+                    trace!("Lock on key {} failed, retry", key);
                     backoff.spin();
                     continue;
                 }
