@@ -2116,6 +2116,29 @@ mod tests {
         map.get(&1).unwrap().validate(num_threads);
     }
 
+    #[test]
+    fn parallel_hash_map_rwlock() {
+        let _ = env_logger::try_init();
+        let map_cont = super::HashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
+        let map = Arc::new(map_cont);
+        map.insert(&1, Obj::new(0));
+        let mut threads = vec![];
+        let num_threads = 256;
+        for i in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let mut guard = map.write(&1u32).unwrap();
+                let val = guard.get();
+                guard.set(val + 1);
+                trace!("Dealt with {}", i);
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        map.get(&1).unwrap().validate(num_threads);
+    }
+
     #[derive(Copy, Clone)]
     struct Obj {
         a: usize,
