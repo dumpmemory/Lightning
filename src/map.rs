@@ -1267,7 +1267,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, A
 
     pub fn read(&self, key: usize) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
         ObjectMapReadGuard::new(&self.table, key)
-    } 
+    }
 
     pub fn write(&self, key: usize) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
         ObjectMapWriteGuard::new(&self.table, key)
@@ -1709,12 +1709,8 @@ pub struct ObjectMapReadGuard<
     _mark: PhantomData<H>,
 }
 
-impl<
-        'a,
-        V: Clone,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > ObjectMapReadGuard<'a, V, ALLOC, H>
+impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    ObjectMapReadGuard<'a, V, ALLOC, H>
 {
     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
