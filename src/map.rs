@@ -456,7 +456,8 @@ impl<
                                 if self.cas_value(addr, val.raw, primed_fval) {
                                     let (_, prev_val) = chunk.attachment.get(idx);
                                     chunk.attachment.set(idx, key.clone(), v.clone());
-                                    debug_assert!(self.cas_value(addr, primed_fval, fval));
+                                    let stripped_prime = self.cas_value(addr, primed_fval, fval);
+                                    debug_assert!(stripped_prime);
                                     return ModResult::Replaced(val.raw, prev_val, idx);
                                 } else {
                                     trace!("Cannot insert in place for {}", fkey);
@@ -471,7 +472,7 @@ impl<
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel, // should not reachable for insertion happens on new list
                     ParsedValue::Prime(v) => {
-                        trace!("Discovered prime for key {} with value {}, retry", fkey, v);
+                        trace!("Discovered prime for key {} with value {:#064b}, retry", fkey, v);
                         continue;
                     }
                 }
