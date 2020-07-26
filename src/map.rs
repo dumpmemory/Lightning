@@ -1141,15 +1141,32 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     }
 }
 
-pub trait Map<K, V> {
+pub trait Map<K, V: Clone> {
     fn with_capacity(cap: usize) -> Self;
     fn get(&self, key: &K) -> Option<V>;
     fn insert(&self, key: &K, value: V) -> Option<V>;
+    // Return None if insertion successful
     fn try_insert(&self, key: &K, value: V) -> Option<V>;
     fn remove(&self, key: &K) -> Option<V>;
     fn entries(&self) -> Vec<(K, V)>;
     fn contains(&self, key: &K) -> bool;
     fn len(&self) -> usize;
+    // The func function should  be pure and have no side effect
+    fn get_or_insert<F: Fn() -> V>(&self, key: &K, func: F) -> V {
+        loop {
+            if self.contains(key) {
+                if let Some(value) = self.get(key){
+                    return value;
+                }
+            } else {
+                let value = func();
+                if let Some(value) = self.try_insert(key,  value.clone()) {
+                    return value;
+                }
+                return value
+            }
+        }
+    }
 }
 
 const NUM_FIX: usize = 5;
