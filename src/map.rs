@@ -19,6 +19,8 @@ pub struct EntryTemplate(usize, usize);
 
 const EMPTY_KEY: usize = 0;
 const SENTINEL_VALUE: usize = 1;
+const VAL_BIT_MASK: usize = !0 << 1 >> 1;
+const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
 
 struct Value {
     raw: usize,
@@ -92,8 +94,6 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     count: AtomicUsize,
-    val_bit_mask: usize, // 0111111..
-    inv_bit_mask: usize, // 1000000..
     mark: PhantomData<H>,
 }
 
@@ -111,14 +111,11 @@ impl<
         }
         // Each entry key value pair is 2 words
         // steal 1 bit in the MSB of value indicate Prime(1)
-        let val_bit_mask = !0 << 1 >> 1;
         let chunk = Chunk::alloc_chunk(cap);
         Self {
             chunk: Atomic::new(ChunkPtr::new(chunk)),
             new_chunk: Atomic::null(),
             count: AtomicUsize::new(0),
-            val_bit_mask,
-            inv_bit_mask: !val_bit_mask,
             mark: PhantomData,
         }
     }
@@ -185,7 +182,7 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
 
             let modify_chunk = if copying { new_chunk } else { chunk };
-            let masked_value = fvalue & self.val_bit_mask;
+            let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
@@ -271,7 +268,7 @@ impl<
             guard,
         ) {
             ModResult::Replaced(v, _, idx) => {
-                SwapResult::Succeed(v & self.val_bit_mask, idx, modify_chunk)
+                SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk)
             }
             ModResult::Aborted => SwapResult::Aborted,
             ModResult::Fail(_, _) => SwapResult::Failed,
@@ -382,7 +379,7 @@ impl<
             if k == fkey && chunk.attachment.probe(idx, &key) {
                 // Probing non-empty entry
                 let val = self.get_fast_value(addr);
-                let is_primed = val.raw & self.inv_bit_mask > 0;
+                let is_primed = val.raw & INV_VAL_BIT_MASK > 0;
                 match &val.parsed {
                     ParsedValue::Val(v) => {
                         match &op {
@@ -452,7 +449,7 @@ impl<
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
                                 debug!("Inserting in place for {}", fkey);
-                                let primed_fval = fval | self.inv_bit_mask;
+                                let primed_fval = fval | INV_VAL_BIT_MASK;
                                 if self.cas_value(addr, val.raw, primed_fval) {
                                     let (_, prev_val) = chunk.attachment.get(idx);
                                     chunk.attachment.set(idx, key.clone(), v.clone());
@@ -482,7 +479,7 @@ impl<
                         trace!(
                             "Inserting entry key: {}, value: {}, raw: {:b}, addr: {}",
                             fkey,
-                            fval & self.val_bit_mask,
+                            fval & VAL_BIT_MASK,
                             fval,
                             addr
                         );
@@ -503,7 +500,7 @@ impl<
                         trace!(
                             "Upserting entry key: {}, value: {}, raw: {:b}, addr: {}",
                             fkey,
-                            fval & self.val_bit_mask,
+                            fval & VAL_BIT_MASK,
                             fval,
                             addr
                         );
@@ -705,7 +702,7 @@ impl<
                         // Insert entry into new chunk, in case of failure, skip this entry
                         // Value should be primed
                         trace!("Moving key: {}, value: {}", fkey, v);
-                        let primed_fval = fvalue.raw | self.inv_bit_mask;
+                        let primed_fval = fvalue.raw | INV_VAL_BIT_MASK;
                         let (key, value) = old_chunk_ins.attachment.get(idx);
                         let new_chunk_insertion = self.modify_entry(
                             &*new_chunk_ins,
@@ -735,7 +732,7 @@ impl<
                             // Use CAS for old threads may working on this one
                             if self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
                                 // strip prime
-                                let stripped = primed_fval & self.val_bit_mask;
+                                let stripped = primed_fval & VAL_BIT_MASK;
                                 debug_assert_ne!(stripped, SENTINEL_VALUE);
                                 if self.cas_value(new_entry_addr, primed_fval, stripped) {
                                     trace!(
@@ -799,8 +796,8 @@ impl Value {
             if val == 0 {
                 ParsedValue::Empty
             } else {
-                let actual_val = val & table.val_bit_mask;
-                let flag = val & table.inv_bit_mask;
+                let actual_val = val & VAL_BIT_MASK;
+                let flag = val & INV_VAL_BIT_MASK;
                 if flag != 0 {
                     ParsedValue::Prime(actual_val)
                 } else if actual_val == 1 {
@@ -869,8 +866,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             chunk: Default::default(),
             new_chunk: Default::default(),
             count: AtomicUsize::new(0),
-            val_bit_mask: 0,
-            inv_bit_mask: 0,
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
@@ -908,8 +903,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 new_table.new_chunk.store(Shared::null(), Relaxed);
             }
         }
-        new_table.val_bit_mask = self.val_bit_mask;
-        new_table.inv_bit_mask = self.inv_bit_mask;
         new_table.count.store(self.count.load(Relaxed), SeqCst);
         new_table
     }
@@ -1420,7 +1413,7 @@ pub struct WordMutexGuard<
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     pub fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
         let key = key + NUM_FIX;
-        let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & table.val_bit_mask;
+        let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
