@@ -169,7 +169,7 @@ impl<
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
             let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
             if !copying {
-                match self.check_resize(chunk_ptr, &guard) {
+                match self.check_migration(chunk_ptr, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
                         debug!("Retry insert due to resize");
                         backoff.spin();
@@ -608,7 +608,7 @@ impl<
     }
 
     /// Failed return old shared
-    fn check_resize<'a>(
+    fn check_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
@@ -667,10 +667,7 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
         }
         self.new_chunk.store(Shared::null(), SeqCst);
-        // assert!(self
-        //     .new_chunk
-        //     .compare_and_set(new_chunk_ptr, Shared::null(), SeqCst, guard)
-        //     .is_ok());
+        debug!("Migration for {:?} completed, new chunk is {:?}, size from {} to {}", old_chunk_ptr, new_chunk_ptr, old_cap, new_cap);
         ResizeResult::Done
     }
 
