@@ -198,11 +198,10 @@ impl<
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail(_, rvalue) => {
                     // If fail insertion then retry
-                    warn!("Insertion failed, retry. Copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}",
+                    warn!("Insertion failed, retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
                         copying,
                         modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
-                        self.dump(modify_chunk.base, modify_chunk.capacity),
                         chunk_ptr,
                         new_chunk_ptr
                     );
@@ -212,11 +211,10 @@ impl<
                 }
                 ModResult::TableFull(_, rvalue) => {
                     warn!(
-                        "Insertion is too fast, copying {}, cap {}, count {}, dump: {}, old {:?}, new {:?}.",
+                        "Insertion is too fast, copying {}, cap {}, count {}, old {:?}, new {:?}.",
                         copying,
                         modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
-                        self.dump(modify_chunk.base, modify_chunk.capacity),
                         chunk_ptr,
                         new_chunk_ptr
                     );
@@ -625,14 +623,15 @@ impl<
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // clear empty
-            debug!("Clearing empty entries");
+            debug!("Clearing empty entries from {:?}", old_chunk_ptr);
             old_cap
         } else {
             // resize
-            debug!("Resizing");
+            debug!("Resizing {:?}", old_chunk_ptr);
             let mult = if old_cap < 2048 { 4 } else { 1 };
             old_cap << mult
         };
+        debug!("New size for {:?} is {}, was {}", old_chunk_ptr, new_cap, old_cap);
         // Swap in old chunk as placeholder for the lock
         if let Err(_) = self
             .new_chunk
@@ -675,7 +674,7 @@ impl<
         ResizeResult::Done
     }
 
-    fn migrate_entries(
+fn                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              migrate_entries(
         &self,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
