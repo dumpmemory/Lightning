@@ -610,7 +610,6 @@ impl<
     }
 
     /// Failed return old shared
-    #[inline(always)]
     fn check_resize<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
@@ -618,11 +617,11 @@ impl<
     ) -> ResizeResult {
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let occupation = old_chunk_ins.occupation.load(Relaxed);
-        let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let occu_limit = old_chunk_ins.occu_limit;
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
         }
+        let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // clear empty
@@ -635,15 +634,12 @@ impl<
             old_cap << mult
         };
         // Swap in old chunk as placeholder for the lock
-        if let Err(e) = self
+        if let Err(_) = self
             .new_chunk
             .compare_and_set(Shared::null(), old_chunk_ptr, SeqCst, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
-            warn!(
-                "Conflict on swapping new chunk, expecting it is null: {:?}",
-                e
-            );
+            warn!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
         if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
@@ -829,7 +825,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let attachment_base = data_base + chunk_size;
         unsafe {
             ptr::write(
-                ptr,
+                ptr ,
                 Self {
                     base: data_base,
                     capacity,
