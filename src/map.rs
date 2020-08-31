@@ -1915,17 +1915,17 @@ impl <T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> H
         self.table.get(item, hash, false).is_some()
     }
 
-    fn insert(&self, item: &T) -> bool {
+    pub fn insert(&self, item: &T) -> bool {
         let hash = hash_key::<T, H>(item);
         self.table.insert(InsertOp::TryInsert, item, None, hash, !0).is_none()
     }
 
-    fn remove(&self, item: &T) -> bool {
+    pub fn remove(&self, item: &T) -> bool {
         let hash = hash_key::<T, H>(item);
         self.table.remove(item, hash).is_some()
     }
 
-    fn items(&self) -> std::collections::HashSet<T> {
+    pub fn items(&self) -> std::collections::HashSet<T> {
         self.table
             .entries()
             .into_iter()
@@ -1934,7 +1934,7 @@ impl <T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> H
     }
 
     #[inline(always)]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.table.len()
     }
 }
