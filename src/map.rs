@@ -567,7 +567,7 @@ impl<
         let old_chunk = unsafe { old_chunk_ref.deref() };
         let new_chunk = unsafe { new_chunk_ref.deref() };
         let mut res = self.all_from_chunk(&*old_chunk);
-        if old_chunk_ref != new_chunk_ref {
+        if new_chunk_ref.is_null() && old_chunk_ref != new_chunk_ref {
             res.append(&mut self.all_from_chunk(&*new_chunk));
         }
         return res;
