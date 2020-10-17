@@ -1413,7 +1413,17 @@ pub struct WordMutexGuard<
 }
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
-    pub fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
+    fn create(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
+        let key = key + NUM_FIX;
+        let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
+        let value = 0;
+        if table.insert(InsertOp::TryInsert, &(), None, key, value | lock_bit_mask).is_none() {
+            Some(Self { table, key, value })
+        } else {
+            None
+        }
+    }
+    fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
         let key = key + NUM_FIX;
         let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
         let backoff = crossbeam_utils::Backoff::new();
@@ -1505,8 +1515,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
-    pub fn lock(&self, key: &usize) -> Option<WordMutexGuard<ALLOC, H>> {
-        WordMutexGuard::new(&self.table, *key)
+    pub fn lock(&self, key: usize) -> Option<WordMutexGuard<ALLOC, H>> {
+        WordMutexGuard::new(&self.table, key)
+    }
+    pub fn try_insert_locked(&self, key: usize) -> Option<WordMutexGuard<ALLOC, H>> {
+        WordMutexGuard::create(&self.table, key)
     }
 }
 
@@ -2141,7 +2154,7 @@ mod tests {
         for _ in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let mut guard = map.lock(&1).unwrap();
+                let mut guard = map.lock(1).unwrap();
                 *guard += 1;
             }));
         }
