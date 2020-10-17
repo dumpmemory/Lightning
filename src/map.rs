@@ -144,7 +144,7 @@ impl<
                 }
                 ParsedValue::Empty | ParsedValue::Sentinel => {
                     let new_chunk_ref = self.new_chunk.load(SeqCst, &guard);
-                    if !new_chunk_ref.is_null() {
+                    if !new_chunk_ref.is_null() && new_chunk_ref != chunk_ref {
                         chunk_ref = new_chunk_ref;
                         continue;
                     }
@@ -723,22 +723,17 @@ fn migrate_entries(
                             ModResult::Done(addr, _) => Some(addr), // continue procedure
                             ModResult::Existed(_, _) => None,
                             ModResult::Fail(_, _) => unreachable!("Should not fail"),
-                            ModResult::Replaced(_, _, _) => {
-                                unreachable!("Attempt insert does not replace anything");
-                            }
-                            ModResult::Sentinel => {
-                                warn!("New chunk should not have sentinel");
-                                None
-                            }
+                            ModResult::Replaced(_, _, _) => unreachable!("Attempt insert does not replace anything"),
+                            ModResult::Sentinel => unreachable!("New chunk should not have sentinel"),
                             ModResult::NotFound => unreachable!("Not found on resize"),
                             ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
                             ModResult::Aborted => unreachable!("Should not abort"),
                         };
-                        if let Some(new_entry_addr) = inserted_addr {
-                            fence(SeqCst);
-                            // CAS to ensure sentinel into old chunk (spec)
-                            // Use CAS for old threads may working on this one
-                            if self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                        fence(SeqCst);
+                        // CAS to ensure sentinel into old chunk (spec)
+                        // Use CAS for old threads may working on this one
+                        if self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                            if let Some(new_entry_addr) = inserted_addr {
                                 // strip prime
                                 let stripped = primed_fval & VAL_BIT_MASK;
                                 debug_assert_ne!(stripped, SENTINEL_VALUE);
@@ -751,9 +746,10 @@ fn migrate_entries(
                                     );
                                     old_chunk_ins.attachment.erase(idx);
                                     effective_copy += 1;
+                            
+                                } else {
+                                    continue; // retry this entry
                                 }
-                            } else {
-                                continue; // retry this entry
                             }
                         }
                     }
@@ -768,7 +764,8 @@ fn migrate_entries(
                     }
                     ParsedValue::Empty => {
                         // Empty, skip
-                        trace!("Skip copy empty, key: {}", fkey);
+                        trace!("Encountered empty value for key: {}, will retry", fkey);
+                        continue;
                     }
                 }
             }
