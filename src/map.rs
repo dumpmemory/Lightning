@@ -246,36 +246,38 @@ impl<
         !new_chunk_ptr.is_null() || chunk_ptr == new_chunk_ptr
     }
 
-    fn swap<'a, F: Fn(usize) -> Option<usize> + 'static>(
+    fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
         &self,
         fkey: usize,
         key: &K,
         func: F,
         guard: &'a Guard,
     ) -> SwapResult<'a, K, V, A, ALLOC> {
-        let chunk_ptr = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
-        let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
-        let modify_chunk = if copying { new_chunk_ptr } else { chunk_ptr };
-        trace!("Swaping for key {}, copying {}", fkey, copying);
-        let mod_res = self.modify_entry(
-            unsafe { modify_chunk.deref() },
-            key,
-            fkey,
-            ModOp::SwapFastVal(Box::new(func)),
-            guard,
-        );
-        match mod_res {
-            ModResult::Replaced(v, _, idx) => {
-                SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk)
+        loop {
+            let chunk_ptr = self.chunk.load(Relaxed, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
+            let modify_chunk = if copying { new_chunk_ptr } else { chunk_ptr };
+            trace!("Swaping for key {}, copying {}", fkey, copying);
+            let mod_res = self.modify_entry(
+                unsafe { modify_chunk.deref() },
+                key,
+                fkey,
+                ModOp::SwapFastVal(Box::new(func)),
+                guard,
+            );
+            return match mod_res {
+                ModResult::Replaced(v, _, idx) => {
+                    SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk)
+                }
+                ModResult::Aborted => SwapResult::Aborted,
+                ModResult::Fail(_, _) => SwapResult::Failed,
+                ModResult::NotFound => SwapResult::NotFound,
+                ModResult::Sentinel => continue,
+                ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
+                ModResult::Done(_, _) => unreachable!("Swap Done"),
+                ModResult::TableFull(_, _) => unreachable!("Swap table full"),
             }
-            ModResult::Aborted => SwapResult::Aborted,
-            ModResult::Fail(_, _) => SwapResult::Failed,
-            ModResult::NotFound => SwapResult::NotFound,
-            ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
-            ModResult::Sentinel => unreachable!("Swap meet sentinel"),
-            ModResult::Done(_, _) => unreachable!("Swap Done"),
-            ModResult::TableFull(_, _) => unreachable!("Swap table full"),
         }
     }
 
