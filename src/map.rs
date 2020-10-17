@@ -142,13 +142,20 @@ impl<
                         },
                     ))
                 }
-                ParsedValue::Sentinel => {
-                    chunk_ref = self.new_chunk.load(Relaxed, &guard);
-                    if chunk_ref.is_null() {
+                ParsedValue::Empty | ParsedValue::Sentinel => {
+                    let new_chunk_ref = self.new_chunk.load(SeqCst, &guard);
+                    if !new_chunk_ref.is_null() {
+                        chunk_ref = new_chunk_ref;
+                        continue;
+                    }
+                    let current_chunk_ref = self.chunk.load(Relaxed, &guard);
+                    if chunk_ref != current_chunk_ref {
+                        chunk_ref = current_chunk_ref;
+                        continue;
+                    } else {
                         return None;
                     }
                 }
-                ParsedValue::Empty => return None,
             }
         }
     }
@@ -787,6 +794,14 @@ fn migrate_entries(
         }
         "DUMPED"
     }
+
+    pub fn map_is_copying(&self) -> bool {
+        let guard = crossbeam_epoch::pin();
+        let chunk_ptr = self.chunk.load(Relaxed, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        Self::is_copying(&chunk_ptr, &new_chunk_ptr)
+    }
+
 }
 
 impl Value {
@@ -2086,24 +2101,30 @@ mod tests {
     #[test]
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
+        let num_threads = 64;
+        let test_load = 1048576;
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         let mut threads = vec![];
-        for i in 5..24 {
+        for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..1000 {
-                    map.insert(&(i + j * 100), i * j);
+                for j in 5..test_load {
+                    let key = i * 10000000 + j;
+                    let value =  i * j;
+                    map.insert(&key, value);
+                    assert_eq!(map.get(&key), Some(value), "Is copying: {}", map.table.map_is_copying());
                 }
             }));
         }
         for thread in threads {
             let _ = thread.join();
         }
-        for i in 5..24 {
-            for j in 5..1000 {
-                let k = i + j * 100;
+        for i in 0..num_threads {
+            for j in 5..test_load {
+                let k = i * 10000000 + j;
+                let value = i * j;
                 match map.get(&k) {
-                    Some(v) => assert_eq!(v, i * j),
+                    Some(v) => assert_eq!(v, value),
                     None => panic!("Value should not be None for key: {}", k),
                 }
             }
