@@ -640,11 +640,9 @@ impl<
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // clear empty
-            debug!("Clearing empty entries from {:?}", old_chunk_ptr);
             old_cap
         } else {
             // resize
-            debug!("Resizing {:?}", old_chunk_ptr);
             let mult = if old_cap < 2048 { 4 } else { 1 };
             old_cap << mult
         };
@@ -663,6 +661,7 @@ impl<
             self.new_chunk.store(Shared::null(), SeqCst);
             return ResizeResult::ChunkChanged;
         }
+        debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         self.new_chunk.store(new_chunk_ptr, SeqCst); // Stump becasue we have the lock already
@@ -2116,16 +2115,18 @@ mod tests {
                 }
             }));
         }
+        info!("Waiting for intensive insertion to finish");
         for thread in threads {
             let _ = thread.join();
         }
+        info!("Checking final value");
         for i in 0..num_threads {
             for j in 5..test_load {
                 let k = i * 10000000 + j;
                 let value = i * j;
                 match map.get(&k) {
                     Some(v) => assert_eq!(v, value),
-                    None => panic!("Value should not be None for key: {}", k),
+                    None => panic!("Value should not be None for key: {}, value {}, i {}, j {}", k, value, i, j),
                 }
             }
         }
