@@ -253,6 +253,7 @@ impl<
         func: F,
         guard: &'a Guard,
     ) -> SwapResult<'a, K, V, A, ALLOC> {
+        let backoff = crossbeam_utils::Backoff::new();
         loop {
             let chunk_ptr = self.chunk.load(Relaxed, &guard);
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
@@ -273,7 +274,10 @@ impl<
                 ModResult::Aborted => SwapResult::Aborted,
                 ModResult::Fail(_, _) => SwapResult::Failed,
                 ModResult::NotFound => SwapResult::NotFound,
-                ModResult::Sentinel => continue,
+                ModResult::Sentinel => {
+                    backoff.spin();
+                    continue;
+                },
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
                 ModResult::Done(_, _) => unreachable!("Swap Done"),
                 ModResult::TableFull(_, _) => unreachable!("Swap table full"),
