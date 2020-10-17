@@ -1417,7 +1417,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         let key = key + NUM_FIX;
         let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
         let value = 0;
-        if table.insert(InsertOp::TryInsert, &(), None, key, value | lock_bit_mask).is_none() {
+        if table.insert(InsertOp::TryInsert, &(), Some(()), key, value | lock_bit_mask).is_none() {
             Some(Self { table, key, value })
         } else {
             None
