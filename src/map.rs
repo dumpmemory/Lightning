@@ -271,7 +271,7 @@ impl<
             ModResult::Aborted => SwapResult::Aborted,
             ModResult::Fail(_, _) => SwapResult::Failed,
             ModResult::NotFound => SwapResult::NotFound,
-            _ => unreachable!(),
+            _ => unreachable!("Swap have unexpeced ModResult"),
         }
     }
 
@@ -294,7 +294,7 @@ impl<
                 }
                 self.count.fetch_sub(1, Relaxed);
             }
-            ModResult::Done(_, None) => unreachable!(),
+            ModResult::Done(_, None) => unreachable!("Remove shall not have done"),
             ModResult::NotFound => {
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Empty, &guard);
@@ -303,7 +303,7 @@ impl<
                     | ModResult::Replaced(fvalue, value, _) => {
                         retr = Some((fvalue, value));
                     }
-                    ModResult::Done(_, None) => unreachable!(),
+                    ModResult::Done(_, None) => unreachable!("Remove shall not have fone for retry"),
                     _ => {}
                 }
             }
@@ -1443,7 +1443,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                     continue;
                 }
                 SwapResult::NotFound => {
-                    debug!("Cannot found key {} to lock", key);
+                    trace!("Cannot found key {} to lock", key);
                     return None;
                 }
             }
