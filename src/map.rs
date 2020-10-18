@@ -209,7 +209,8 @@ impl<
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail(_, rvalue) => {
                     // If fail insertion then retry
-                    warn!("Insertion failed, retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
+                    warn!(
+                        "Insertion failed, retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
                         copying,
                         modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
@@ -288,11 +289,11 @@ impl<
                 ModResult::Sentinel => {
                     backoff.spin();
                     continue;
-                },
+                }
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
                 ModResult::Done(_, _) => unreachable!("Swap Done"),
                 ModResult::TableFull(_, _) => unreachable!("Swap table full"),
-            }
+            };
         }
     }
 
@@ -302,7 +303,7 @@ impl<
         loop {
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
             let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
-            if new_chunk_ptr == old_chunk_ptr  {
+            if new_chunk_ptr == old_chunk_ptr {
                 backoff.spin();
                 continue;
             }
@@ -328,11 +329,14 @@ impl<
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Sentinel, &guard);
                 match remove_from_old {
-                    ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
+                    ModResult::Done(fvalue, Some(value))
+                    | ModResult::Replaced(fvalue, value, _) => {
                         trace!("Sentinal placed");
                         retr = Some((fvalue, value));
                     }
-                    ModResult::Done(_, None) => unreachable!("Remove shall not have fone for retry"),
+                    ModResult::Done(_, None) => {
+                        unreachable!("Remove shall not have fone for retry")
+                    }
                     _ => {
                         trace!("Sentinal not placed");
                     }
@@ -496,7 +500,11 @@ impl<
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel, // should not reachable for insertion happens on new list
                     ParsedValue::Prime(v) => {
-                        trace!("Discovered prime for key {} with value {:#064b}, retry", fkey, v);
+                        trace!(
+                            "Discovered prime for key {} with value {:#064b}, retry",
+                            fkey,
+                            v
+                        );
                         backoff.spin();
                         continue;
                     }
@@ -659,7 +667,10 @@ impl<
             let mult = if old_cap < 2048 { 4 } else { 1 };
             old_cap << mult
         };
-        debug!("New size for {:?} is {}, was {}", old_chunk_ptr, new_cap, old_cap);
+        debug!(
+            "New size for {:?} is {}, was {}",
+            old_chunk_ptr, new_cap, old_cap
+        );
         // Swap in old chunk as placeholder for the lock
         if let Err(_) = self
             .new_chunk
@@ -696,11 +707,14 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
         }
         self.new_chunk.store(Shared::null(), SeqCst);
-        debug!("Migration for {:?} completed, new chunk is {:?}, size from {} to {}", old_chunk_ptr, new_chunk_ptr, old_cap, new_cap);
+        debug!(
+            "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
+            old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
+        );
         ResizeResult::Done
     }
 
-fn migrate_entries(
+    fn migrate_entries(
         &self,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
@@ -740,7 +754,9 @@ fn migrate_entries(
                         ModResult::Done(addr, _) => Some(addr), // continue procedure
                         ModResult::Existed(_, _) => None,
                         ModResult::Fail(_, _) => unreachable!("Should not fail"),
-                        ModResult::Replaced(_, _, _) => unreachable!("Attempt insert does not replace anything"),
+                        ModResult::Replaced(_, _, _) => {
+                            unreachable!("Attempt insert does not replace anything")
+                        }
                         ModResult::Sentinel => unreachable!("New chunk should not have sentinel"),
                         ModResult::NotFound => unreachable!("Not found on resize"),
                         ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
@@ -763,7 +779,6 @@ fn migrate_entries(
                                 );
                                 old_chunk_ins.attachment.erase(idx);
                                 effective_copy += 1;
-                        
                             } else {
                                 continue; // retry this entry
                             }
@@ -782,7 +797,8 @@ fn migrate_entries(
                 }
                 ParsedValue::Empty => {
                     // Empty, skip if it have no key
-                    if fkey != EMPTY_KEY && !self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                    if fkey != EMPTY_KEY && !self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE)
+                    {
                         backoff.spin();
                         continue;
                     }
@@ -816,7 +832,6 @@ fn migrate_entries(
         let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
         Self::is_copying(&chunk_ptr, &new_chunk_ptr)
     }
-
 }
 
 impl Value {
@@ -861,7 +876,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let attachment_base = data_base + chunk_size;
         unsafe {
             ptr::write(
-                ptr ,
+                ptr,
                 Self {
                     base: data_base,
                     capacity,
@@ -1180,15 +1195,15 @@ pub trait Map<K, V: Clone> {
     fn get_or_insert<F: Fn() -> V>(&self, key: &K, func: F) -> V {
         loop {
             if self.contains(key) {
-                if let Some(value) = self.get(key){
+                if let Some(value) = self.get(key) {
                     return value;
                 }
             } else {
                 let value = func();
-                if let Some(value) = self.try_insert(key,  value.clone()) {
+                if let Some(value) = self.try_insert(key, value.clone()) {
                     return value;
                 }
-                return value
+                return value;
             }
         }
     }
@@ -1447,7 +1462,16 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         let key = key + NUM_FIX;
         let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
         let value = 0;
-        if table.insert(InsertOp::TryInsert, &(), Some(()), key, value | lock_bit_mask).is_none() {
+        if table
+            .insert(
+                InsertOp::TryInsert,
+                &(),
+                Some(()),
+                key,
+                value | lock_bit_mask,
+            )
+            .is_none()
+        {
             Some(Self { table, key, value })
         } else {
             None
@@ -1955,11 +1979,11 @@ pub struct HashSet<
     shadow: PhantomData<H>,
 }
 
-impl <T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> HashSet<T, ALLOC, H> {
+impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> HashSet<T, ALLOC, H> {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
-            shadow: PhantomData
+            shadow: PhantomData,
         }
     }
 
@@ -1970,7 +1994,9 @@ impl <T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> H
 
     pub fn insert(&self, item: &T) -> bool {
         let hash = hash_key::<T, H>(item);
-        self.table.insert(InsertOp::TryInsert, item, None, hash, !0).is_none()
+        self.table
+            .insert(InsertOp::TryInsert, item, None, hash, !0)
+            .is_none()
     }
 
     pub fn remove(&self, item: &T) -> bool {
@@ -2125,11 +2151,21 @@ mod tests {
             threads.push(thread::spawn(move || {
                 for j in 5..test_load {
                     let key = i * 10000000 + j;
-                    let value =  i * j;
+                    let value = i * j;
                     map.insert(&key, value);
-                    assert_eq!(map.get(&key), Some(value), "Is copying: {}", map.table.map_is_copying());
+                    assert_eq!(
+                        map.get(&key),
+                        Some(value),
+                        "Is copying: {}",
+                        map.table.map_is_copying()
+                    );
                     if j % 13 == 0 {
-                        assert_eq!(map.remove(&key), Some(value), "Remove result, copying {}", map.table.map_is_copying());
+                        assert_eq!(
+                            map.remove(&key),
+                            Some(value),
+                            "Remove result, copying {}",
+                            map.table.map_is_copying()
+                        );
                         assert_eq!(map.get(&key), None, "Remove recursion");
                     }
                     if j % 3 == 0 {
