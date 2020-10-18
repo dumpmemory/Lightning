@@ -217,7 +217,7 @@ impl<
                     continue;
                 }
                 ModResult::TableFull(_, rvalue) => {
-                    warn!(
+                    trace!(
                         "Insertion is too fast, copying {}, cap {}, count {}, old {:?}, new {:?}.",
                         copying,
                         modify_chunk.capacity,
@@ -394,7 +394,6 @@ impl<
             if k == fkey && chunk.attachment.probe(idx, &key) {
                 // Probing non-empty entry
                 let val = self.get_fast_value(addr);
-                let is_primed = val.raw & INV_VAL_BIT_MASK > 0;
                 match &val.parsed {
                     ParsedValue::Val(v) => {
                         match &op {
@@ -2109,6 +2108,15 @@ mod tests {
                     let value =  i * j;
                     map.insert(&key, value);
                     assert_eq!(map.get(&key), Some(value), "Is copying: {}", map.table.map_is_copying());
+                    if j % 15 == 0 {
+                        map.remove(&key);
+                        assert_eq!(map.get(&key), None);
+                    }
+                    if j % 5 == 0 {
+                        let new_value = value + 5;
+                        map.insert(&key, new_value);
+                        assert_eq!(map.get(&key), Some(new_value));
+                    }
                 }
             }));
         }
@@ -2121,9 +2129,13 @@ mod tests {
             for j in 5..test_load {
                 let k = i * 10000000 + j;
                 let value = i * j;
-                match map.get(&k) {
-                    Some(v) => assert_eq!(v, value),
-                    None => panic!("Value should not be None for key: {}, value {}, i {}, j {}", k, value, i, j),
+                let get_res = map.get(&k);
+                if j % 15 == 0 {
+                    assert_eq!(get_res, None);
+                } else if j % 5 == 0 {
+                    assert_eq!(get_res, Some(value + 5));
+                } else {
+                    assert_eq!(get_res, Some(value))
                 }
             }
         }
