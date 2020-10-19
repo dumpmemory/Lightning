@@ -57,7 +57,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
         self.count.fetch_add(1, Relaxed);
     }
 
-    fn do_push(&self, mut flag: usize, mut data: T) {
+    fn do_push(&self, flag: usize, data: T) {
         debug_assert_ne!(flag, EMPTY_SLOT);
         debug_assert_ne!(flag, SENTINEL_SLOT);
         loop {
@@ -634,7 +634,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> ObjectList<T, A> {
 
 #[inline]
 pub fn dealloc_mem<A: GlobalAlloc + Default>(ptr: usize, size: usize) {
-    let mut a = A::default();
+    let a = A::default();
     let align = 16;
     let layout = Layout::from_size_align(size, align).unwrap();
     unsafe { a.dealloc(ptr as *mut u8, layout) }
@@ -642,7 +642,7 @@ pub fn dealloc_mem<A: GlobalAlloc + Default>(ptr: usize, size: usize) {
 
 #[inline]
 pub fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
-    let mut a = A::default();
+    let a = A::default();
     let align = 16;
     let layout = Layout::from_size_align(size, align).unwrap();
     // must be all zeroed
