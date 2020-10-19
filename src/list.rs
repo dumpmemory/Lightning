@@ -12,7 +12,7 @@ use core::{intrinsics, mem};
 use crossbeam_utils::Backoff;
 #[cfg(feature = "exchange_backoff")]
 use exchange::*;
-use std::alloc::GlobalAlloc;
+use std::alloc::{GlobalAlloc, System};
 
 const CACHE_LINE_SIZE: usize = 64;
 const EMPTY_SLOT: usize = 0;
@@ -547,7 +547,7 @@ impl<T: Default + Clone + Copy, A: GlobalAlloc + Default> Iterator for ListItera
     }
 }
 
-pub struct WordList<A: GlobalAlloc + Default> {
+pub struct WordList<A: GlobalAlloc + Default = System> {
     inner: List<(), A>,
 }
 
