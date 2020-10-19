@@ -1,34 +1,22 @@
 // usize lock-free, wait free paged linked list stack
 use crate::align_padding;
-use crate::rand::XorRand;
 use core::alloc::Layout;
 use core::borrow::BorrowMut;
-use core::cell::UnsafeCell;
-use core::cmp::{max, min};
-use core::marker::PhantomData;
+use core::cmp::min;
 use core::ops::Deref;
 use core::ptr;
 use core::ptr::null_mut;
-use core::sync::atomic::Ordering::{Relaxed, SeqCst};
-use core::sync::atomic::{fence, AtomicPtr, AtomicUsize};
+use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicPtr, AtomicUsize};
 use core::{intrinsics, mem};
 use crossbeam_utils::Backoff;
-use smallvec::SmallVec;
 use std::alloc::GlobalAlloc;
-use std::time::Instant;
+#[cfg(feature = "exchange_backoff")]
+use exchange::*;
 
 const CACHE_LINE_SIZE: usize = 64;
 const EMPTY_SLOT: usize = 0;
 const SENTINEL_SLOT: usize = 1;
-
-const EXCHANGE_EMPTY: usize = 0;
-const EXCHANGE_WAITING: usize = 1;
-const EXCHANGE_BUSY: usize = 2;
-const EXCHANGE_SPIN_WAIT_NS: usize = 150;
-const MAXIMUM_EXCHANGE_SLOTS: usize = 16;
-
-type ExchangeData<T> = Option<(usize, T)>;
-type ExchangeArrayVec<T> = SmallVec<[ExchangeSlot<T>; MAXIMUM_EXCHANGE_SLOTS]>;
 
 struct BufferMeta<T: Default, A: GlobalAlloc + Default> {
     head: AtomicUsize,
@@ -39,23 +27,11 @@ struct BufferMeta<T: Default, A: GlobalAlloc + Default> {
     total_size: usize,
 }
 
-pub struct ExchangeSlot<T: Default + Copy> {
-    state: AtomicUsize,
-    data: UnsafeCell<Option<ExchangeData<T>>>,
-    data_state: AtomicUsize,
-}
-
-pub struct ExchangeArray<T: Default + Copy, A: GlobalAlloc + Default> {
-    rand: XorRand,
-    shadow: PhantomData<A>,
-    capacity: usize,
-    slots: ExchangeArrayVec<T>,
-}
-
 pub struct List<T: Default + Copy, A: GlobalAlloc + Default> {
     head: AtomicPtr<BufferMeta<T, A>>,
     count: AtomicUsize,
     buffer_cap: usize,
+    #[cfg(feature = "exchange_backoff")]
     exchange: ExchangeArray<T, A>,
 }
 
@@ -70,6 +46,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
         Self {
             head: AtomicPtr::new(first_buffer),
             count: AtomicUsize::new(0),
+            #[cfg(feature = "exchange_backoff")]
             exchange: ExchangeArray::new(),
             buffer_cap,
         }
@@ -125,6 +102,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                     return;
                 }
             }
+            #[cfg(feature = "exchange_backoff")]
             match self.exchange.exchange(Some((flag, data))) {
                 Ok(Some(tuple)) | Err(Some(tuple)) => {
                     // exchanged a push, reset this push parameters
@@ -259,6 +237,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
             } else {
                 return res;
             }
+            #[cfg(feature = "exchange_backoff")]
             match self.exchange.exchange(None) {
                 Ok(Some(tuple)) | Err(Some(tuple)) => {
                     // exchanged a push, return it
@@ -653,163 +632,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> ObjectList<T, A> {
     }
 }
 
-impl<T: Default + Copy> ExchangeSlot<T> {
-    fn new() -> Self {
-        Self {
-            state: AtomicUsize::new(EXCHANGE_EMPTY),
-            data: UnsafeCell::new(None),
-            data_state: AtomicUsize::new(EXCHANGE_EMPTY),
-        }
-    }
 
-    fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
-        // Memory ordering is somehow important here
-        let state = self.state.load(Relaxed);
-        let backoff = Backoff::new();
-        if state == EXCHANGE_EMPTY {
-            self.wait_state_data_until(state, &backoff);
-            if self
-                .state
-                .compare_and_swap(EXCHANGE_EMPTY, EXCHANGE_WAITING, Relaxed)
-                == EXCHANGE_EMPTY
-            {
-                self.store_state_data(Some(data));
-                let now = Instant::now();
-                loop {
-                    // check if it can spin
-                    if (now.elapsed().as_nanos() as usize) < EXCHANGE_SPIN_WAIT_NS
-                        // if not, CAS to empty, can fail by other thread set BUSY
-                        || self.state.compare_and_swap(EXCHANGE_WAITING, EXCHANGE_EMPTY, Relaxed) == EXCHANGE_BUSY
-                    {
-                        if self.state.load(Relaxed) != EXCHANGE_BUSY {
-                            continue;
-                        }
-                        self.wait_state_data_until(EXCHANGE_BUSY, &backoff);
-                        self.state.store(EXCHANGE_EMPTY, Relaxed);
-                        let mut data_result = None;
-                        self.swap_state_data(&mut data_result);
-                        if let Some(res) = data_result {
-                            return Ok(res);
-                        } else {
-                            unreachable!();
-                        }
-                    } else {
-                        // no other thead come and take over, return input
-                        assert_eq!(
-                            self.state.load(Relaxed),
-                            EXCHANGE_EMPTY,
-                            "Bad state after bail"
-                        );
-                        let mut returned_data_state = None;
-                        self.swap_state_data(&mut returned_data_state);
-                        if let Some(returned_data) = returned_data_state {
-                            //                            assert_eq!(
-                            //                                returned_data.as_ref().map(|(f, _)| *f), origin_data_flag,
-                            //                                "return check error. Current state: {}, in state {}",
-                            //                                self.state.load(Relaxed), state
-                            //                            );
-                            return Err(returned_data);
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                }
-            } else {
-                return Err(data);
-            }
-        } else if state == EXCHANGE_WAITING {
-            // find a pair, get it first
-            if self
-                .state
-                .compare_and_swap(EXCHANGE_WAITING, EXCHANGE_BUSY, Relaxed)
-                == EXCHANGE_WAITING
-            {
-                self.wait_state_data_until(EXCHANGE_WAITING, &backoff);
-                let mut data_result = Some(data);
-                self.swap_state_data(&mut data_result);
-                if let Some(res) = data_result {
-                    return Ok(res);
-                } else {
-                    unreachable!()
-                }
-            } else {
-                return Err(data);
-            }
-        } else if state == EXCHANGE_BUSY {
-            return Err(data);
-        } else {
-            unreachable!(
-                "Got state {}, real state {}",
-                state,
-                self.state.load(Relaxed)
-            );
-        }
-    }
-
-    fn store_state_data(&self, data: Option<ExchangeData<T>>) {
-        let data_content_ptr = self.data.get();
-        unsafe { ptr::write(data_content_ptr, data) }
-        fence(SeqCst);
-        self.data_state.store(self.state.load(Relaxed), Relaxed);
-    }
-
-    fn wait_state_data_until(&self, expecting: usize, backoff: &Backoff) {
-        while self.data_state.load(Relaxed) != expecting {
-            backoff.spin();
-        }
-    }
-
-    fn wait_state_data_sync(&self, backoff: &Backoff) {
-        self.wait_state_data_until(self.state.load(Relaxed), backoff);
-    }
-
-    fn swap_state_data(&self, data: &mut Option<ExchangeData<T>>) {
-        let mut data_content_mut = unsafe { &mut *self.data.get() };
-        mem::swap(data, data_content_mut);
-        fence(SeqCst);
-        self.data_state.store(self.state.load(Relaxed), Relaxed);
-    }
-}
-
-unsafe impl<T: Default + Copy> Sync for ExchangeSlot<T> {}
-unsafe impl<T: Default + Copy> Send for ExchangeSlot<T> {}
-
-impl<T: Default + Copy, A: GlobalAlloc + Default> ExchangeArray<T, A> {
-    pub fn new() -> Self {
-        let num_cpus = num_cpus::get();
-        let default_capacity = num_cpus >> 3;
-        Self::with_capacity(min(
-            max(default_capacity, 2) as usize,
-            MAXIMUM_EXCHANGE_SLOTS,
-        ))
-    }
-
-    pub fn with_capacity(cap: usize) -> Self {
-        let mut slots = SmallVec::with_capacity(cap);
-        for i in 0..cap {
-            slots.push(ExchangeSlot::new());
-        }
-        Self {
-            slots,
-            rand: XorRand::new(cap),
-            shadow: PhantomData,
-            capacity: cap,
-        }
-    }
-
-    pub fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
-        let slot_num = self.rand.rand_range(0, self.capacity - 1);
-        let slot = &self.slots[slot_num];
-        slot.exchange(data)
-    }
-
-    pub fn worth_exchange(&self, rc: usize) -> bool {
-        rc >= self.slots.capacity()
-    }
-}
-
-unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Send for ExchangeArray<T, A> {}
-unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Sync for ExchangeArray<T, A> {}
 
 #[inline]
 pub fn dealloc_mem<A: GlobalAlloc + Default>(ptr: usize, size: usize) {
@@ -826,6 +649,267 @@ pub fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let layout = Layout::from_size_align(size, align).unwrap();
     // must be all zeroed
     (unsafe { a.alloc_zeroed(layout) }) as usize
+}
+
+#[cfg(feature = "exchange_backoff")]
+mod exchange {
+
+    use super::*;
+    use crate::rand::XorRand;
+    use core::cell::UnsafeCell;
+    use core::marker::PhantomData;
+    use std::time::Instant;
+    use smallvec::SmallVec;
+    use std::sync::atomic::fence;
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::cmp::max;
+
+    const EXCHANGE_EMPTY: usize = 0;
+    const EXCHANGE_WAITING: usize = 1;
+    const EXCHANGE_BUSY: usize = 2;
+    const EXCHANGE_SPIN_WAIT_NS: usize = 150;
+    const MAXIMUM_EXCHANGE_SLOTS: usize = 16;
+
+    type ExchangeData<T> = Option<(usize, T)>;
+    type ExchangeArrayVec<T> = SmallVec<[ExchangeSlot<T>; MAXIMUM_EXCHANGE_SLOTS]>;
+
+    pub struct ExchangeSlot<T: Default + Copy> {
+        state: AtomicUsize,
+        data: UnsafeCell<Option<ExchangeData<T>>>,
+        data_state: AtomicUsize,
+    }
+
+    pub struct ExchangeArray<T: Default + Copy, A: GlobalAlloc + Default> {
+        rand: XorRand,
+        shadow: PhantomData<A>,
+        capacity: usize,
+        slots: ExchangeArrayVec<T>,
+    }
+
+    impl<T: Default + Copy> ExchangeSlot<T> {
+        fn new() -> Self {
+            Self {
+                state: AtomicUsize::new(EXCHANGE_EMPTY),
+                data: UnsafeCell::new(None),
+                data_state: AtomicUsize::new(EXCHANGE_EMPTY),
+            }
+        }
+    
+        fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
+            // Memory ordering is somehow important here
+            let state = self.state.load(Relaxed);
+            let backoff = Backoff::new();
+            if state == EXCHANGE_EMPTY {
+                self.wait_state_data_until(state, &backoff);
+                if self
+                    .state
+                    .compare_and_swap(EXCHANGE_EMPTY, EXCHANGE_WAITING, Relaxed)
+                    == EXCHANGE_EMPTY
+                {
+                    self.store_state_data(Some(data));
+                    let now = Instant::now();
+                    loop {
+                        // check if it can spin
+                        if (now.elapsed().as_nanos() as usize) < EXCHANGE_SPIN_WAIT_NS
+                            // if not, CAS to empty, can fail by other thread set BUSY
+                            || self.state.compare_and_swap(EXCHANGE_WAITING, EXCHANGE_EMPTY, Relaxed) == EXCHANGE_BUSY
+                        {
+                            if self.state.load(Relaxed) != EXCHANGE_BUSY {
+                                continue;
+                            }
+                            self.wait_state_data_until(EXCHANGE_BUSY, &backoff);
+                            self.state.store(EXCHANGE_EMPTY, Relaxed);
+                            let mut data_result = None;
+                            self.swap_state_data(&mut data_result);
+                            if let Some(res) = data_result {
+                                return Ok(res);
+                            } else {
+                                unreachable!();
+                            }
+                        } else {
+                            // no other thead come and take over, return input
+                            assert_eq!(
+                                self.state.load(Relaxed),
+                                EXCHANGE_EMPTY,
+                                "Bad state after bail"
+                            );
+                            let mut returned_data_state = None;
+                            self.swap_state_data(&mut returned_data_state);
+                            if let Some(returned_data) = returned_data_state {
+                                //                            assert_eq!(
+                                //                                returned_data.as_ref().map(|(f, _)| *f), origin_data_flag,
+                                //                                "return check error. Current state: {}, in state {}",
+                                //                                self.state.load(Relaxed), state
+                                //                            );
+                                return Err(returned_data);
+                            } else {
+                                unreachable!()
+                            }
+                        }
+                    }
+                } else {
+                    return Err(data);
+                }
+            } else if state == EXCHANGE_WAITING {
+                // find a pair, get it first
+                if self
+                    .state
+                    .compare_and_swap(EXCHANGE_WAITING, EXCHANGE_BUSY, Relaxed)
+                    == EXCHANGE_WAITING
+                {
+                    self.wait_state_data_until(EXCHANGE_WAITING, &backoff);
+                    let mut data_result = Some(data);
+                    self.swap_state_data(&mut data_result);
+                    if let Some(res) = data_result {
+                        return Ok(res);
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    return Err(data);
+                }
+            } else if state == EXCHANGE_BUSY {
+                return Err(data);
+            } else {
+                unreachable!(
+                    "Got state {}, real state {}",
+                    state,
+                    self.state.load(Relaxed)
+                );
+            }
+        }
+    
+        fn store_state_data(&self, data: Option<ExchangeData<T>>) {
+            let data_content_ptr = self.data.get();
+            unsafe { ptr::write(data_content_ptr, data) }
+            fence(SeqCst);
+            self.data_state.store(self.state.load(Relaxed), Relaxed);
+        }
+    
+        fn wait_state_data_until(&self, expecting: usize, backoff: &Backoff) {
+            while self.data_state.load(Relaxed) != expecting {
+                backoff.spin();
+            }
+        }
+    
+        fn wait_state_data_sync(&self, backoff: &Backoff) {
+            self.wait_state_data_until(self.state.load(Relaxed), backoff);
+        }
+    
+        fn swap_state_data(&self, data: &mut Option<ExchangeData<T>>) {
+            let mut data_content_mut = unsafe { &mut *self.data.get() };
+            mem::swap(data, data_content_mut);
+            fence(SeqCst);
+            self.data_state.store(self.state.load(Relaxed), Relaxed);
+        }
+    }
+    
+    unsafe impl<T: Default + Copy> Sync for ExchangeSlot<T> {}
+    unsafe impl<T: Default + Copy> Send for ExchangeSlot<T> {}
+    
+    impl<T: Default + Copy, A: GlobalAlloc + Default> ExchangeArray<T, A> {
+        pub fn new() -> Self {
+            let num_cpus = num_cpus::get();
+            let default_capacity = num_cpus >> 3;
+            Self::with_capacity(min(
+                max(default_capacity, 2) as usize,
+                MAXIMUM_EXCHANGE_SLOTS,
+            ))
+        }
+    
+        pub fn with_capacity(cap: usize) -> Self {
+            let mut slots = SmallVec::with_capacity(cap);
+            for i in 0..cap {
+                slots.push(ExchangeSlot::new());
+            }
+            Self {
+                slots,
+                rand: XorRand::new(cap),
+                shadow: PhantomData,
+                capacity: cap,
+            }
+        }
+    
+        pub fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
+            let slot_num = self.rand.rand_range(0, self.capacity - 1);
+            let slot = &self.slots[slot_num];
+            slot.exchange(data)
+        }
+    
+        pub fn worth_exchange(&self, rc: usize) -> bool {
+            rc >= self.slots.capacity()
+        }
+    }
+    
+    unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Send for ExchangeArray<T, A> {}
+    unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Sync for ExchangeArray<T, A> {}
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        use crate::list::*;
+        use std::alloc::{Global, System};
+        use std::collections::BTreeSet;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering::Relaxed;
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        #[test]
+        #[ignore]
+        pub fn exchange() {
+            let exchg = Arc::new(ExchangeSlot::new());
+            let exchg_1 = exchg.clone();
+            let exchg_2 = exchg.clone();
+            let attempt_cycles = 10000;
+            let sum_board = Arc::new(Mutex::new(BTreeSet::new()));
+            let sum_board_1 = sum_board.clone();
+            let sum_board_2 = sum_board.clone();
+            let hit_count = Arc::new(AtomicUsize::new(0));
+            let hit_count_1 = hit_count.clone();
+            let hit_count_2 = hit_count.clone();
+            assert_eq!(
+                exchg.exchange(Some((0, ()))),
+                Err(Some((0, ()))),
+                "No paring exchange shall return the parameter"
+            );
+            let th1 = thread::spawn(move || {
+                for i in 0..attempt_cycles {
+                    let res = exchg_2.exchange(Some((i, ())));
+                    if res.is_ok() {
+                        hit_count_2.fetch_add(1, Relaxed);
+                    }
+                    assert!(sum_board_2
+                        .lock()
+                        .unwrap()
+                        .insert(res.unwrap_or_else(|err| err)));
+                }
+            });
+            let th2 = thread::spawn(move || {
+                for i in attempt_cycles..attempt_cycles * 2 {
+                    let res = exchg_1.exchange(Some((i, ())));
+                    if res.is_ok() {
+                        hit_count_1.fetch_add(1, Relaxed);
+                    }
+                    assert!(sum_board_1
+                        .lock()
+                        .unwrap()
+                        .insert(res.unwrap_or_else(|err| err)));
+                }
+            });
+            th1.join();
+            th2.join();
+            assert!(hit_count.load(Relaxed) > 0);
+            assert_eq!(sum_board.lock().unwrap().len(), attempt_cycles * 2);
+            for i in 0..attempt_cycles * 2 {
+                assert!(
+                    sum_board.lock().unwrap().contains(&Some((i, ()))),
+                    "expecting {} but not found",
+                    i
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -928,60 +1012,5 @@ mod test {
         agg.sort();
         agg.dedup_by_key(|k| *k);
         assert_eq!(agg.len(), total_insertion, "unmatch after dedup");
-    }
-
-    #[test]
-    #[ignore]
-    pub fn exchange() {
-        let exchg = Arc::new(ExchangeSlot::new());
-        let exchg_1 = exchg.clone();
-        let exchg_2 = exchg.clone();
-        let attempt_cycles = 10000;
-        let sum_board = Arc::new(Mutex::new(BTreeSet::new()));
-        let sum_board_1 = sum_board.clone();
-        let sum_board_2 = sum_board.clone();
-        let hit_count = Arc::new(AtomicUsize::new(0));
-        let hit_count_1 = hit_count.clone();
-        let hit_count_2 = hit_count.clone();
-        assert_eq!(
-            exchg.exchange(Some((0, ()))),
-            Err(Some((0, ()))),
-            "No paring exchange shall return the parameter"
-        );
-        let th1 = thread::spawn(move || {
-            for i in 0..attempt_cycles {
-                let res = exchg_2.exchange(Some((i, ())));
-                if res.is_ok() {
-                    hit_count_2.fetch_add(1, Relaxed);
-                }
-                assert!(sum_board_2
-                    .lock()
-                    .unwrap()
-                    .insert(res.unwrap_or_else(|err| err)));
-            }
-        });
-        let th2 = thread::spawn(move || {
-            for i in attempt_cycles..attempt_cycles * 2 {
-                let res = exchg_1.exchange(Some((i, ())));
-                if res.is_ok() {
-                    hit_count_1.fetch_add(1, Relaxed);
-                }
-                assert!(sum_board_1
-                    .lock()
-                    .unwrap()
-                    .insert(res.unwrap_or_else(|err| err)));
-            }
-        });
-        th1.join();
-        th2.join();
-        assert!(hit_count.load(Relaxed) > 0);
-        assert_eq!(sum_board.lock().unwrap().len(), attempt_cycles * 2);
-        for i in 0..attempt_cycles * 2 {
-            assert!(
-                sum_board.lock().unwrap().contains(&Some((i, ()))),
-                "expecting {} but not found",
-                i
-            );
-        }
     }
 }
