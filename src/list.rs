@@ -10,9 +10,9 @@ use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
 use core::{intrinsics, mem};
 use crossbeam_utils::Backoff;
-use std::alloc::GlobalAlloc;
 #[cfg(feature = "exchange_backoff")]
 use exchange::*;
+use std::alloc::GlobalAlloc;
 
 const CACHE_LINE_SIZE: usize = 64;
 const EMPTY_SLOT: usize = 0;
@@ -632,8 +632,6 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> ObjectList<T, A> {
     }
 }
 
-
-
 #[inline]
 pub fn dealloc_mem<A: GlobalAlloc + Default>(ptr: usize, size: usize) {
     let mut a = A::default();
@@ -658,11 +656,11 @@ mod exchange {
     use crate::rand::XorRand;
     use core::cell::UnsafeCell;
     use core::marker::PhantomData;
-    use std::time::Instant;
     use smallvec::SmallVec;
+    use std::cmp::max;
     use std::sync::atomic::fence;
     use std::sync::atomic::Ordering::SeqCst;
-    use std::cmp::max;
+    use std::time::Instant;
 
     const EXCHANGE_EMPTY: usize = 0;
     const EXCHANGE_WAITING: usize = 1;
@@ -694,7 +692,7 @@ mod exchange {
                 data_state: AtomicUsize::new(EXCHANGE_EMPTY),
             }
         }
-    
+
         fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
             // Memory ordering is somehow important here
             let state = self.state.load(Relaxed);
@@ -778,24 +776,24 @@ mod exchange {
                 );
             }
         }
-    
+
         fn store_state_data(&self, data: Option<ExchangeData<T>>) {
             let data_content_ptr = self.data.get();
             unsafe { ptr::write(data_content_ptr, data) }
             fence(SeqCst);
             self.data_state.store(self.state.load(Relaxed), Relaxed);
         }
-    
+
         fn wait_state_data_until(&self, expecting: usize, backoff: &Backoff) {
             while self.data_state.load(Relaxed) != expecting {
                 backoff.spin();
             }
         }
-    
+
         fn wait_state_data_sync(&self, backoff: &Backoff) {
             self.wait_state_data_until(self.state.load(Relaxed), backoff);
         }
-    
+
         fn swap_state_data(&self, data: &mut Option<ExchangeData<T>>) {
             let mut data_content_mut = unsafe { &mut *self.data.get() };
             mem::swap(data, data_content_mut);
@@ -803,10 +801,10 @@ mod exchange {
             self.data_state.store(self.state.load(Relaxed), Relaxed);
         }
     }
-    
+
     unsafe impl<T: Default + Copy> Sync for ExchangeSlot<T> {}
     unsafe impl<T: Default + Copy> Send for ExchangeSlot<T> {}
-    
+
     impl<T: Default + Copy, A: GlobalAlloc + Default> ExchangeArray<T, A> {
         pub fn new() -> Self {
             let num_cpus = num_cpus::get();
@@ -816,7 +814,7 @@ mod exchange {
                 MAXIMUM_EXCHANGE_SLOTS,
             ))
         }
-    
+
         pub fn with_capacity(cap: usize) -> Self {
             let mut slots = SmallVec::with_capacity(cap);
             for i in 0..cap {
@@ -829,18 +827,18 @@ mod exchange {
                 capacity: cap,
             }
         }
-    
+
         pub fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
             let slot_num = self.rand.rand_range(0, self.capacity - 1);
             let slot = &self.slots[slot_num];
             slot.exchange(data)
         }
-    
+
         pub fn worth_exchange(&self, rc: usize) -> bool {
             rc >= self.slots.capacity()
         }
     }
-    
+
     unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Send for ExchangeArray<T, A> {}
     unsafe impl<T: Default + Copy, A: GlobalAlloc + Default> Sync for ExchangeArray<T, A> {}
 
