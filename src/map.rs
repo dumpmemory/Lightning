@@ -375,14 +375,14 @@ impl<
                 }
             }
             if k == EMPTY_KEY {
-                return (Value::new(0, self), 0);
+                return (Value::new::<K, V, A, ALLOC, H>(0), 0);
             }
             idx += 1; // reprobe
             counter += 1;
         }
 
         // not found
-        return (Value::new(0, self), 0);
+        return (Value::new::<K, V, A, ALLOC, H>(0), 0);
     }
 
     fn modify_entry<'a>(
@@ -622,7 +622,7 @@ impl<
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let val = unsafe { intrinsics::atomic_load_relaxed(addr as *mut usize) };
-        Value::new(val, self)
+        Value::new::<K, V, A, ALLOC, H>(val)
     }
 
     #[inline(always)]
@@ -813,19 +813,6 @@ impl<
         return effective_copy;
     }
 
-    fn dump(&self, base: usize, cap: usize) -> &str {
-        for i in 0..cap {
-            let addr = base + i * entry_size();
-            trace!(
-                "{}\t-{}-{}\t",
-                i,
-                self.get_fast_key(addr),
-                self.get_fast_value(addr).raw
-            );
-        }
-        "DUMPED"
-    }
-
     pub fn map_is_copying(&self) -> bool {
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.chunk.load(Relaxed, &guard);
@@ -837,7 +824,6 @@ impl<
 impl Value {
     pub fn new<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
         val: usize,
-        table: &Table<K, V, A, ALLOC, H>,
     ) -> Self {
         let res = {
             if val == 0 {
@@ -909,7 +895,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     for Table<K, V, A, ALLOC, H>
 {
     fn clone(&self) -> Self {
-        let mut new_table = Table {
+        let new_table = Table {
             chunk: Default::default(),
             new_chunk: Default::default(),
             count: AtomicUsize::new(0),
