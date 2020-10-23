@@ -153,6 +153,24 @@ impl <T>LinkedWordMap<T> {
             return val;
         }
     }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn all_pairs(&self) -> Vec<(usize, NodeRef<T>)> {
+        let mut res = vec![];
+        let mut node_key = self.head.load(Relaxed);       
+        loop {
+            if let Some(node) = self.map.get(&node_key) {
+                node_key = node.get_next();
+                res.push((node_key, node));
+            } else {
+                break;
+            }
+        }
+        res
+    }
 }
 
 impl <T> Node<T> {
@@ -171,14 +189,6 @@ impl <T> Node<T> {
 
     fn get_prev(&self) -> usize {
         self.prev.load(Relaxed)
-    }
-    
-    fn cas_next(&self, current: usize, new: usize) -> usize {
-        self.next.compare_and_swap(current, new, Relaxed)
-    }
-    
-    fn cas_prev(&self, current: usize, new: usize) -> usize {
-        self.prev.compare_and_swap(current, new, Relaxed)
     }
 
     fn set_next(&self, new: usize) {
