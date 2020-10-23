@@ -19,15 +19,15 @@ pub struct Node<T> {
     obj: T,
 }
 
-pub struct LinkedWordMap<T> {
+pub struct LinkedObjectMap<T> {
     map: ObjectMap<NodeRef<T>>,
     head: AtomicUsize,
     tail: AtomicUsize,
 }
 
-impl <T>LinkedWordMap<T> {
+impl <T>LinkedObjectMap<T> {
     pub fn with_capacity(cap: usize) -> Self {
-        Self {
+        LinkedObjectMap {
             map: ObjectMap::with_capacity(cap),
             head: AtomicUsize::new(NONE_KEY),
             tail: AtomicUsize::new(NONE_KEY),
