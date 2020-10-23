@@ -1,3 +1,5 @@
+// A concurrent linked hash map, fast and lock-free on iterate 
+
 use crate::map::{ObjectMap, Map};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -43,8 +45,13 @@ impl <T>LinkedWordMap<T> {
             let _front_guard = front_node.as_ref().map(|n| n.lock.lock());
             if let Some(ref front_node) = front_node {
                 if front_node.get_prev() != NONE_KEY {
+                    backoff.spin();
                     continue;
                 }
+            } else if front != NONE_KEY {
+                // Inconsistent with map, will spin wait
+                backoff.spin();
+                continue;
             }
             new_front.set_next(front);
             if self.head.compare_and_swap(front, *key, Relaxed) == front {
@@ -72,8 +79,12 @@ impl <T>LinkedWordMap<T> {
             let _back_guard = back_node.as_ref().map(|n| n.lock.lock());
             if let Some(ref back_node) = back_node {
                 if back_node.get_next() != NONE_KEY {
+                    backoff.spin();
                     continue;
                 }
+            } else if back != NONE_KEY {
+                backoff.spin();
+                continue;
             }
             new_back.set_prev(back);
             if self.tail.compare_and_swap(back, *key, Relaxed) == back {
@@ -87,6 +98,59 @@ impl <T>LinkedWordMap<T> {
             } else {
                 backoff.spin();
             }
+        }
+    }
+
+    pub fn get(&self, key: &usize) -> Option<NodeRef<T>> {
+        self.map.get(key)
+    }
+
+    pub fn remove(&self, key: &usize) -> Option<NodeRef<T>> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let val = self.map.get(key);
+        if let Some(val_node) = val {
+            loop {
+                let prev = val_node.get_prev();
+                let next = val_node.get_next();
+                let prev_node = self.map.get(&prev);
+                let next_node = self.map.get(&next);
+                if (prev != NONE_KEY && prev_node.is_none()) || (next != NONE_KEY && prev_node.is_none()) {
+                    backoff.spin();
+                    continue;
+                }
+                // Lock 3 nodes, from left to right to avoid dead lock
+                let _prev_guard = prev_node.as_ref().map(|n| n.lock.lock());
+                let _self_guard = val_node.lock.lock();
+                let _next_guard = next_node.as_ref().map(|n| n.lock.lock());
+                // Validate 3 nodes, retry on failure
+                if 
+                {
+                    prev_node.as_ref().map(|n| n.get_next() != *key).unwrap_or(false) |
+                    (val_node.get_prev() != prev) |
+                    (val_node.get_next() != next) |
+                    next_node.as_ref().map(|n| n.get_prev() != *key).unwrap_or(false)
+                }
+                {
+                    backoff.spin();
+                    continue;
+                }
+                // Bacause all the nodes we are about to modify are locked, we shall use store
+                // instead of CAS
+                prev_node.as_ref().map(|n| n.set_next(next));
+                next_node.as_ref().map(|n| n.set_prev(prev));
+                if prev_node.is_none() {
+                    debug_assert_eq!(self.head.load(Relaxed), *key);
+                    self.head.store(next, Relaxed);
+                }
+                if next_node.is_none() {
+                    debug_assert_eq!(self.tail.load(Relaxed), *key);
+                    self.tail.store(prev, Relaxed,);
+                }
+                // Finally, remove the node from map and return
+                return self.map.remove(key);
+            }
+        } else {
+            return val;
         }
     }
 }
