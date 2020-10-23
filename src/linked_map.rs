@@ -158,6 +158,10 @@ impl <T>LinkedObjectMap<T> {
         self.map.len()
     }
 
+    pub fn contains_key(&self, key:&usize) -> bool {
+        self.map.contains_key(key)
+    }
+
     pub fn all_pairs(&self) -> Vec<(usize, NodeRef<T>)> {
         let mut res = vec![];
         let mut node_key = self.head.load(Relaxed);       

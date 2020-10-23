@@ -1175,12 +1175,12 @@ pub trait Map<K, V: Clone> {
     fn try_insert(&self, key: &K, value: V) -> Option<V>;
     fn remove(&self, key: &K) -> Option<V>;
     fn entries(&self) -> Vec<(K, V)>;
-    fn contains(&self, key: &K) -> bool;
+    fn contains_key(&self, key: &K) -> bool;
     fn len(&self) -> usize;
     // The func function should  be pure and have no side effect
     fn get_or_insert<F: Fn() -> V>(&self, key: &K, func: F) -> V {
         loop {
-            if self.contains(key) {
+            if self.contains_key(key) {
                 if let Some(value) = self.get(key) {
                     return value;
                 }
@@ -1274,7 +1274,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn contains(&self, key: &K) -> bool {
+    fn contains_key(&self, key: &K) -> bool {
         let hash = hash_key::<K, H>(&key);
         self.table.get(key, hash, false).is_some()
     }
@@ -1359,7 +1359,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     }
 
     #[inline(always)]
-    fn contains(&self, key: &usize) -> bool {
+    fn contains_key(&self, key: &usize) -> bool {
         self.table.get(&(), key + NUM_FIX, false).is_some()
     }
 
@@ -1421,7 +1421,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 
     #[inline(always)]
-    fn contains(&self, key: &usize) -> bool {
+    fn contains_key(&self, key: &usize) -> bool {
         self.get(key).is_some()
     }
 
