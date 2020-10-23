@@ -167,14 +167,44 @@ impl <T>LinkedObjectMap<T> {
         let mut node_key = self.head.load(Relaxed);       
         loop {
             if let Some(node) = self.map.get(&node_key) {
-                node_key = node.get_next();
+                let new_node_key = node.get_next();
                 res.push((node_key, node));
+                node_key = new_node_key;
             } else {
                 break;
             }
         }
         res
     }
+
+    pub fn all_keys(&self) -> Vec<usize> {
+        let mut res = vec![];
+        let mut node_key = self.head.load(Relaxed);       
+        loop {
+            if let Some(node) = self.map.get(&node_key) {
+                res.push(node_key);
+                node_key = node.get_next();
+            } else {
+                break;
+            }
+        }
+        res
+    }
+
+    pub fn all_values(&self) -> Vec<NodeRef<T>> {
+        let mut res = vec![];
+        let mut node_key = self.head.load(Relaxed);       
+        loop {
+            if let Some(node) = self.map.get(&node_key) {
+                node_key = node.get_next();
+                res.push(node);
+            } else {
+                break;
+            }
+        }
+        res
+    }
+
 }
 
 impl <T> Node<T> {
