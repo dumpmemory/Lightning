@@ -9,6 +9,7 @@ extern crate test;
 pub mod list;
 pub mod map;
 pub mod linked_map;
+pub mod spin;
 
 pub mod rand;
 

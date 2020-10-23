@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::ops::Deref;
-use parking_lot::Mutex;
+use crate::spin::SpinLock;
 
 const NONE_KEY: usize = 0;
 
@@ -13,7 +13,7 @@ pub type NodeRef<T> = Arc<Node<T>>;
 
 pub struct Node<T> {
     // Prev and next node keys
-    lock: Mutex<()>,
+    lock: SpinLock<()>,
     prev: AtomicUsize,
     next: AtomicUsize,
     obj: T,
@@ -215,7 +215,7 @@ impl <T> Node<T> {
     pub fn new(obj: T, prev: usize, next: usize) -> NodeRef<T> {
         Arc::new(Self {
             obj, 
-            lock: Mutex::new(()),
+            lock: SpinLock::new(()),
             prev: AtomicUsize::new(prev),
             next: AtomicUsize::new(next)
         })
