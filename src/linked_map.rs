@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 
 const NONE_KEY: usize = 0;
 
-type NodeRef<T> = Arc<Node<T>>;
+pub type NodeRef<T> = Arc<Node<T>>;
 
 pub struct Node<T> {
     // Prev and next node keys
