@@ -38,10 +38,9 @@ impl CollectionHandle for TestTable {
     }
 
     fn update(&mut self, key: &Self::Key) -> bool {
-        use std::collections::hash_map::Entry;
         let k = *key as usize;
-        let mut map = &mut self.0;
-        if map.contains(&k) {
+        let map = &mut self.0;
+        if map.contains_key(&k) {
             map.insert(&k, k);
             true
         } else {

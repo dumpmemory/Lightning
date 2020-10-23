@@ -34,11 +34,13 @@ impl <T>LinkedObjectMap<T> {
         }
     }
 
-    pub fn put_front(&self, key: &usize, value: T) {
+    pub fn insert_front(&self, key: &usize, value: T) {
         let backoff = crossbeam_utils::Backoff::new();
         let new_front = Node::new(value, NONE_KEY, NONE_KEY);
+        if self.map.try_insert(key, new_front.clone()).is_some() {
+            panic!("Key exists");
+        }
         let _new_guard = new_front.lock.lock();
-        self.map.insert(key, new_front.clone());
         loop {
             let front = self.head.load(Relaxed);
             let front_node = self.map.get(&front);
@@ -68,11 +70,13 @@ impl <T>LinkedObjectMap<T> {
         }
     }
 
-    pub fn put_back(&self, key: &usize, value: T) {
+    pub fn insert_back(&self, key: &usize, value: T) {
         let backoff = crossbeam_utils::Backoff::new();
         let new_back = Node::new(value, NONE_KEY, NONE_KEY);
         let _new_guard = new_back.lock.lock();
-        self.map.insert(key, new_back.clone());
+        if self.map.try_insert(key, new_back.clone()).is_some() {
+            panic!("Key exists");
+        }
         loop {
             let back = self.tail.load(Relaxed);
             let back_node = self.map.get(&back);
@@ -239,5 +243,37 @@ impl <T> Deref for Node<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.obj
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::thread;
+
+    #[test]
+    pub fn linked_map_insertions() {
+        let _ = env_logger::try_init();
+        let linked_map = Arc::new(LinkedObjectMap::with_capacity(16));
+        let num_threads = 64;
+        let mut threads = vec![];
+        for i in 0..num_threads {
+            let map = linked_map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 0..999 {
+                    let num = i * 1000 + j;
+                    debug!("Insert {}", num);
+                    if j % 2 == 1 {
+                        map.insert_back(&num, num);
+                    } else {
+                        map.insert_front(&num, num);
+                    }
+                }
+            }));
+        }
+        info!("Waiting for threads to finish");
+        for t in threads {
+            t.join().unwrap();
+        }
     }
 }
