@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::ops::Deref;
 use crate::spin::SpinLock;
 
-const NONE_KEY: usize = 0;
+const NONE_KEY: usize = !0 >> 1;
 
 pub type NodeRef<T> = Arc<Node<T>>;
 
@@ -35,6 +35,7 @@ impl <T>LinkedObjectMap<T> {
     }
 
     pub fn insert_front(&self, key: &usize, value: T) {
+        debug_assert_ne!(*key, NONE_KEY);
         let backoff = crossbeam_utils::Backoff::new();
         let new_front = Node::new(value, NONE_KEY, NONE_KEY);
         if self.map.try_insert(key, new_front.clone()).is_some() {
@@ -71,6 +72,7 @@ impl <T>LinkedObjectMap<T> {
     }
 
     pub fn insert_back(&self, key: &usize, value: T) {
+        debug_assert_ne!(*key, NONE_KEY);
         let backoff = crossbeam_utils::Backoff::new();
         let new_back = Node::new(value, NONE_KEY, NONE_KEY);
         let _new_guard = new_back.lock.lock();
@@ -250,6 +252,17 @@ impl <T> Deref for Node<T> {
 mod test {
     use super::*;
     use std::thread;
+
+    #[test]
+    pub fn linked_map_serial() {
+        let map = LinkedObjectMap::with_capacity(16);
+        for i in 0..1024 {
+            map.insert_front(&i, i);
+        }
+        for i in 1024..2048 {
+            map.insert_back(&i, i);
+        }
+    }
 
     #[test]
     pub fn linked_map_insertions() {
