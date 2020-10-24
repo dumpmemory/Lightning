@@ -52,3 +52,32 @@ impl <'a, T> Drop for SpinLockGuard<'a, T> {
     self.lock.mark.store(0, Relaxed);
   }
 }
+
+unsafe impl <T> Sync for SpinLock<T>{}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::thread;
+    use std::sync::Arc;
+
+    #[test]
+    fn lot_load_of_lock() {
+      let lock = Arc::new(SpinLock::new(0));
+      let num_threads = 32;
+      let thread_turns = 2048;
+      let mut threads = vec![];
+      for _ in 0..num_threads {
+        let lock = lock.clone();
+        threads.push(thread::spawn(move || {
+          for _ in 0..thread_turns {
+            *lock.lock() += 1;
+          }
+        }));
+      }
+      for t in threads {
+        t.join().unwrap();
+      }
+      assert_eq!(*lock.lock(), num_threads * thread_turns);
+    }
+}

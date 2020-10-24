@@ -255,7 +255,7 @@ mod test {
     pub fn linked_map_insertions() {
         let _ = env_logger::try_init();
         let linked_map = Arc::new(LinkedObjectMap::with_capacity(16));
-        let num_threads = 64;
+        let num_threads = 8;
         let mut threads = vec![];
         for i in 0..num_threads {
             let map = linked_map.clone();
