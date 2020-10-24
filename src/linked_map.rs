@@ -130,7 +130,7 @@ impl <T>LinkedObjectMap<T> {
             let next = val_node.get_next();
             let prev_node = self.map.get(&prev);
             let next_node = self.map.get(&next);
-            if (prev != NONE_KEY && prev_node.is_none()) || (next != NONE_KEY && prev_node.is_none()) {
+            if (prev != NONE_KEY && prev_node.is_none()) || (next != NONE_KEY && next_node.is_none()) {
                 backoff.spin();
                 continue;
             }
