@@ -22,6 +22,7 @@ const EMPTY_VALUE: usize = 0;
 const SENTINEL_VALUE: usize = 1;
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
+const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 
 struct Value {
     raw: usize,
@@ -1380,6 +1381,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
             .insert(op, &(), None, key + NUM_FIX, value + NUM_FIX)
             .map(|(v, _)| v)
     }
+
+    pub fn get_from_mutex(&self, key: &usize) -> Option<usize> {
+        self.get(key).map(|v| v | MUTEX_BIT_MASK)
+    }
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<ALLOC, H> {
@@ -1446,7 +1451,6 @@ pub struct WordMutexGuard<
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     fn create(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
         let key = key + NUM_FIX;
-        let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
         let value = 0;
         if table
             .insert(
@@ -1454,7 +1458,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &(),
                 Some(()),
                 key,
-                value | lock_bit_mask,
+                value | MUTEX_BIT_MASK,
             )
             .is_none()
         {
@@ -1465,7 +1469,6 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
     }
     fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
         let key = key + NUM_FIX;
-        let lock_bit_mask = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
@@ -1475,7 +1478,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &(),
                 move |fast_value| {
                     trace!("Key {} have value {}", key, fast_value);
-                    if fast_value & lock_bit_mask > 0 {
+                    if fast_value & MUTEX_BIT_MASK > 0 {
                         // Locked, unchanged
                         trace!("Key {} have locked, unchanged and try again", key);
                         None
@@ -1486,7 +1489,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                             key,
                             fast_value & WORD_MUTEX_DATA_BIT_MASK
                         );
-                        Some(fast_value | lock_bit_mask)
+                        Some(fast_value | MUTEX_BIT_MASK)
                     }
                 },
                 &guard,
@@ -1516,7 +1519,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
     pub fn remove(self) -> usize {
         let res = self.table.remove(&(), self.key).unwrap().0;
         mem::forget(self);
-        res
+        res | MUTEX_BIT_MASK
     }
 }
 
