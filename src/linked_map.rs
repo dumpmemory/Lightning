@@ -38,8 +38,9 @@ impl <T>LinkedObjectMap<T> {
         debug_assert_ne!(*key, NONE_KEY);
         let backoff = crossbeam_utils::Backoff::new();
         let new_front = Node::new(value, NONE_KEY, NONE_KEY);
-        if self.map.try_insert(key, new_front.clone()).is_some() {
-            panic!("Key exists");
+        if let Some(existed_node) = self.map.insert(key, new_front.clone()) {
+            // TODO: Eliminate the hazard when the node does not existed in the linked list
+            self.remove_node(*key, existed_node);
         }
         let _new_guard = new_front.lock.lock();
         loop {
@@ -76,8 +77,9 @@ impl <T>LinkedObjectMap<T> {
         let backoff = crossbeam_utils::Backoff::new();
         let new_back = Node::new(value, NONE_KEY, NONE_KEY);
         let _new_guard = new_back.lock.lock();
-        if self.map.try_insert(key, new_back.clone()).is_some() {
-            panic!("Key exists");
+        if let Some(existed_node) = self.map.insert(key, new_back.clone()) {
+            // TODO: Eliminate the hazard when the node does not existed in the linked list
+            self.remove_node(*key, existed_node);
         }
         loop {
             let back = self.tail.load(Relaxed);
@@ -112,51 +114,55 @@ impl <T>LinkedObjectMap<T> {
     }
 
     pub fn remove(&self, key: &usize) -> Option<NodeRef<T>> {
-        let backoff = crossbeam_utils::Backoff::new();
         let val = self.map.get(key);
         if let Some(val_node) = val {
-            loop {
-                let prev = val_node.get_prev();
-                let next = val_node.get_next();
-                let prev_node = self.map.get(&prev);
-                let next_node = self.map.get(&next);
-                if (prev != NONE_KEY && prev_node.is_none()) || (next != NONE_KEY && prev_node.is_none()) {
-                    backoff.spin();
-                    continue;
-                }
-                // Lock 3 nodes, from left to right to avoid dead lock
-                let _prev_guard = prev_node.as_ref().map(|n| n.lock.lock());
-                let _self_guard = val_node.lock.lock();
-                let _next_guard = next_node.as_ref().map(|n| n.lock.lock());
-                // Validate 3 nodes, retry on failure
-                if 
-                {
-                    prev_node.as_ref().map(|n| n.get_next() != *key).unwrap_or(false) |
-                    (val_node.get_prev() != prev) |
-                    (val_node.get_next() != next) |
-                    next_node.as_ref().map(|n| n.get_prev() != *key).unwrap_or(false)
-                }
-                {
-                    backoff.spin();
-                    continue;
-                }
-                // Bacause all the nodes we are about to modify are locked, we shall use store
-                // instead of CAS
-                prev_node.as_ref().map(|n| n.set_next(next));
-                next_node.as_ref().map(|n| n.set_prev(prev));
-                if prev_node.is_none() {
-                    debug_assert_eq!(self.head.load(Relaxed), *key);
-                    self.head.store(next, Relaxed);
-                }
-                if next_node.is_none() {
-                    debug_assert_eq!(self.tail.load(Relaxed), *key);
-                    self.tail.store(prev, Relaxed,);
-                }
-                // Finally, remove the node from map and return
-                return self.map.remove(key);
-            }
+            self.remove_node(*key, val_node);
+            return self.map.remove(key);
         } else {
             return val;
+        }
+    }
+
+    fn remove_node(&self, key: usize, val_node: NodeRef<T>) {
+        let backoff = crossbeam_utils::Backoff::new();
+        loop {
+            let prev = val_node.get_prev();
+            let next = val_node.get_next();
+            let prev_node = self.map.get(&prev);
+            let next_node = self.map.get(&next);
+            if (prev != NONE_KEY && prev_node.is_none()) || (next != NONE_KEY && prev_node.is_none()) {
+                backoff.spin();
+                continue;
+            }
+            // Lock 3 nodes, from left to right to avoid dead lock
+            let _prev_guard = prev_node.as_ref().map(|n| n.lock.lock());
+            let _self_guard = val_node.lock.lock();
+            let _next_guard = next_node.as_ref().map(|n| n.lock.lock());
+            // Validate 3 nodes, retry on failure
+            if 
+            {
+                prev_node.as_ref().map(|n| n.get_next() != key).unwrap_or(false) |
+                (val_node.get_prev() != prev) |
+                (val_node.get_next() != next) |
+                next_node.as_ref().map(|n| n.get_prev() != key).unwrap_or(false)
+            }
+            {
+                backoff.spin();
+                continue;
+            }
+            // Bacause all the nodes we are about to modify are locked, we shall use store
+            // instead of CAS
+            prev_node.as_ref().map(|n| n.set_next(next));
+            next_node.as_ref().map(|n| n.set_prev(prev));
+            if prev_node.is_none() {
+                debug_assert_eq!(self.head.load(Relaxed), key);
+                self.head.store(next, Relaxed);
+            }
+            if next_node.is_none() {
+                debug_assert_eq!(self.tail.load(Relaxed), key);
+                self.tail.store(prev, Relaxed,);
+            }
+            return;
         }
     }
 
