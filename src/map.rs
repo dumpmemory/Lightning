@@ -1383,7 +1383,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     }
 
     pub fn get_from_mutex(&self, key: &usize) -> Option<usize> {
-        self.get(key).map(|v| v | MUTEX_BIT_MASK)
+        self.get(key).map(|v| v & WORD_MUTEX_DATA_BIT_MASK)
     }
 }
 
