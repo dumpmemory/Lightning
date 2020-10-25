@@ -2,7 +2,7 @@
 
 use crate::map::{ObjectMap, Map};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, fence};
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::ops::Deref;
 use crate::spin::SpinLock;
@@ -162,6 +162,7 @@ impl <T>LinkedObjectMap<T> {
                 debug_assert_eq!(self.tail.load(Relaxed), key);
                 self.tail.store(prev, Relaxed,);
             }
+            fence(SeqCst);
             return;
         }
     }
@@ -182,8 +183,10 @@ impl <T>LinkedObjectMap<T> {
                 let new_node_key = node.get_next();
                 res.push((node_key, node));
                 node_key = new_node_key;
-            } else {
+            } else if node_key == NONE_KEY {
                 break;
+            } else {
+                unreachable!();
             }
         }
         res
@@ -196,8 +199,10 @@ impl <T>LinkedObjectMap<T> {
             if let Some(node) = self.map.get(&node_key) {
                 res.push(node_key);
                 node_key = node.get_next();
-            } else {
+            } else if node_key == NONE_KEY {
                 break;
+            } else {
+                unreachable!();
             }
         }
         res
@@ -210,8 +215,10 @@ impl <T>LinkedObjectMap<T> {
             if let Some(node) = self.map.get(&node_key) {
                 node_key = node.get_next();
                 res.push(node);
-            } else {
+            } else if node_key == NONE_KEY {
                 break;
+            } else {
+                unreachable!();
             }
         }
         res
@@ -274,7 +281,7 @@ mod test {
     pub fn linked_map_insertions() {
         let _ = env_logger::try_init();
         let linked_map = Arc::new(LinkedObjectMap::with_capacity(16));
-        let num_threads = 8;
+        let num_threads = 16;
         let mut threads = vec![];
         for i in 0..num_threads {
             let map = linked_map.clone();
