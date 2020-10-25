@@ -294,6 +294,9 @@ mod test {
                     } else {
                         map.insert_front(&num, num);
                     }
+                    map.all_keys();
+                    map.all_values();
+                    map.all_pairs();
                 }
             }));
         }
