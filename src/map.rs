@@ -1462,8 +1462,10 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             )
             .is_none()
         {
+            trace!("Created locked key {}", key);
             Some(Self { table, key, value })
         } else {
+            trace!("Cannot create locked key {} ", key);
             None
         }
     }
@@ -1477,15 +1479,15 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 key,
                 &(),
                 move |fast_value| {
-                    trace!("Key {} have value {}", key, fast_value);
+                    trace!("The key {} have value {}", key, fast_value);
                     if fast_value & MUTEX_BIT_MASK > 0 {
                         // Locked, unchanged
-                        trace!("Key {} have locked, unchanged and try again", key);
+                        trace!("The key {} have locked, unchanged and try again", key);
                         None
                     } else {
                         // Obtain lock
                         trace!(
-                            "Key {} have obtained, with value {}",
+                            "The key {} have obtained, with value {}",
                             key,
                             fast_value & WORD_MUTEX_DATA_BIT_MASK
                         );
@@ -1496,12 +1498,12 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             );
             match swap_res {
                 SwapResult::Succeed(val, _idx, _chunk) => {
-                    trace!("Lock on {} succeed with value {}", key, val);
+                    trace!("Lock on key {} succeed with value {}", key, val);
                     value = val & WORD_MUTEX_DATA_BIT_MASK;
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
-                    trace!("Lock on {} failed, retry", key);
+                    trace!("Lock on key {} failed, retry", key);
                     backoff.spin();
                     continue;
                 }
@@ -1517,6 +1519,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
     }
 
     pub fn remove(self) -> usize {
+        trace!("Removing {}", self.key);
         let res = self.table.remove(&(), self.key).unwrap().0;
         mem::forget(self);
         res | MUTEX_BIT_MASK
