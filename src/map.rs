@@ -40,18 +40,18 @@ enum ParsedValue {
 enum ModResult<V> {
     Replaced(usize, V, usize), // (origin fval, val, index)
     Existed(usize, V),
-    Fail(usize, Option<V>),
+    Fail,
     Sentinel,
     NotFound,
     Done(usize, Option<V>),
-    TableFull(usize, Option<V>),
+    TableFull,
     Aborted,
 }
 
-enum ModOp<V> {
-    Insert(usize, V),
+enum ModOp<'a, V> {
+    Insert(usize, &'a V),
     UpsertFastVal(usize),
-    AttemptInsert(usize, V),
+    AttemptInsert(usize, &'a V),
     SwapFastVal(Box<dyn Fn(usize) -> Option<usize>>),
     Sentinel,
     Empty,
@@ -96,6 +96,7 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     count: AtomicUsize,
+    epoch: AtomicUsize,
     mark: PhantomData<H>,
 }
 
@@ -118,6 +119,7 @@ impl<
             chunk: Atomic::new(ChunkPtr::new(chunk)),
             new_chunk: Atomic::null(),
             count: AtomicUsize::new(0),
+            epoch: AtomicUsize::new(0),
             mark: PhantomData,
         }
     }
@@ -131,12 +133,13 @@ impl<
         let mut chunk_ref = self.chunk.load(Relaxed, &guard);
         let backoff = crossbeam_utils::Backoff::new();
         loop {
+            let epoch = self.now_epoch();
             debug_assert!(!chunk_ref.is_null());
             let chunk = unsafe { chunk_ref.deref() };
             let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
-            match val.parsed {
+            let res = match val.parsed {
                 ParsedValue::Prime(val) | ParsedValue::Val(val) => {
-                    return Some((
+                    Some((
                         val,
                         if read_attachment {
                             Some(chunk.attachment.get(idx).1)
@@ -158,10 +161,15 @@ impl<
                         backoff.spin();
                         continue;
                     } else {
-                        return None;
+                        None
                     }
                 }
+            };
+            if self.expired_epoch(epoch) {
+                backoff.spin();
+                continue;
             }
+            return res;
         }
     }
 
@@ -169,13 +177,14 @@ impl<
         &self,
         op: InsertOp,
         key: &K,
-        mut value: Option<V>,
+        value: Option<V>,
         fkey: usize,
         fvalue: usize,
     ) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         loop {
+            let epoch = self.now_epoch();
             trace!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Relaxed, &guard);
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
@@ -196,9 +205,9 @@ impl<
             let modify_chunk = if copying { new_chunk } else { chunk };
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
-                InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
+                InsertOp::Insert => ModOp::Insert(masked_value, value.as_ref().unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
-                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
+                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
             };
             let value_insertion = self.modify_entry(&*modify_chunk, key, fkey, mod_op, &guard);
             let mut result = None;
@@ -208,7 +217,7 @@ impl<
                     self.count.fetch_add(1, Relaxed);
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
-                ModResult::Fail(_, rvalue) => {
+                ModResult::Fail => {
                     // If fail insertion then retry
                     warn!(
                         "Insertion failed, retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
@@ -218,11 +227,10 @@ impl<
                         chunk_ptr,
                         new_chunk_ptr
                     );
-                    value = rvalue;
                     backoff.spin();
                     continue;
                 }
-                ModResult::TableFull(_, rvalue) => {
+                ModResult::TableFull => {
                     trace!(
                         "Insertion is too fast, copying {}, cap {}, count {}, old {:?}, new {:?}.",
                         copying,
@@ -231,22 +239,23 @@ impl<
                         chunk_ptr,
                         new_chunk_ptr
                     );
-                    value = rvalue;
                     backoff.spin();
                     continue;
                 }
                 ModResult::Sentinel => {
-                    debug!("Insert new and see sentinel, abort");
-                    return None;
+                    trace!("Discovered sentinel on insertion table upon probing, retry");
+                    backoff.spin();
+                    continue;
                 }
                 ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            if copying && chunk_ptr != new_chunk_ptr {
-                fence(SeqCst);
-                if self.chunk.load(Relaxed, &guard) == chunk_ptr {
-                    self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
-                }
+            if self.expired_epoch(epoch) {
+                backoff.spin();
+                continue;
+            }
+            if copying  {
+                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
             }
             return result;
         }
@@ -256,7 +265,7 @@ impl<
         chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
         new_chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
     ) -> bool {
-        !new_chunk_ptr.is_null() || chunk_ptr == new_chunk_ptr
+        (!new_chunk_ptr.is_null()) && (chunk_ptr != new_chunk_ptr)
     }
 
     fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
@@ -268,24 +277,27 @@ impl<
     ) -> SwapResult<'a, K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
+            let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Relaxed, &guard);
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
             let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
-            let modify_chunk = if copying { new_chunk_ptr } else { chunk_ptr };
+            let chunk = unsafe { chunk_ptr.deref() };
+            let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
+            let modify_chunk = unsafe { modify_chunk_ptr.deref() };
             trace!("Swaping for key {}, copying {}", fkey, copying);
             let mod_res = self.modify_entry(
-                unsafe { modify_chunk.deref() },
+                modify_chunk,
                 key,
                 fkey,
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
-            return match mod_res {
+            let res = match mod_res {
                 ModResult::Replaced(v, _, idx) => {
-                    SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk)
+                    SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk_ptr)
                 }
                 ModResult::Aborted => SwapResult::Aborted,
-                ModResult::Fail(_, _) => SwapResult::Failed,
+                ModResult::Fail => SwapResult::Failed,
                 ModResult::NotFound => SwapResult::NotFound,
                 ModResult::Sentinel => {
                     backoff.spin();
@@ -293,15 +305,38 @@ impl<
                 }
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
                 ModResult::Done(_, _) => unreachable!("Swap Done"),
-                ModResult::TableFull(_, _) => unreachable!("Swap table full"),
+                ModResult::TableFull => unreachable!("Swap table full"),
             };
+            if self.expired_epoch(epoch) {
+                backoff.spin();
+                continue;
+            }
+            if copying  {
+                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+            }
+            return res; 
         }
+    }
+
+    #[inline(always)]
+    fn now_epoch(&self) -> usize {
+        self.epoch.load(SeqCst)
+    }
+
+    fn expired_epoch(&self, old_epoch: usize) -> bool {
+        let now = self.now_epoch();
+        let expired = now - old_epoch > 1;
+        if expired {
+            debug!("Found expired epoch now: {}, old: {}", now, old_epoch);
+        }
+        expired
     }
 
     pub fn remove(&self, key: &K, fkey: usize) -> Option<(usize, V)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         loop {
+            let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
             let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
             if new_chunk_ptr == old_chunk_ptr {
@@ -320,12 +355,27 @@ impl<
                     self.count.fetch_sub(1, Relaxed);
                 }
                 ModResult::Done(_, None) => unreachable!("Remove shall not have done"),
-                ModResult::NotFound => {}
-                ModResult::TableFull(_, _) => unreachable!("TableFull on remove is not possible"),
+                ModResult::NotFound => {},
+                ModResult::Sentinel => {
+                    backoff.spin();
+                    continue;
+                }
+                ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
+            if self.expired_epoch(epoch) {
+                if retr.is_none() {
+                    return self.remove(key, fkey);
+                } else {
+                    let re_retr = self.remove(key, fkey);
+                    return if re_retr.is_some() {
+                        re_retr
+                    } else {
+                        retr
+                    }
+                }
+            }
             if copying {
-                fence(SeqCst);
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Sentinel, &guard);
@@ -427,7 +477,7 @@ impl<
                                     // other thread changed the value (empty)
                                     // should fail
                                     let (_, value) = chunk.attachment.get(idx);
-                                    return ModResult::Fail(*v, Some(value));
+                                    return ModResult::Fail;
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
                                     let (_, value) = chunk.attachment.get(idx);
@@ -466,14 +516,14 @@ impl<
                                                 // swap success
                                                 return ModResult::Replaced(val.raw, aval, idx);
                                             } else {
-                                                return ModResult::Fail(*pval, Some(aval));
+                                                return ModResult::Fail;
                                             }
                                         } else {
                                             return ModResult::Aborted;
                                         }
                                     }
                                     _ => {
-                                        return ModResult::Fail(val.raw, None);
+                                        return ModResult::Fail;
                                     }
                                 }
                             }
@@ -484,13 +534,13 @@ impl<
                                 let primed_fval = fval | INV_VAL_BIT_MASK;
                                 if self.cas_value(addr, val.raw, primed_fval) {
                                     let (_, prev_val) = chunk.attachment.get(idx);
-                                    chunk.attachment.set(idx, key.clone(), v.clone());
+                                    chunk.attachment.set(idx, key.clone(), (*v).clone());
                                     let stripped_prime = self.cas_value(addr, primed_fval, fval);
                                     debug_assert!(stripped_prime);
                                     return ModResult::Replaced(val.raw, prev_val, idx);
                                 } else {
                                     trace!("Cannot insert in place for {}", fkey);
-                                    return ModResult::Fail(val.raw, None);
+                                    return ModResult::Fail;
                                 }
                             }
                         }
@@ -499,7 +549,12 @@ impl<
                         // found the key with empty value, shall do nothing and continue probing
                         // because other thread is trying to write value into it
                     }
-                    ParsedValue::Sentinel => return ModResult::Sentinel, // should not reachable for insertion happens on new list
+                    ParsedValue::Sentinel => {
+                        return match op {
+                            ModOp::Insert(_fv, v) | ModOp::AttemptInsert(_fv, v) => ModResult::Sentinel,
+                            _ => ModResult::Sentinel,
+                        }
+                    }, // should not reachable for insertion happens on new list
                     ParsedValue::Prime(v) => {
                         trace!(
                             "Discovered prime for key {} with value {:#064b}, retry",
@@ -522,7 +577,7 @@ impl<
                         );
                         if self.cas_value(addr, 0, fval) {
                             // CAS value succeed, shall store key
-                            chunk.attachment.set(idx, key.clone(), val);
+                            chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         } else {
@@ -557,7 +612,7 @@ impl<
                             op = ModOp::Sentinel
                         }
                     }
-                    ModOp::Empty => return ModResult::Fail(0, None),
+                    ModOp::Empty => return ModResult::Fail,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
@@ -565,8 +620,8 @@ impl<
             count += 1;
         }
         match op {
-            ModOp::Insert(fv, v) | ModOp::AttemptInsert(fv, v) => ModResult::TableFull(fv, Some(v)),
-            ModOp::UpsertFastVal(fv) => ModResult::TableFull(fv, None),
+            ModOp::Insert(_fv, v) | ModOp::AttemptInsert(_fv, v) => ModResult::TableFull,
+            ModOp::UpsertFastVal(_fv) => ModResult::TableFull,
             _ => ModResult::NotFound,
         }
     }
@@ -689,7 +744,8 @@ impl<
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
-        self.new_chunk.store(new_chunk_ptr, SeqCst); // Stump becasue we have the lock already
+        self.new_chunk.store(new_chunk_ptr, Relaxed); // Stump becasue we have the lock already
+        self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -748,19 +804,19 @@ impl<
                         &*new_chunk_ins,
                         &key,
                         fkey,
-                        ModOp::AttemptInsert(primed_fval, value),
+                        ModOp::AttemptInsert(primed_fval, &value),
                         guard,
                     );
                     let inserted_addr = match new_chunk_insertion {
                         ModResult::Done(addr, _) => Some(addr), // continue procedure
                         ModResult::Existed(_, _) => None,
-                        ModResult::Fail(_, _) => unreachable!("Should not fail"),
+                        ModResult::Fail => unreachable!("Should not fail"),
                         ModResult::Replaced(_, _, _) => {
                             unreachable!("Attempt insert does not replace anything")
                         }
                         ModResult::Sentinel => unreachable!("New chunk should not have sentinel"),
                         ModResult::NotFound => unreachable!("Not found on resize"),
-                        ModResult::TableFull(_, _) => unreachable!("Table full when resize"),
+                        ModResult::TableFull => unreachable!("Table full when resize"),
                         ModResult::Aborted => unreachable!("Should not abort"),
                     };
                     fence(SeqCst);
@@ -900,6 +956,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             chunk: Default::default(),
             new_chunk: Default::default(),
             count: AtomicUsize::new(0),
+            epoch: AtomicUsize::new(0),
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
