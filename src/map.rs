@@ -752,6 +752,7 @@ impl<
         if self.chunk.load(Acquire, guard) != old_chunk_ptr {
             warn!("Give up on resize due to old chunk changed after lock obtained");
             self.new_chunk.store(Shared::null(), Release);
+            fence(SeqCst);
             return ResizeResult::ChunkChanged;
         }
         debug!("Resizing {:?}", old_chunk_ptr);
