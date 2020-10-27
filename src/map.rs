@@ -5,8 +5,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::sync::atomic::Ordering::{AcqRel, Acquire, Release, Relaxed, SeqCst};
-use core::sync::atomic::{fence, AtomicUsize, AtomicU64};
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
+use core::sync::atomic::{fence, AtomicU64, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -14,7 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
-use std::time::{UNIX_EPOCH, SystemTime};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct EntryTemplate(usize, usize);
 
@@ -455,13 +455,12 @@ impl<
             {
                 // Early exit upon sentinel discovery
                 match v.parsed {
-                    ParsedValue::Sentinel => 
-                        match &op {
-                            &ModOp::Sentinel => {
-                                // Sentinel op is allowed on old chunk
-                            }
-                            _ => return ModResult::Sentinel
+                    ParsedValue::Sentinel => match &op {
+                        &ModOp::Sentinel => {
+                            // Sentinel op is allowed on old chunk
                         }
+                        _ => return ModResult::Sentinel,
+                    },
                     _ => {}
                 }
             }
@@ -477,7 +476,7 @@ impl<
                                     chunk.attachment.erase(idx);
                                     return ModResult::Done(*v, Some(value));
                                 } else {
-                                    return ModResult::Fail
+                                    return ModResult::Fail;
                                 }
                             }
                             &ModOp::Empty => {
@@ -853,7 +852,10 @@ impl<
                             fence(SeqCst);
                         }
                     } else {
-                        warn!("Sentinel CAS should always succeed but failed, retry {}", fkey);
+                        warn!(
+                            "Sentinel CAS should always succeed but failed, retry {}",
+                            fkey
+                        );
                         backoff.spin();
                         continue;
                     }
@@ -2129,9 +2131,7 @@ impl Default for PassthroughHasher {
 
 fn timestamp() -> u64 {
     let start = SystemTime::now();
-    let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .unwrap();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
     since_the_epoch.as_millis() as u64
 }
 

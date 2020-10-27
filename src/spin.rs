@@ -1,6 +1,9 @@
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU8, Ordering::{Acquire, Release, AcqRel}};
+use std::sync::atomic::{
+    AtomicU8,
+    Ordering::{AcqRel, Acquire, Release},
+};
 
 pub struct SpinLock<T> {
     mark: AtomicU8,
