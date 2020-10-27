@@ -122,6 +122,7 @@ impl<
             new_chunk: Atomic::null(),
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
+            timestamp: AtomicU64::new(timestamp()),
             mark: PhantomData,
         }
     }
@@ -965,6 +966,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             new_chunk: Default::default(),
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
+            timestamp: AtomicU64::new(timestamp()),
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
