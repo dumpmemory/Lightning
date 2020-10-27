@@ -5,8 +5,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::sync::atomic::Ordering::{Relaxed, SeqCst};
-use core::sync::atomic::{fence, AtomicUsize, AtomicU64};
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
+use core::sync::atomic::{fence, AtomicU64, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -14,7 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
-use std::time::{UNIX_EPOCH, SystemTime};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct EntryTemplate(usize, usize);
 
@@ -103,12 +103,12 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
 }
 
 impl<
-    K: Clone + Hash + Eq,
-    V: Clone,
-    A: Attachment<K, V>,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
-> Table<K, V, A, ALLOC, H>
+        K: Clone + Hash + Eq,
+        V: Clone,
+        A: Attachment<K, V>,
+        ALLOC: GlobalAlloc + Default,
+        H: Hasher + Default,
+    > Table<K, V, A, ALLOC, H>
 {
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
@@ -133,12 +133,12 @@ impl<
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
-        let mut chunk_ref = self.chunk.load(Relaxed, &guard);
+        let mut chunk_ptr = self.chunk.load(Acquire, &guard);
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
-            debug_assert!(!chunk_ref.is_null());
-            let chunk = unsafe { chunk_ref.deref() };
+            debug_assert!(!chunk_ptr.is_null());
+            let chunk = unsafe { chunk_ptr.deref() };
             let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
             let res = match val.parsed {
                 ParsedValue::Prime(val) | ParsedValue::Val(val) => Some((
@@ -150,23 +150,17 @@ impl<
                     },
                 )),
                 ParsedValue::Empty | ParsedValue::Sentinel => {
-                    let new_chunk_ref = self.new_chunk.load(SeqCst, &guard);
-                    if !new_chunk_ref.is_null() && new_chunk_ref != chunk_ref {
-                        chunk_ref = new_chunk_ref;
+                    let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
+                    if Self::is_copying(&chunk_ptr, &new_chunk_ptr) {
+                        chunk_ptr = new_chunk_ptr;
                         backoff.spin();
                         continue;
                     }
-                    let current_chunk_ref = self.chunk.load(Relaxed, &guard);
-                    if chunk_ref != current_chunk_ref {
-                        chunk_ref = current_chunk_ref;
-                        backoff.spin();
-                        continue;
-                    } else {
-                        None
-                    }
+                    None
                 }
             };
             if self.expired_epoch(epoch) {
+                chunk_ptr = self.chunk.load(Acquire, &guard);
                 backoff.spin();
                 continue;
             }
@@ -187,8 +181,8 @@ impl<
         loop {
             let epoch = self.now_epoch();
             trace!("Inserting key: {}, value: {}", fkey, fvalue);
-            let chunk_ptr = self.chunk.load(Relaxed, &guard);
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            let chunk_ptr = self.chunk.load(Acquire, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
             if !copying {
                 match self.check_migration(chunk_ptr, &guard) {
@@ -215,7 +209,7 @@ impl<
             match value_insertion {
                 ModResult::Done(_, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
-                    self.count.fetch_add(1, Relaxed);
+                    self.count.fetch_add(1, AcqRel);
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail => {
@@ -279,8 +273,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
-            let chunk_ptr = self.chunk.load(Relaxed, &guard);
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            let chunk_ptr = self.chunk.load(Acquire, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
             let chunk = unsafe { chunk_ptr.deref() };
             let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
@@ -337,8 +331,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
-            let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
+            let old_chunk_ptr = self.chunk.load(Acquire, &guard);
             if new_chunk_ptr == old_chunk_ptr {
                 backoff.spin();
                 continue;
@@ -352,7 +346,7 @@ impl<
             match res {
                 ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
                     retr = Some((fvalue, value));
-                    self.count.fetch_sub(1, Relaxed);
+                    self.count.fetch_sub(1, AcqRel);
                 }
                 ModResult::Done(_, None) => unreachable!("Remove shall not have done"),
                 ModResult::NotFound => {}
@@ -394,7 +388,7 @@ impl<
     }
 
     pub fn len(&self) -> usize {
-        self.count.load(Relaxed)
+        self.count.load(Acquire)
     }
 
     fn get_from_chunk(
@@ -455,13 +449,12 @@ impl<
             {
                 // Early exit upon sentinel discovery
                 match v.parsed {
-                    ParsedValue::Sentinel =>
-                        match &op {
-                            &ModOp::Sentinel => {
-                                // Sentinel op is allowed on old chunk
-                            }
-                            _ => return ModResult::Sentinel
+                    ParsedValue::Sentinel => match &op {
+                        &ModOp::Sentinel => {
+                            // Sentinel op is allowed on old chunk
                         }
+                        _ => return ModResult::Sentinel,
+                    },
                     _ => {}
                 }
             }
@@ -472,13 +465,16 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
-                                self.set_sentinel(addr);
-                                let (_, value) = chunk.attachment.get(idx);
-                                chunk.attachment.erase(idx);
-                                return ModResult::Done(*v, Some(value));
+                                if self.cas_sentinel(addr, val.raw) {
+                                    let (_, value) = chunk.attachment.get(idx);
+                                    chunk.attachment.erase(idx);
+                                    return ModResult::Done(*v, Some(value));
+                                } else {
+                                    return ModResult::Fail;
+                                }
                             }
                             &ModOp::Empty => {
-                                if !self.set_tombstone(addr, val.raw) {
+                                if !self.cas_tombstone(addr, val.raw) {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
                                     // should fail
@@ -597,10 +593,12 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_value(addr, 0, SENTINEL_VALUE) {
+                        if self.cas_sentinel(addr, 0) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
+                        } else {
+                            return ModResult::Fail;
                         }
                     }
                     ModOp::Empty => return ModResult::Fail,
@@ -647,8 +645,8 @@ impl<
 
     fn entries(&self) -> Vec<(usize, usize, K, V)> {
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ref = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ref = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk_ref = self.chunk.load(Acquire, &guard);
+        let new_chunk_ref = self.new_chunk.load(Acquire, &guard);
         let old_chunk = unsafe { old_chunk_ref.deref() };
         let new_chunk = unsafe { new_chunk_ref.deref() };
         let mut res = self.all_from_chunk(&*old_chunk);
@@ -661,35 +659,39 @@ impl<
     #[inline(always)]
     fn get_fast_key(&self, entry_addr: usize) -> usize {
         debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_relaxed(entry_addr as *mut usize) }
+        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) }
     }
 
     #[inline(always)]
     fn get_fast_value(&self, entry_addr: usize) -> Value {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
-        let val = unsafe { intrinsics::atomic_load_relaxed(addr as *mut usize) };
+        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
         Value::new::<K, V, A, ALLOC, H>(val)
     }
 
     #[inline(always)]
-    fn set_tombstone(&self, entry_addr: usize, original: usize) -> bool {
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> bool {
         debug_assert!(entry_addr > 0);
         self.cas_value(entry_addr, original, EMPTY_VALUE)
-    }
-    #[inline(always)]
-    fn set_sentinel(&self, entry_addr: usize) {
-        debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, SENTINEL_VALUE) }
     }
     #[inline(always)]
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe {
-            intrinsics::atomic_cxchg_relaxed(addr as *mut usize, original, value).0 == original
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value).0 == original
         }
+    }
+    #[inline(always)]
+    fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
+        debug_assert!(entry_addr > 0);
+        let addr = entry_addr + mem::size_of::<usize>();
+        let (val, done) = unsafe {
+            // SeqCst
+            intrinsics::atomic_cxchg(addr as *mut usize, original, SENTINEL_VALUE)
+        };
+        done || val == SENTINEL_VALUE
     }
 
     /// Failed return old shared
@@ -718,7 +720,7 @@ impl<
             if epoch < 5 {
                 cap <<= 1;
             }
-            if timestamp() - self.timestamp.load(Relaxed) < 1000 {
+            if timestamp() - self.timestamp.load(Acquire) < 1000 {
                 cap <<= 1;
             }
             cap
@@ -730,22 +732,22 @@ impl<
         // Swap in old chunk as placeholder for the lock
         if let Err(_) = self
             .new_chunk
-            .compare_and_set(Shared::null(), old_chunk_ptr, SeqCst, guard)
+            .compare_and_set(Shared::null(), old_chunk_ptr, AcqRel, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
+        if self.chunk.load(Acquire, guard) != old_chunk_ptr {
             warn!("Give up on resize due to old chunk changed after lock obtained");
-            self.new_chunk.store(Shared::null(), SeqCst);
+            self.new_chunk.store(Shared::null(), Release);
             return ResizeResult::ChunkChanged;
         }
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
-        self.new_chunk.store(new_chunk_ptr, SeqCst); // Stump becasue we have the lock already
-        self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
+        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -755,7 +757,7 @@ impl<
         debug_assert!(!new_chunk_ptr.is_null());
         let swap_old = self
             .chunk
-            .compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
+            .compare_and_set(old_chunk_ptr, new_chunk_ptr, AcqRel, guard);
         if let Err(e) = swap_old {
             // Should not happend, we cannot fix this
             panic!("Resize swap pointer failed: {:?}", e);
@@ -763,9 +765,9 @@ impl<
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
-        self.timestamp.store(timestamp(), Relaxed);
-        self.new_chunk.store(Shared::null(), SeqCst);
-        self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
+        self.timestamp.store(timestamp(), Release);
+        self.new_chunk.store(Shared::null(), Release);
+        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
@@ -823,7 +825,7 @@ impl<
                     };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
-                    if self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                    if self.cas_sentinel(old_address, fvalue.raw) {
                         fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
@@ -844,7 +846,10 @@ impl<
                             fence(SeqCst);
                         }
                     } else {
-                        warn!("Sentinel CAS should always succeed but failed, retry {}", fkey);
+                        warn!(
+                            "Sentinel CAS should always succeed but failed, retry {}",
+                            fkey
+                        );
                         backoff.spin();
                         continue;
                     }
@@ -858,7 +863,7 @@ impl<
                     trace!("Skip copy sentinel");
                 }
                 ParsedValue::Empty => {
-                    if !self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                    if !self.cas_sentinel(old_address, fvalue.raw) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
@@ -876,8 +881,8 @@ impl<
 
     pub fn map_is_copying(&self) -> bool {
         let guard = crossbeam_epoch::pin();
-        let chunk_ptr = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let chunk_ptr = self.chunk.load(Acquire, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
         Self::is_copying(&chunk_ptr, &new_chunk_ptr)
     }
 }
@@ -953,7 +958,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
-for Table<K, V, A, ALLOC, H>
+    for Table<K, V, A, ALLOC, H>
 {
     fn clone(&self) -> Self {
         let new_table = Table {
@@ -965,8 +970,8 @@ for Table<K, V, A, ALLOC, H>
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk_ptr = self.chunk.load(Acquire, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
         unsafe {
             // Hold references first so they won't get reclaimed
             let old_chunk = old_chunk_ptr.deref();
@@ -981,7 +986,7 @@ for Table<K, V, A, ALLOC, H>
                 old_total_size,
             );
             let cloned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
-            new_table.chunk.store(cloned_old_ref, Relaxed);
+            new_table.chunk.store(cloned_old_ref, Release);
 
             if new_chunk_ptr != Shared::null() {
                 let new_chunk = new_chunk_ptr.deref();
@@ -994,24 +999,24 @@ for Table<K, V, A, ALLOC, H>
                     new_total_size,
                 );
                 let cloned_new_ref = Owned::new(ChunkPtr::new(cloned_new_ptr));
-                new_table.new_chunk.store(cloned_new_ref, Relaxed);
+                new_table.new_chunk.store(cloned_new_ref, Release);
             } else {
-                new_table.new_chunk.store(Shared::null(), Relaxed);
+                new_table.new_chunk.store(Shared::null(), Release);
             }
         }
-        new_table.count.store(self.count.load(Relaxed), SeqCst);
+        new_table.count.store(self.count.load(Acquire), Release);
         new_table
     }
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-for Table<K, V, A, ALLOC, H>
+    for Table<K, V, A, ALLOC, H>
 {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
-            guard.defer_destroy(self.chunk.load(Relaxed, &guard));
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            guard.defer_destroy(self.chunk.load(Acquire, &guard));
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             if new_chunk_ptr != Shared::null() {
                 guard.defer_destroy(new_chunk_ptr);
             }
@@ -1020,11 +1025,11 @@ for Table<K, V, A, ALLOC, H>
 }
 
 unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Send
-for ChunkPtr<K, V, A, ALLOC>
+    for ChunkPtr<K, V, A, ALLOC>
 {
 }
 unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync
-for ChunkPtr<K, V, A, ALLOC>
+    for ChunkPtr<K, V, A, ALLOC>
 {
 }
 
@@ -1179,7 +1184,7 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
 }
 
 pub type HashTable<K, V, ALLOC> =
-Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
+    Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     obj_chunk: usize,
@@ -1188,7 +1193,7 @@ pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
-for HashKVAttachment<K, V, A>
+    for HashKVAttachment<K, V, A>
 {
     fn heap_size_of(cap: usize) -> usize {
         let obj_size = mem::size_of::<(K, V)>();
@@ -1278,7 +1283,7 @@ pub struct HashMap<
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-HashMap<K, V, ALLOC, H>
+    HashMap<K, V, ALLOC, H>
 {
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
         let hash = hash_key::<K, H>(&key);
@@ -1296,7 +1301,7 @@ HashMap<K, V, ALLOC, H>
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
-for HashMap<K, V, ALLOC, H>
+    for HashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
         Self {
@@ -1382,7 +1387,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, A
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
-for ObjectMap<V, ALLOC, H>
+    for ObjectMap<V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
         Self {
@@ -1597,7 +1602,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexG
 }
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
-for WordMutexGuard<'a, ALLOC, H>
+    for WordMutexGuard<'a, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
@@ -1646,7 +1651,7 @@ pub struct HashMapReadGuard<
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-HashMapReadGuard<'a, K, V, ALLOC, H>
+    HashMapReadGuard<'a, K, V, ALLOC, H>
 {
     fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -1698,7 +1703,7 @@ HashMapReadGuard<'a, K, V, ALLOC, H>
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-for HashMapReadGuard<'a, K, V, ALLOC, H>
+    for HashMapReadGuard<'a, K, V, ALLOC, H>
 {
     type Target = V;
 
@@ -1708,7 +1713,7 @@ for HashMapReadGuard<'a, K, V, ALLOC, H>
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-for HashMapReadGuard<'a, K, V, ALLOC, H>
+    for HashMapReadGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
         trace!("Release read lock for hash key {}", self.hash);
@@ -1740,7 +1745,7 @@ pub struct HashMapWriteGuard<
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-HashMapWriteGuard<'a, K, V, ALLOC, H>
+    HashMapWriteGuard<'a, K, V, ALLOC, H>
 {
     fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -1798,7 +1803,7 @@ HashMapWriteGuard<'a, K, V, ALLOC, H>
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-for HashMapWriteGuard<'a, K, V, ALLOC, H>
+    for HashMapWriteGuard<'a, K, V, ALLOC, H>
 {
     type Target = V;
 
@@ -1808,7 +1813,7 @@ for HashMapWriteGuard<'a, K, V, ALLOC, H>
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
-for HashMapWriteGuard<'a, K, V, ALLOC, H>
+    for HashMapWriteGuard<'a, K, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
@@ -1816,7 +1821,7 @@ for HashMapWriteGuard<'a, K, V, ALLOC, H>
 }
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-for HashMapWriteGuard<'a, K, V, ALLOC, H>
+    for HashMapWriteGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
         trace!("Release read lock for hash key {}", self.hash);
@@ -1844,7 +1849,7 @@ pub struct ObjectMapReadGuard<
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-ObjectMapReadGuard<'a, V, ALLOC, H>
+    ObjectMapReadGuard<'a, V, ALLOC, H>
 {
     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -1895,7 +1900,7 @@ ObjectMapReadGuard<'a, V, ALLOC, H>
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-for ObjectMapReadGuard<'a, V, ALLOC, H>
+    for ObjectMapReadGuard<'a, V, ALLOC, H>
 {
     type Target = V;
 
@@ -1905,7 +1910,7 @@ for ObjectMapReadGuard<'a, V, ALLOC, H>
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-for ObjectMapReadGuard<'a, V, ALLOC, H>
+    for ObjectMapReadGuard<'a, V, ALLOC, H>
 {
     fn drop(&mut self) {
         trace!("Release read lock for hash key {}", self.key);
@@ -1935,7 +1940,7 @@ pub struct ObjectMapWriteGuard<
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-ObjectMapWriteGuard<'a, V, ALLOC, H>
+    ObjectMapWriteGuard<'a, V, ALLOC, H>
 {
     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -1992,7 +1997,7 @@ ObjectMapWriteGuard<'a, V, ALLOC, H>
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-for ObjectMapWriteGuard<'a, V, ALLOC, H>
+    for ObjectMapWriteGuard<'a, V, ALLOC, H>
 {
     type Target = V;
 
@@ -2002,7 +2007,7 @@ for ObjectMapWriteGuard<'a, V, ALLOC, H>
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
-for ObjectMapWriteGuard<'a, V, ALLOC, H>
+    for ObjectMapWriteGuard<'a, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
@@ -2010,7 +2015,7 @@ for ObjectMapWriteGuard<'a, V, ALLOC, H>
 }
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-for ObjectMapWriteGuard<'a, V, ALLOC, H>
+    for ObjectMapWriteGuard<'a, V, ALLOC, H>
 {
     fn drop(&mut self) {
         trace!("Release read lock for key {}", self.key);
@@ -2120,9 +2125,7 @@ impl Default for PassthroughHasher {
 
 fn timestamp() -> u64 {
     let start = SystemTime::now();
-    let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .unwrap();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
     since_the_epoch.as_millis() as u64
 }
 
