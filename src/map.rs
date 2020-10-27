@@ -451,9 +451,23 @@ impl<
             idx &= cap_mask;
             let addr = base + idx * entry_size;
             let k = self.get_fast_key(addr);
+            let v = self.get_fast_value(addr);
+            {
+                // Early exit upon sentinel discovery
+                match v.parsed {
+                    ParsedValue::Sentinel => 
+                        match &op {
+                            &ModOp::Sentinel => {
+                                // Sentinel op is allowed on old chunk
+                            }
+                            _ => return ModResult::Sentinel
+                        }
+                    _ => {}
+                }
+            }
             if k == fkey && chunk.attachment.probe(idx, &key) {
                 // Probing non-empty entry
-                let val = self.get_fast_value(addr);
+                let val = v;
                 match &val.parsed {
                     ParsedValue::Val(v) => {
                         match &op {
@@ -592,18 +606,6 @@ impl<
                     ModOp::Empty => return ModResult::Fail,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
-            } else {
-                // Early exit upon sentinel discovery
-                match self.get_fast_value(addr).parsed {
-                    ParsedValue::Sentinel => 
-                        match &op {
-                            &ModOp::Sentinel => {
-                                // Sentinel op is allowed on old chunk
-                            }
-                            _ => return ModResult::Sentinel
-                        }
-                    _ => {}
-                }
             }
             idx += 1; // reprobe
             count += 1;
