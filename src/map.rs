@@ -133,12 +133,12 @@ impl<
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
-        let mut chunk_ref = self.chunk.load(Acquire, &guard);
+        let mut chunk_ptr = self.chunk.load(Acquire, &guard);
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
-            debug_assert!(!chunk_ref.is_null());
-            let chunk = unsafe { chunk_ref.deref() };
+            debug_assert!(!chunk_ptr.is_null());
+            let chunk = unsafe { chunk_ptr.deref() };
             let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
             let res = match val.parsed {
                 ParsedValue::Prime(val) | ParsedValue::Val(val) => Some((
@@ -150,23 +150,17 @@ impl<
                     },
                 )),
                 ParsedValue::Empty | ParsedValue::Sentinel => {
-                    let new_chunk_ref = self.new_chunk.load(Acquire, &guard);
-                    if !new_chunk_ref.is_null() && new_chunk_ref != chunk_ref {
-                        chunk_ref = new_chunk_ref;
+                    let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
+                    if Self::is_copying(&chunk_ptr, &new_chunk_ptr) {
+                        chunk_ptr = new_chunk_ptr;
                         backoff.spin();
                         continue;
                     }
-                    let current_chunk_ref = self.chunk.load(Acquire, &guard);
-                    if chunk_ref != current_chunk_ref {
-                        chunk_ref = current_chunk_ref;
-                        backoff.spin();
-                        continue;
-                    } else {
-                        None
-                    }
+                    None
                 }
             };
             if self.expired_epoch(epoch) {
+                chunk_ptr = self.chunk.load(Acquire, &guard);
                 backoff.spin();
                 continue;
             }
