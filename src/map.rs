@@ -150,8 +150,15 @@ impl<
                     },
                 )),
                 ParsedValue::Empty | ParsedValue::Sentinel => {
+                    fence(SeqCst);
                     let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-                    if Self::is_copying(&chunk_ptr, &new_chunk_ptr) {
+                    let curr_chunk_ptr = self.chunk.load(Acquire, &guard);
+                    if chunk_ptr != curr_chunk_ptr {
+                        chunk_ptr = curr_chunk_ptr;
+                        backoff.spin();
+                        continue;
+                    }
+                    if Self::is_copying(&curr_chunk_ptr, &new_chunk_ptr) {
                         chunk_ptr = new_chunk_ptr;
                         backoff.spin();
                         continue;
@@ -314,7 +321,8 @@ impl<
 
     #[inline(always)]
     fn now_epoch(&self) -> usize {
-        self.epoch.load(SeqCst)
+        fence(SeqCst);
+        self.epoch.load(Acquire)
     }
 
     fn expired_epoch(&self, old_epoch: usize) -> bool {
