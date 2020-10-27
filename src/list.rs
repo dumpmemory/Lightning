@@ -6,7 +6,7 @@ use core::cmp::min;
 use core::ops::Deref;
 use core::ptr;
 use core::ptr::null_mut;
-use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Release};
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
 use core::{intrinsics, mem};
 use crossbeam_utils::Backoff;
@@ -54,7 +54,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
 
     pub fn push(&self, flag: usize, data: T) {
         self.do_push(flag, data);
-        self.count.fetch_add(1, Relaxed);
+        self.count.fetch_add(1, AcqRel);
     }
 
     fn do_push(&self, flag: usize, data: T) {
@@ -62,18 +62,18 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
         debug_assert_ne!(flag, SENTINEL_SLOT);
         loop {
             let obj_size = mem::size_of::<T>();
-            let head_ptr = self.head.load(Relaxed);
+            let head_ptr = self.head.load(Acquire);
             let page = BufferMeta::borrow(head_ptr);
-            let slot_pos = page.head.load(Relaxed);
+            let slot_pos = page.head.load(Acquire);
             let next_pos = slot_pos + 1;
             if next_pos > self.buffer_cap {
                 // buffer overflow, make new and link to last buffer
                 let new_head = BufferMeta::new(self.buffer_cap);
                 unsafe {
-                    (*new_head).next.store(head_ptr, Relaxed);
+                    (*new_head).next.store(head_ptr, Release);
                     debug_assert_eq!((*new_head).total_size, page.total_size);
                 }
-                if self.head.compare_and_swap(head_ptr, new_head, Relaxed) != head_ptr {
+                if self.head.compare_and_swap(head_ptr, new_head, AcqRel) != head_ptr {
                     BufferMeta::unref(new_head);
                 }
             // either case, retry
@@ -84,7 +84,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
 
                 // Note that zero in the slot indicates not complete on pop, then pop
                 // will back off and try again
-                if page.head.compare_and_swap(slot_pos, next_pos, Relaxed) == slot_pos {
+                if page.head.compare_and_swap(slot_pos, next_pos, AcqRel) == slot_pos {
                     let slot_ptr = page.flag_ptr_of(slot_pos);
                     unsafe {
                         if obj_size != 0 {
@@ -121,22 +121,22 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
         // user ensure the push is exclusive, thus no CAS except for header
         let obj_size = mem::size_of::<T>();
         loop {
-            let head_ptr = self.head.load(Relaxed);
+            let head_ptr = self.head.load(Acquire);
             let page = BufferMeta::borrow(head_ptr);
-            let slot_pos = page.head.load(Relaxed);
+            let slot_pos = page.head.load(Acquire);
             let next_pos = slot_pos + 1;
             if next_pos > self.buffer_cap {
                 // buffer overflow, make new and link to last buffer
                 let new_head = BufferMeta::new(self.buffer_cap);
                 unsafe {
-                    (*new_head).next.store(head_ptr, Relaxed);
+                    (*new_head).next.store(head_ptr, Release);
                 }
-                if self.head.compare_and_swap(head_ptr, new_head, Relaxed) != head_ptr {
+                if self.head.compare_and_swap(head_ptr, new_head, Release) != head_ptr {
                     BufferMeta::unref(new_head);
                 }
             // either case, retry
             } else {
-                page.head.store(next_pos, Relaxed);
+                page.head.store(next_pos, Release);
                 let slot_ptr = page.flag_ptr_of(slot_pos);
                 unsafe {
                     if obj_size != 0 {
@@ -145,23 +145,23 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                     }
                     intrinsics::atomic_store_relaxed(slot_ptr, flag);
                 }
-                self.count.fetch_add(1, Relaxed);
+                self.count.fetch_add(1, AcqRel);
                 return;
             }
         }
     }
 
     pub fn pop(&self) -> Option<(usize, T)> {
-        if self.count.load(Relaxed) == 0 {
+        if self.count.load(Acquire) == 0 {
             return None;
         }
         let backoff = Backoff::new();
         loop {
-            let head_ptr = self.head.load(Relaxed);
+            let head_ptr = self.head.load(Acquire);
             let page = BufferMeta::borrow(head_ptr);
-            let slot = page.head.load(Relaxed);
+            let slot = page.head.load(Acquire);
             let obj_size = mem::size_of::<T>();
-            let next_buffer_ptr = page.next.load(Relaxed);
+            let next_buffer_ptr = page.next.load(Acquire);
             if slot == 0 && next_buffer_ptr == null_mut() {
                 // empty buffer chain
                 return None;
@@ -171,7 +171,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                 // CAS page head to four times of the upper bound indicates this buffer is obsolete
                 if self
                     .head
-                    .compare_and_swap(head_ptr, next_buffer_ptr, Relaxed)
+                    .compare_and_swap(head_ptr, next_buffer_ptr, AcqRel)
                     == head_ptr
                 {
                     // At thia point, there may have some items in the old head.
@@ -213,7 +213,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                                 *obj = ptr::read(obj_ptr as *mut T)
                             });
                         }
-                        let swapped = page.head.compare_and_swap(slot, new_slot, Relaxed);
+                        let swapped = page.head.compare_and_swap(slot, new_slot, AcqRel);
                         debug_assert!(
                             swapped >= slot,
                             "Exclusive pop failed, {} expect {}",
@@ -229,7 +229,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
                             intrinsics::atomic_store(new_slot_ptr, SENTINEL_SLOT);
                         }
                         if new_slot_flag != SENTINEL_SLOT {
-                            self.count.fetch_sub(1, Relaxed);
+                            self.count.fetch_sub(1, AcqRel);
                             return res;
                         }
                     }
@@ -241,7 +241,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
             match self.exchange.exchange(None) {
                 Ok(Some(tuple)) | Err(Some(tuple)) => {
                     // exchanged a push, return it
-                    self.count.fetch_sub(1, Relaxed);
+                    self.count.fetch_sub(1, AcqRel);
                     return Some(tuple);
                 }
                 Ok(None) | Err(None) => {
@@ -254,7 +254,7 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
     where
         F: FnMut((usize, T)),
     {
-        let count = self.count.load(Relaxed);
+        let count = self.count.load(Acquire);
         if count == 0 {
             return;
         }
@@ -275,26 +275,26 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
             }
         }
         let new_head_buffer = BufferMeta::new(self.buffer_cap);
-        let mut buffer_ptr = self.head.swap(new_head_buffer, Relaxed);
+        let mut buffer_ptr = self.head.swap(new_head_buffer, AcqRel);
         let null = null_mut();
         let mut counter = 0;
         while buffer_ptr != null {
             buffer_ptr = BufferMeta::drop_out(buffer_ptr, retain, &mut counter).unwrap_or(null);
         }
-        self.count.fetch_sub(counter, Relaxed);
+        self.count.fetch_sub(counter, AcqRel);
     }
 
     pub fn prepend_with(&self, other: &Self) {
-        if other.count.load(Relaxed) == 0 {
+        if other.count.load(Acquire) == 0 {
             return;
         }
-        let other_head = other.head.swap(BufferMeta::new(self.buffer_cap), Relaxed);
-        let other_count = other.count.swap(0, Relaxed);
+        let other_head = other.head.swap(BufferMeta::new(self.buffer_cap), AcqRel);
+        let other_count = other.count.swap(0, AcqRel);
         let mut other_tail = BufferMeta::borrow(other_head);
         // probe the last buffer in other link
         loop {
-            while other_tail.refs.load(Relaxed) > 2 {}
-            let next_ptr = other_tail.next.load(Relaxed);
+            while other_tail.refs.load(Acquire) > 2 {}
+            let next_ptr = other_tail.next.load(Acquire);
             if next_ptr == null_mut() {
                 break;
             }
@@ -303,25 +303,25 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
 
         // CAS this head to other head then reset other tail next buffer to this head
         loop {
-            let this_head = self.head.load(Relaxed);
-            if self.head.compare_and_swap(this_head, other_head, Relaxed) != this_head {
+            let this_head = self.head.load(Acquire);
+            if self.head.compare_and_swap(this_head, other_head, AcqRel) != this_head {
                 continue;
             } else {
-                other_tail.next.store(this_head, Relaxed);
+                other_tail.next.store(this_head, Release);
                 break;
             }
         }
-        self.count.fetch_add(other_count, Relaxed);
+        self.count.fetch_add(other_count, AcqRel);
     }
 
     pub fn count(&self) -> usize {
-        self.count.load(Relaxed)
+        self.count.load(Acquire)
     }
 
     pub fn iter(&self) -> ListIterator<T, A> {
-        let buffer = BufferMeta::borrow(self.head.load(Relaxed));
+        let buffer = BufferMeta::borrow(self.head.load(Acquire));
         ListIterator {
-            current: buffer.head.load(Relaxed),
+            current: buffer.head.load(Acquire),
             buffer,
         }
     }
@@ -330,9 +330,9 @@ impl<T: Default + Copy, A: GlobalAlloc + Default> List<T, A> {
 impl<T: Default + Copy, A: GlobalAlloc + Default> Drop for List<T, A> {
     fn drop(&mut self) {
         unsafe {
-            let mut node_ptr = self.head.load(Relaxed);
+            let mut node_ptr = self.head.load(Acquire);
             while node_ptr as usize != 0 {
-                let next_ptr = (&*node_ptr).next.load(Relaxed);
+                let next_ptr = (&*node_ptr).next.load(Acquire);
                 BufferMeta::unref(node_ptr);
                 node_ptr = next_ptr;
             }
@@ -385,7 +385,7 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
     pub fn unref(buffer: *mut Self) {
         let rc = {
             let buffer = unsafe { &*buffer };
-            buffer.refs.fetch_sub(1, Relaxed)
+            buffer.refs.fetch_sub(1, AcqRel)
         };
         if rc == 1 {
             Self::gc(buffer);
@@ -408,10 +408,10 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
         F: FnMut((usize, T)),
     {
         let size_of_obj = mem::size_of::<T>();
-        let data_bound = buffer.head.load(Relaxed);
+        let data_bound = buffer.head.load(Acquire);
         let mut slot_addr = buffer.lower_bound;
         debug_assert!(
-            buffer.refs.load(Relaxed) <= 2 || buffer.refs.load(Relaxed) >= 256,
+            buffer.refs.load(Acquire) <= 2 || buffer.refs.load(Acquire) >= 256,
             "Reference counting check failed"
         );
         for _ in 0..data_bound {
@@ -430,7 +430,7 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
             }
             slot_addr += buffer.tuple_size;
         }
-        buffer.head.store(0, Relaxed);
+        buffer.head.store(0, Release);
     }
 
     fn drop_out<F>(
@@ -442,17 +442,17 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
         F: FnMut((usize, T)),
     {
         let buffer = BufferMeta::borrow(buffer_ptr);
-        let next_ptr = buffer.next.load(Relaxed);
+        let next_ptr = buffer.next.load(Acquire);
         let backoff = Backoff::new();
         let word_bits = mem::size_of::<usize>() << 3;
         let flag = 1 << (word_bits - 1);
         loop {
-            let rc = buffer.refs.load(Relaxed);
+            let rc = buffer.refs.load(Acquire);
             if rc > flag {
                 // discovered other drop out, give up
                 return None;
             }
-            let flag_swap = buffer.refs.compare_and_swap(rc, rc | flag, Relaxed);
+            let flag_swap = buffer.refs.compare_and_swap(rc, rc | flag, AcqRel);
             if flag_swap == rc {
                 break;
             } else if flag_swap > flag {
@@ -464,16 +464,16 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
         }
         loop {
             //wait until reference counter reach 2 one for not garbage one for current reference)
-            let rc = buffer.refs.load(Relaxed);
+            let rc = buffer.refs.load(Acquire);
             debug_assert!(rc > flag, "get reference {:x}, value {}", rc, rc & !flag);
             let rc = rc & !flag;
             if rc <= 1 {
                 // this buffer is marked to be gc, untouched
-                buffer.refs.store(2, Relaxed);
+                buffer.refs.store(2, Release);
                 return Some(next_ptr);
             } else if rc == 2 {
                 // no other reference, flush and break out waiting
-                buffer.refs.store(rc, Relaxed);
+                buffer.refs.store(rc, Release);
                 BufferMeta::flush_buffer(&*buffer, retain, counter);
                 BufferMeta::unref(buffer_ptr);
                 return Some(next_ptr);
@@ -485,7 +485,7 @@ impl<T: Default, A: GlobalAlloc + Default> BufferMeta<T, A> {
     fn borrow(buffer: *mut Self) -> BufferRef<T, A> {
         {
             let buffer = unsafe { &*buffer };
-            buffer.refs.fetch_add(1, Relaxed);
+            buffer.refs.fetch_add(1, AcqRel);
         }
         BufferRef { ptr: buffer }
     }
@@ -523,12 +523,12 @@ impl<T: Default + Clone + Copy, A: GlobalAlloc + Default> Iterator for ListItera
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.current == 0 {
-                let next_buffer_ptr = self.buffer.next.load(Relaxed);
+                let next_buffer_ptr = self.buffer.next.load(Acquire);
                 if next_buffer_ptr == null_mut() {
                     return None;
                 } else {
                     self.buffer = BufferMeta::borrow(next_buffer_ptr);
-                    self.current = self.buffer.head.load(Relaxed);
+                    self.current = self.buffer.head.load(Acquire);
                     continue;
                 }
             }
@@ -695,13 +695,13 @@ mod exchange {
 
         fn exchange(&self, data: ExchangeData<T>) -> Result<ExchangeData<T>, ExchangeData<T>> {
             // Memory ordering is somehow important here
-            let state = self.state.load(Relaxed);
+            let state = self.state.load(Acquire);
             let backoff = Backoff::new();
             if state == EXCHANGE_EMPTY {
                 self.wait_state_data_until(state, &backoff);
                 if self
                     .state
-                    .compare_and_swap(EXCHANGE_EMPTY, EXCHANGE_WAITING, Relaxed)
+                    .compare_and_swap(EXCHANGE_EMPTY, EXCHANGE_WAITING, AcqRel)
                     == EXCHANGE_EMPTY
                 {
                     self.store_state_data(Some(data));
@@ -710,13 +710,13 @@ mod exchange {
                         // check if it can spin
                         if (now.elapsed().as_nanos() as usize) < EXCHANGE_SPIN_WAIT_NS
                             // if not, CAS to empty, can fail by other thread set BUSY
-                            || self.state.compare_and_swap(EXCHANGE_WAITING, EXCHANGE_EMPTY, Relaxed) == EXCHANGE_BUSY
+                            || self.state.compare_and_swap(EXCHANGE_WAITING, EXCHANGE_EMPTY, AcqRel) == EXCHANGE_BUSY
                         {
-                            if self.state.load(Relaxed) != EXCHANGE_BUSY {
+                            if self.state.load(Acquire) != EXCHANGE_BUSY {
                                 continue;
                             }
                             self.wait_state_data_until(EXCHANGE_BUSY, &backoff);
-                            self.state.store(EXCHANGE_EMPTY, Relaxed);
+                            self.state.store(EXCHANGE_EMPTY, Release);
                             let mut data_result = None;
                             self.swap_state_data(&mut data_result);
                             if let Some(res) = data_result {
@@ -727,7 +727,7 @@ mod exchange {
                         } else {
                             // no other thead come and take over, return input
                             assert_eq!(
-                                self.state.load(Relaxed),
+                                self.state.load(Acquire),
                                 EXCHANGE_EMPTY,
                                 "Bad state after bail"
                             );
@@ -737,7 +737,7 @@ mod exchange {
                                 //                            assert_eq!(
                                 //                                returned_data.as_ref().map(|(f, _)| *f), origin_data_flag,
                                 //                                "return check error. Current state: {}, in state {}",
-                                //                                self.state.load(Relaxed), state
+                                //                                self.state.load(Acquire), state
                                 //                            );
                                 return Err(returned_data);
                             } else {
@@ -752,7 +752,7 @@ mod exchange {
                 // find a pair, get it first
                 if self
                     .state
-                    .compare_and_swap(EXCHANGE_WAITING, EXCHANGE_BUSY, Relaxed)
+                    .compare_and_swap(EXCHANGE_WAITING, EXCHANGE_BUSY, AcqRel)
                     == EXCHANGE_WAITING
                 {
                     self.wait_state_data_until(EXCHANGE_WAITING, &backoff);
@@ -772,7 +772,7 @@ mod exchange {
                 unreachable!(
                     "Got state {}, real state {}",
                     state,
-                    self.state.load(Relaxed)
+                    self.state.load(Acquire)
                 );
             }
         }
@@ -781,24 +781,24 @@ mod exchange {
             let data_content_ptr = self.data.get();
             unsafe { ptr::write(data_content_ptr, data) }
             fence(SeqCst);
-            self.data_state.store(self.state.load(Relaxed), Relaxed);
+            self.data_state.store(self.state.load(Acquire), Release);
         }
 
         fn wait_state_data_until(&self, expecting: usize, backoff: &Backoff) {
-            while self.data_state.load(Relaxed) != expecting {
+            while self.data_state.load(Acquire) != expecting {
                 backoff.spin();
             }
         }
 
         fn wait_state_data_sync(&self, backoff: &Backoff) {
-            self.wait_state_data_until(self.state.load(Relaxed), backoff);
+            self.wait_state_data_until(self.state.load(Acquire), backoff);
         }
 
         fn swap_state_data(&self, data: &mut Option<ExchangeData<T>>) {
             let mut data_content_mut = unsafe { &mut *self.data.get() };
             mem::swap(data, data_content_mut);
             fence(SeqCst);
-            self.data_state.store(self.state.load(Relaxed), Relaxed);
+            self.data_state.store(self.state.load(Acquire), Release);
         }
     }
 
@@ -897,7 +897,7 @@ mod exchange {
             });
             th1.join();
             th2.join();
-            assert!(hit_count.load(Relaxed) > 0);
+            assert!(hit_count.load(Acquire) > 0);
             assert_eq!(sum_board.lock().unwrap().len(), attempt_cycles * 2);
             for i in 0..attempt_cycles * 2 {
                 assert!(

@@ -3,7 +3,7 @@
 use crate::map::{Map, ObjectMap};
 use crate::spin::SpinLock;
 use std::ops::Deref;
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+use std::sync::atomic::Ordering::{Acquire, AcqRel, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ impl<T> LinkedObjectMap<T> {
         }
         let _new_guard = new_front.lock.lock();
         loop {
-            let front = self.head.load(Relaxed);
+            let front = self.head.load(Acquire);
             let front_node = self.map.get(&front);
             let _front_guard = front_node.as_ref().map(|n| n.lock.lock());
             if let Some(ref front_node) = front_node {
@@ -58,12 +58,12 @@ impl<T> LinkedObjectMap<T> {
                 continue;
             }
             new_front.set_next(front);
-            if self.head.compare_and_swap(front, *key, Relaxed) == front {
+            if self.head.compare_and_swap(front, *key, AcqRel) == front {
                 if let Some(ref front_node) = front_node {
-                    front_node.prev.store(*key, SeqCst);
+                    front_node.prev.store(*key, Release);
                 } else {
                     debug_assert_eq!(front, NONE_KEY);
-                    self.tail.compare_and_swap(NONE_KEY, *key, SeqCst);
+                    self.tail.compare_and_swap(NONE_KEY, *key, AcqRel);
                 }
                 break;
             } else {
@@ -82,7 +82,7 @@ impl<T> LinkedObjectMap<T> {
             self.remove_node(*key, existed_node);
         }
         loop {
-            let back = self.tail.load(Relaxed);
+            let back = self.tail.load(Acquire);
             let back_node = self.map.get(&back);
             let _back_guard = back_node.as_ref().map(|n| n.lock.lock());
             if let Some(ref back_node) = back_node {
@@ -95,12 +95,12 @@ impl<T> LinkedObjectMap<T> {
                 continue;
             }
             new_back.set_prev(back);
-            if self.tail.compare_and_swap(back, *key, Relaxed) == back {
+            if self.tail.compare_and_swap(back, *key, AcqRel) == back {
                 if let Some(ref back_node) = back_node {
-                    back_node.next.store(*key, SeqCst);
+                    back_node.next.store(*key, Release);
                 } else {
                     debug_assert_eq!(back, NONE_KEY);
-                    self.head.compare_and_swap(NONE_KEY, *key, SeqCst);
+                    self.head.compare_and_swap(NONE_KEY, *key, AcqRel);
                 }
                 break;
             } else {
@@ -161,14 +161,13 @@ impl<T> LinkedObjectMap<T> {
             prev_node.as_ref().map(|n| n.set_next(next));
             next_node.as_ref().map(|n| n.set_prev(prev));
             if prev_node.is_none() {
-                debug_assert_eq!(self.head.load(Relaxed), key);
-                self.head.store(next, Relaxed);
+                debug_assert_eq!(self.head.load(Acquire), key);
+                self.head.store(next, Release);
             }
             if next_node.is_none() {
-                debug_assert_eq!(self.tail.load(Relaxed), key);
-                self.tail.store(prev, Relaxed);
+                debug_assert_eq!(self.tail.load(Acquire), key);
+                self.tail.store(prev, Release);
             }
-            fence(SeqCst);
             return;
         }
     }
@@ -183,7 +182,7 @@ impl<T> LinkedObjectMap<T> {
 
     pub fn all_pairs(&self) -> Vec<(usize, NodeRef<T>)> {
         let mut res = vec![];
-        let mut node_key = self.head.load(Relaxed);
+        let mut node_key = self.head.load(Acquire);
         loop {
             if let Some(node) = self.map.get(&node_key) {
                 let new_node_key = node.get_next();
@@ -200,7 +199,7 @@ impl<T> LinkedObjectMap<T> {
 
     pub fn all_keys(&self) -> Vec<usize> {
         let mut res = vec![];
-        let mut node_key = self.head.load(Relaxed);
+        let mut node_key = self.head.load(Acquire);
         loop {
             if let Some(node) = self.map.get(&node_key) {
                 res.push(node_key);
@@ -216,7 +215,7 @@ impl<T> LinkedObjectMap<T> {
 
     pub fn all_values(&self) -> Vec<NodeRef<T>> {
         let mut res = vec![];
-        let mut node_key = self.head.load(Relaxed);
+        let mut node_key = self.head.load(Acquire);
         loop {
             if let Some(node) = self.map.get(&node_key) {
                 node_key = node.get_next();
@@ -242,19 +241,19 @@ impl<T> Node<T> {
     }
 
     fn get_next(&self) -> usize {
-        self.next.load(Relaxed)
+        self.next.load(Acquire)
     }
 
     fn get_prev(&self) -> usize {
-        self.prev.load(Relaxed)
+        self.prev.load(Acquire)
     }
 
     fn set_next(&self, new: usize) {
-        self.next.store(new, Relaxed)
+        self.next.store(new, Release)
     }
 
     fn set_prev(&self, new: usize) {
-        self.prev.store(new, Relaxed)
+        self.prev.store(new, Release)
     }
 }
 
