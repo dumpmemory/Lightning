@@ -438,7 +438,7 @@ impl<
         chunk: &'a Chunk<K, V, A, ALLOC>,
         key: &K,
         fkey: usize,
-        mut op: ModOp<V>,
+        op: ModOp<V>,
         _guard: &'a Guard,
     ) -> ModResult<V> {
         let cap = chunk.capacity;
@@ -447,10 +447,6 @@ impl<
         let entry_size = mem::size_of::<EntryTemplate>();
         let mut count = 0;
         let cap_mask = chunk.cap_mask();
-        let attempt_insertion = match &op {
-            &ModOp::AttemptInsert(_, _) => true,
-            _ => false,
-        };
         let backoff = crossbeam_utils::Backoff::new();
         while count <= cap {
             idx &= cap_mask;
@@ -546,14 +542,7 @@ impl<
                         // found the key with empty value, shall do nothing and continue probing
                         // because other thread is trying to write value into it
                     }
-                    ParsedValue::Sentinel => {
-                        return match op {
-                            ModOp::Insert(_fv, v) | ModOp::AttemptInsert(_fv, v) => {
-                                ModResult::Sentinel
-                            }
-                            _ => ModResult::Sentinel,
-                        }
-                    } // should not reachable for insertion happens on new list
+                    ParsedValue::Sentinel => return ModResult::Sentinel,
                     ParsedValue::Prime(v) => {
                         trace!(
                             "Discovered prime for key {} with value {:#064b}, retry",
@@ -579,12 +568,6 @@ impl<
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
-                        } else {
-                            op = if attempt_insertion {
-                                ModOp::AttemptInsert(fval, val)
-                            } else {
-                                ModOp::Insert(fval, val)
-                            }
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
@@ -598,8 +581,6 @@ impl<
                         if self.cas_value(addr, 0, fval) {
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
-                        } else {
-                            op = ModOp::UpsertFastVal(fval);
                         }
                     }
                     ModOp::Sentinel => {
@@ -607,19 +588,29 @@ impl<
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
-                        } else {
-                            op = ModOp::Sentinel
                         }
                     }
                     ModOp::Empty => return ModResult::Fail,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
+            } else {
+                // Early exit upon sentinel discovery
+                match self.get_fast_value(addr).parsed {
+                    ParsedValue::Sentinel => 
+                        match &op {
+                            &ModOp::Sentinel => {
+                                // Sentinel op is allowed on old chunk
+                            }
+                            _ => return ModResult::Sentinel
+                        }
+                    _ => {}
+                }
             }
             idx += 1; // reprobe
             count += 1;
         }
         match op {
-            ModOp::Insert(_fv, v) | ModOp::AttemptInsert(_fv, v) => ModResult::TableFull,
+            ModOp::Insert(_fv, _v) | ModOp::AttemptInsert(_fv, _v) => ModResult::TableFull,
             ModOp::UpsertFastVal(_fv) => ModResult::TableFull,
             _ => ModResult::NotFound,
         }
