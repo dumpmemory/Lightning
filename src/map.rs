@@ -472,13 +472,16 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
-                                self.set_sentinel(addr);
-                                let (_, value) = chunk.attachment.get(idx);
-                                chunk.attachment.erase(idx);
-                                return ModResult::Done(*v, Some(value));
+                                if self.cas_sentinel(addr, val.raw) {
+                                    let (_, value) = chunk.attachment.get(idx);
+                                    chunk.attachment.erase(idx);
+                                    return ModResult::Done(*v, Some(value));
+                                } else {
+                                    return ModResult::Fail
+                                }
                             }
                             &ModOp::Empty => {
-                                if !self.set_tombstone(addr, val.raw) {
+                                if !self.cas_tombstone(addr, val.raw) {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
                                     // should fail
@@ -597,10 +600,12 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_value(addr, 0, SENTINEL_VALUE) {
+                        if self.cas_sentinel(addr, 0) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
+                        } else {
+                            return ModResult::Fail;
                         }
                     }
                     ModOp::Empty => return ModResult::Fail,
@@ -673,15 +678,9 @@ impl<
     }
 
     #[inline(always)]
-    fn set_tombstone(&self, entry_addr: usize, original: usize) -> bool {
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> bool {
         debug_assert!(entry_addr > 0);
         self.cas_value(entry_addr, original, EMPTY_VALUE)
-    }
-    #[inline(always)]
-    fn set_sentinel(&self, entry_addr: usize) {
-        debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, SENTINEL_VALUE) }
     }
     #[inline(always)]
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
@@ -690,6 +689,16 @@ impl<
         unsafe {
             intrinsics::atomic_cxchg_relaxed(addr as *mut usize, original, value).0 == original
         }
+    }
+    #[inline(always)]
+    fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
+        debug_assert!(entry_addr > 0);
+        let addr = entry_addr + mem::size_of::<usize>();
+        let (val, done) = unsafe {
+            // SeqCst
+            intrinsics::atomic_cxchg(addr as *mut usize, original, SENTINEL_VALUE)
+        };
+        done || val == SENTINEL_VALUE
     }
 
     /// Failed return old shared
@@ -823,7 +832,7 @@ impl<
                     };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
-                    if self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                    if self.cas_sentinel(old_address, fvalue.raw) {
                         fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
@@ -858,7 +867,7 @@ impl<
                     trace!("Skip copy sentinel");
                 }
                 ParsedValue::Empty => {
-                    if !self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                    if !self.cas_sentinel(old_address, fvalue.raw) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
