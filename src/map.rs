@@ -6,7 +6,7 @@ use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
-use core::sync::atomic::{fence, AtomicUsize};
+use core::sync::atomic::{fence, AtomicUsize, AtomicU64};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -14,6 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
+use std::time::{UNIX_EPOCH, SystemTime};
 
 pub struct EntryTemplate(usize, usize);
 
@@ -97,6 +98,7 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     count: AtomicUsize,
     epoch: AtomicUsize,
+    timestamp: AtomicU64,
     mark: PhantomData<H>,
 }
 
@@ -709,15 +711,24 @@ impl<
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
         }
+        let epoch = self.now_epoch();
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
-            // clear empty
+            // Clear tombstones
             old_cap
         } else {
-            // resize
-            let mult = if old_cap < 2048 { 4 } else { 1 };
-            old_cap << mult
+            let mut cap = old_cap << 1;
+            if cap < 2048 {
+                cap <<= 1;
+            }
+            if epoch < 5 {
+                cap <<= 1;
+            }
+            if timestamp() - self.timestamp.load(Relaxed) < 1000 {
+                cap <<= 1;
+            }
+            cap
         };
         debug!(
             "New size for {:?} is {}, was {}",
@@ -759,6 +770,7 @@ impl<
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
+        self.timestamp.store(timestamp(), Relaxed);
         self.new_chunk.store(Shared::null(), SeqCst);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
@@ -1052,7 +1064,7 @@ fn is_power_of_2(x: usize) -> bool {
 
 #[inline(always)]
 fn occupation_limit(cap: usize) -> usize {
-    (cap as f64 * 0.70f64) as usize
+    (cap as f64 * 0.60f64) as usize
 }
 
 #[inline(always)]
@@ -2107,6 +2119,14 @@ impl Default for PassthroughHasher {
     fn default() -> Self {
         Self { num: 0 }
     }
+}
+
+fn timestamp() -> u64 {
+    let start = SystemTime::now();
+    let since_the_epoch = start
+        .duration_since(UNIX_EPOCH)
+        .unwrap();
+    since_the_epoch.as_millis() as u64
 }
 
 #[cfg(test)]
