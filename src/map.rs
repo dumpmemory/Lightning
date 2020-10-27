@@ -695,7 +695,8 @@ impl<
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let (val, done) = unsafe {
-            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
+            // SeqCst
+            intrinsics::atomic_cxchg(addr as *mut usize, original, SENTINEL_VALUE)
         };
         done || val == SENTINEL_VALUE
     }
