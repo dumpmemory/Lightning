@@ -843,7 +843,9 @@ impl<
                             fence(SeqCst);
                         }
                     } else {
-                        unreachable!("Sentinel CAS should always succeed");
+                        warn!("Sentinel CAS should always succeed but failed, retry {}", fkey);
+                        backoff.spin();
+                        continue;
                     }
                 }
                 ParsedValue::Prime(_) => {
