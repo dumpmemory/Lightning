@@ -732,7 +732,7 @@ impl<
             .compare_and_set(Shared::null(), old_chunk_ptr, SeqCst, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
-            warn!("Cannot obtain lock for resize, will retry");
+            trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
         if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
@@ -820,10 +820,10 @@ impl<
                         ModResult::TableFull => unreachable!("Table full when resize"),
                         ModResult::Aborted => unreachable!("Should not abort"),
                     };
-                    fence(SeqCst);
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     if self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                        fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
@@ -835,18 +835,19 @@ impl<
                                     stripped,
                                     new_entry_addr
                                 );
-                                old_chunk_ins.attachment.erase(idx);
                                 effective_copy += 1;
                             } else {
-                                continue; // retry this entry
+                                trace!("Value changed before strip prime for key {}", fkey);
                             }
+                            old_chunk_ins.attachment.erase(idx);
+                            fence(SeqCst);
                         }
+                    } else {
+                        unreachable!("Sentinel CAS should always succeed");
                     }
                 }
                 ParsedValue::Prime(_) => {
-                    // Happends when the entry value is been changed, retry
-                    backoff.spin();
-                    continue;
+                    unreachable!("Shall not have prime in old table");
                 }
                 ParsedValue::Sentinel => {
                     // Sentinel, skip
@@ -854,9 +855,8 @@ impl<
                     trace!("Skip copy sentinel");
                 }
                 ParsedValue::Empty => {
-                    // Empty, skip if it have no key
-                    if fkey != EMPTY_KEY && !self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE)
-                    {
+                    if !self.cas_value(old_address, fvalue.raw, SENTINEL_VALUE) {
+                        warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
                     }
