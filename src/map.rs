@@ -5,8 +5,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::sync::atomic::Ordering::{AcqRel, Acquire, Release, Relaxed};
-use core::sync::atomic::{AtomicUsize, AtomicU64};
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Release, Relaxed, SeqCst};
+use core::sync::atomic::{fence, AtomicUsize, AtomicU64};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -320,7 +320,7 @@ impl<
 
     #[inline(always)]
     fn now_epoch(&self) -> usize {
-        self.epoch.load(Acquire)
+        self.epoch.load(SeqCst)
     }
 
     fn expired_epoch(&self, old_epoch: usize) -> bool {
@@ -832,6 +832,7 @@ impl<
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     if self.cas_sentinel(old_address, fvalue.raw) {
+                        fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
@@ -848,6 +849,7 @@ impl<
                                 trace!("Value changed before strip prime for key {}", fkey);
                             }
                             old_chunk_ins.attachment.erase(idx);
+                            fence(SeqCst);
                         }
                     } else {
                         warn!("Sentinel CAS should always succeed but failed, retry {}", fkey);
