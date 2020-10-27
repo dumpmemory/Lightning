@@ -133,41 +133,42 @@ impl<
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
-        let mut chunk_ptr = self.chunk.load(Acquire, &guard);
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
+            let chunk_ptr = self.chunk.load(Acquire, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
+            let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            let chunk = unsafe { chunk_ptr.deref() };
-            let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
-            let res = match val.parsed {
-                ParsedValue::Prime(val) | ParsedValue::Val(val) => Some((
-                    val,
-                    if read_attachment {
-                        Some(chunk.attachment.get(idx).1)
-                    } else {
+            let get_from = |chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
+                let chunk = unsafe { chunk_ptr.deref() };
+                let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
+                match val.parsed {
+                    ParsedValue::Prime(val) | ParsedValue::Val(val) => Some((
+                        val,
+                        if read_attachment {
+                            Some(chunk.attachment.get(idx).1)
+                        } else {
+                            None
+                        },
+                    )),
+                    ParsedValue::Empty | ParsedValue::Sentinel => {
                         None
-                    },
-                )),
-                ParsedValue::Empty | ParsedValue::Sentinel => {
-                    fence(SeqCst);
-                    let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-                    let curr_chunk_ptr = self.chunk.load(Acquire, &guard);
-                    if chunk_ptr != curr_chunk_ptr {
-                        chunk_ptr = curr_chunk_ptr;
-                        backoff.spin();
-                        continue;
                     }
-                    if Self::is_copying(&curr_chunk_ptr, &new_chunk_ptr) {
-                        chunk_ptr = new_chunk_ptr;
-                        backoff.spin();
-                        continue;
-                    }
-                    None
                 }
             };
+            let res = {
+                let chunk_res = get_from(&chunk_ptr);
+                if chunk_res.is_some() {
+                    chunk_res
+                } else if copying {
+                    get_from(&new_chunk_ptr)
+                } else {
+                    chunk_res
+                }
+                
+            };
             if self.expired_epoch(epoch) {
-                chunk_ptr = self.chunk.load(Acquire, &guard);
                 backoff.spin();
                 continue;
             }
@@ -383,9 +384,7 @@ impl<
                         trace!("Sentinal placed");
                         retr = Some((fvalue, value));
                     }
-                    ModResult::Done(_, None) => {
-                        unreachable!("Remove shall not have fone for retry")
-                    }
+                    ModResult::Done(_, None) => {}
                     _ => {
                         trace!("Sentinal not placed");
                     }

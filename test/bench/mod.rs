@@ -11,10 +11,10 @@ fn main() {
     // Workload::new(16, Mix::uniform()).run::<lfmap::TestTable>();
     // Workload::new(126, Mix::read_heavy()).run::<lfmap::TestTable>();
     // Workload::new(1, Mix::uniform()).run::<lfmap::TestTable>();
-    // test_lfmap();
-    // test_chashmap();
+    test_lfmap();
+    test_chashmap();
     // test_rwlock_std();
-    test_mutex_std();
+    // test_mutex_std();
 }
 
 fn test_lfmap() {
