@@ -5,8 +5,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::sync::atomic::Ordering::{Relaxed, SeqCst};
-use core::sync::atomic::{fence, AtomicUsize, AtomicU64};
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Release, Relaxed};
+use core::sync::atomic::{AtomicUsize, AtomicU64};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -133,7 +133,7 @@ impl<
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
-        let mut chunk_ref = self.chunk.load(Relaxed, &guard);
+        let mut chunk_ref = self.chunk.load(Acquire, &guard);
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
@@ -150,13 +150,13 @@ impl<
                     },
                 )),
                 ParsedValue::Empty | ParsedValue::Sentinel => {
-                    let new_chunk_ref = self.new_chunk.load(SeqCst, &guard);
+                    let new_chunk_ref = self.new_chunk.load(Acquire, &guard);
                     if !new_chunk_ref.is_null() && new_chunk_ref != chunk_ref {
                         chunk_ref = new_chunk_ref;
                         backoff.spin();
                         continue;
                     }
-                    let current_chunk_ref = self.chunk.load(Relaxed, &guard);
+                    let current_chunk_ref = self.chunk.load(Acquire, &guard);
                     if chunk_ref != current_chunk_ref {
                         chunk_ref = current_chunk_ref;
                         backoff.spin();
@@ -187,8 +187,8 @@ impl<
         loop {
             let epoch = self.now_epoch();
             trace!("Inserting key: {}, value: {}", fkey, fvalue);
-            let chunk_ptr = self.chunk.load(Relaxed, &guard);
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            let chunk_ptr = self.chunk.load(Acquire, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
             if !copying {
                 match self.check_migration(chunk_ptr, &guard) {
@@ -215,7 +215,7 @@ impl<
             match value_insertion {
                 ModResult::Done(_, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
-                    self.count.fetch_add(1, Relaxed);
+                    self.count.fetch_add(1, AcqRel);
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail => {
@@ -279,8 +279,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
-            let chunk_ptr = self.chunk.load(Relaxed, &guard);
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            let chunk_ptr = self.chunk.load(Acquire, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
             let chunk = unsafe { chunk_ptr.deref() };
             let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
@@ -320,7 +320,7 @@ impl<
 
     #[inline(always)]
     fn now_epoch(&self) -> usize {
-        self.epoch.load(SeqCst)
+        self.epoch.load(Acquire)
     }
 
     fn expired_epoch(&self, old_epoch: usize) -> bool {
@@ -337,8 +337,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
-            let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
+            let old_chunk_ptr = self.chunk.load(Acquire, &guard);
             if new_chunk_ptr == old_chunk_ptr {
                 backoff.spin();
                 continue;
@@ -352,7 +352,7 @@ impl<
             match res {
                 ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
                     retr = Some((fvalue, value));
-                    self.count.fetch_sub(1, Relaxed);
+                    self.count.fetch_sub(1, AcqRel);
                 }
                 ModResult::Done(_, None) => unreachable!("Remove shall not have done"),
                 ModResult::NotFound => {}
@@ -394,7 +394,7 @@ impl<
     }
 
     pub fn len(&self) -> usize {
-        self.count.load(Relaxed)
+        self.count.load(Acquire)
     }
 
     fn get_from_chunk(
@@ -652,8 +652,8 @@ impl<
 
     fn entries(&self) -> Vec<(usize, usize, K, V)> {
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ref = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ref = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk_ref = self.chunk.load(Acquire, &guard);
+        let new_chunk_ref = self.new_chunk.load(Acquire, &guard);
         let old_chunk = unsafe { old_chunk_ref.deref() };
         let new_chunk = unsafe { new_chunk_ref.deref() };
         let mut res = self.all_from_chunk(&*old_chunk);
@@ -666,14 +666,14 @@ impl<
     #[inline(always)]
     fn get_fast_key(&self, entry_addr: usize) -> usize {
         debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_relaxed(entry_addr as *mut usize) }
+        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) }
     }
 
     #[inline(always)]
     fn get_fast_value(&self, entry_addr: usize) -> Value {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
-        let val = unsafe { intrinsics::atomic_load_relaxed(addr as *mut usize) };
+        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
         Value::new::<K, V, A, ALLOC, H>(val)
     }
 
@@ -687,7 +687,7 @@ impl<
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe {
-            intrinsics::atomic_cxchg_relaxed(addr as *mut usize, original, value).0 == original
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value).0 == original
         }
     }
     #[inline(always)]
@@ -695,8 +695,7 @@ impl<
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let (val, done) = unsafe {
-            // SeqCst
-            intrinsics::atomic_cxchg(addr as *mut usize, original, SENTINEL_VALUE)
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
         };
         done || val == SENTINEL_VALUE
     }
@@ -727,7 +726,7 @@ impl<
             if epoch < 5 {
                 cap <<= 1;
             }
-            if timestamp() - self.timestamp.load(Relaxed) < 1000 {
+            if timestamp() - self.timestamp.load(Acquire) < 1000 {
                 cap <<= 1;
             }
             cap
@@ -739,22 +738,22 @@ impl<
         // Swap in old chunk as placeholder for the lock
         if let Err(_) = self
             .new_chunk
-            .compare_and_set(Shared::null(), old_chunk_ptr, SeqCst, guard)
+            .compare_and_set(Shared::null(), old_chunk_ptr, AcqRel, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        if self.chunk.load(SeqCst, guard) != old_chunk_ptr {
+        if self.chunk.load(Acquire, guard) != old_chunk_ptr {
             warn!("Give up on resize due to old chunk changed after lock obtained");
-            self.new_chunk.store(Shared::null(), SeqCst);
+            self.new_chunk.store(Shared::null(), Release);
             return ResizeResult::ChunkChanged;
         }
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
-        self.new_chunk.store(new_chunk_ptr, SeqCst); // Stump becasue we have the lock already
-        self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
+        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -764,7 +763,7 @@ impl<
         debug_assert!(!new_chunk_ptr.is_null());
         let swap_old = self
             .chunk
-            .compare_and_set(old_chunk_ptr, new_chunk_ptr, SeqCst, guard);
+            .compare_and_set(old_chunk_ptr, new_chunk_ptr, AcqRel, guard);
         if let Err(e) = swap_old {
             // Should not happend, we cannot fix this
             panic!("Resize swap pointer failed: {:?}", e);
@@ -772,9 +771,9 @@ impl<
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
-        self.timestamp.store(timestamp(), Relaxed);
-        self.new_chunk.store(Shared::null(), SeqCst);
-        self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
+        self.timestamp.store(timestamp(), Release);
+        self.new_chunk.store(Shared::null(), Release);
+        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
@@ -833,7 +832,6 @@ impl<
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     if self.cas_sentinel(old_address, fvalue.raw) {
-                        fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
@@ -850,7 +848,6 @@ impl<
                                 trace!("Value changed before strip prime for key {}", fkey);
                             }
                             old_chunk_ins.attachment.erase(idx);
-                            fence(SeqCst);
                         }
                     } else {
                         warn!("Sentinel CAS should always succeed but failed, retry {}", fkey);
@@ -885,8 +882,8 @@ impl<
 
     pub fn map_is_copying(&self) -> bool {
         let guard = crossbeam_epoch::pin();
-        let chunk_ptr = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let chunk_ptr = self.chunk.load(Acquire, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
         Self::is_copying(&chunk_ptr, &new_chunk_ptr)
     }
 }
@@ -974,8 +971,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ptr = self.chunk.load(Relaxed, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+        let old_chunk_ptr = self.chunk.load(Acquire, &guard);
+        let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
         unsafe {
             // Hold references first so they won't get reclaimed
             let old_chunk = old_chunk_ptr.deref();
@@ -990,7 +987,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 old_total_size,
             );
             let cloned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
-            new_table.chunk.store(cloned_old_ref, Relaxed);
+            new_table.chunk.store(cloned_old_ref, Release);
 
             if new_chunk_ptr != Shared::null() {
                 let new_chunk = new_chunk_ptr.deref();
@@ -1003,12 +1000,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                     new_total_size,
                 );
                 let cloned_new_ref = Owned::new(ChunkPtr::new(cloned_new_ptr));
-                new_table.new_chunk.store(cloned_new_ref, Relaxed);
+                new_table.new_chunk.store(cloned_new_ref, Release);
             } else {
-                new_table.new_chunk.store(Shared::null(), Relaxed);
+                new_table.new_chunk.store(Shared::null(), Release);
             }
         }
-        new_table.count.store(self.count.load(Relaxed), SeqCst);
+        new_table.count.store(self.count.load(Acquire), Release);
         new_table
     }
 }
@@ -1019,8 +1016,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
-            guard.defer_destroy(self.chunk.load(Relaxed, &guard));
-            let new_chunk_ptr = self.new_chunk.load(Relaxed, &guard);
+            guard.defer_destroy(self.chunk.load(Acquire, &guard));
+            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             if new_chunk_ptr != Shared::null() {
                 guard.defer_destroy(new_chunk_ptr);
             }
