@@ -772,7 +772,8 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
         }
         self.timestamp.store(timestamp(), Relaxed);
-        self.new_chunk.store(Shared::null(), SeqCst);
+        self.new_chunk.store(Shared::null(), Relaxed);
+        self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
