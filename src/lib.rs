@@ -6,9 +6,9 @@ extern crate log;
 extern crate alloc;
 extern crate test;
 
+pub mod linked_map;
 pub mod list;
 pub mod map;
-pub mod linked_map;
 pub mod spin;
 
 pub mod rand;

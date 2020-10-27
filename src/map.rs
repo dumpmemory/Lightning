@@ -138,16 +138,14 @@ impl<
             let chunk = unsafe { chunk_ref.deref() };
             let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
             let res = match val.parsed {
-                ParsedValue::Prime(val) | ParsedValue::Val(val) => {
-                    Some((
-                        val,
-                        if read_attachment {
-                            Some(chunk.attachment.get(idx).1)
-                        } else {
-                            None
-                        },
-                    ))
-                }
+                ParsedValue::Prime(val) | ParsedValue::Val(val) => Some((
+                    val,
+                    if read_attachment {
+                        Some(chunk.attachment.get(idx).1)
+                    } else {
+                        None
+                    },
+                )),
                 ParsedValue::Empty | ParsedValue::Sentinel => {
                     let new_chunk_ref = self.new_chunk.load(SeqCst, &guard);
                     if !new_chunk_ref.is_null() && new_chunk_ref != chunk_ref {
@@ -254,7 +252,7 @@ impl<
                 backoff.spin();
                 continue;
             }
-            if copying  {
+            if copying {
                 self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
             }
             return result;
@@ -311,10 +309,10 @@ impl<
                 backoff.spin();
                 continue;
             }
-            if copying  {
+            if copying {
                 self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
             }
-            return res; 
+            return res;
         }
     }
 
@@ -355,7 +353,7 @@ impl<
                     self.count.fetch_sub(1, Relaxed);
                 }
                 ModResult::Done(_, None) => unreachable!("Remove shall not have done"),
-                ModResult::NotFound => {},
+                ModResult::NotFound => {}
                 ModResult::Sentinel => {
                     backoff.spin();
                     continue;
@@ -368,11 +366,7 @@ impl<
                     return self.remove(key, fkey);
                 } else {
                     let re_retr = self.remove(key, fkey);
-                    return if re_retr.is_some() {
-                        re_retr
-                    } else {
-                        retr
-                    }
+                    return if re_retr.is_some() { re_retr } else { retr };
                 }
             }
             if copying {
@@ -551,10 +545,12 @@ impl<
                     }
                     ParsedValue::Sentinel => {
                         return match op {
-                            ModOp::Insert(_fv, v) | ModOp::AttemptInsert(_fv, v) => ModResult::Sentinel,
+                            ModOp::Insert(_fv, v) | ModOp::AttemptInsert(_fv, v) => {
+                                ModResult::Sentinel
+                            }
                             _ => ModResult::Sentinel,
                         }
-                    }, // should not reachable for insertion happens on new list
+                    } // should not reachable for insertion happens on new list
                     ParsedValue::Prime(v) => {
                         trace!(
                             "Discovered prime for key {} with value {:#064b}, retry",
