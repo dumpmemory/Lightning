@@ -293,7 +293,14 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
-            let res = match mod_res {
+            if self.expired_epoch(epoch) {
+                backoff.spin();
+                continue;
+            }
+            if copying {
+                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+            }
+            return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
                     SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk_ptr)
                 }
@@ -308,14 +315,6 @@ impl<
                 ModResult::Done(_, _) => unreachable!("Swap Done"),
                 ModResult::TableFull => unreachable!("Swap table full"),
             };
-            if self.expired_epoch(epoch) {
-                backoff.spin();
-                continue;
-            }
-            if copying {
-                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
-            }
-            return res;
         }
     }
 
@@ -743,7 +742,7 @@ impl<
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
-        self.new_chunk.store(new_chunk_ptr, Relaxed); // Stump becasue we have the lock already
+        self.new_chunk.store(new_chunk_ptr, SeqCst); // Stump becasue we have the lock already
         self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
@@ -763,7 +762,7 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
         }
         self.timestamp.store(timestamp(), Relaxed);
-        self.new_chunk.store(Shared::null(), Relaxed);
+        self.new_chunk.store(Shared::null(), SeqCst);
         self.epoch.fetch_add(1, SeqCst); // Increase epoch by one
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
