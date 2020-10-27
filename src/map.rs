@@ -582,8 +582,9 @@ impl<
                         );
                         if self.cas_value(addr, 0, fval) {
                             // CAS value succeed, shall store key
+                            fence(SeqCst);
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
-                            unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
+                            unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         }
                     }
@@ -596,14 +597,16 @@ impl<
                             addr
                         );
                         if self.cas_value(addr, 0, fval) {
-                            unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
+                            fence(SeqCst);
+                            unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         }
                     }
                     ModOp::Sentinel => {
                         if self.cas_sentinel(addr, 0) {
                             // CAS value succeed, shall store key
-                            unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey) }
+                            fence(SeqCst);
+                            unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         } else {
                             return ModResult::Fail;
@@ -695,10 +698,11 @@ impl<
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
+        fence(SeqCst);
         let (val, done) = unsafe {
-            // SeqCst
-            intrinsics::atomic_cxchg(addr as *mut usize, original, SENTINEL_VALUE)
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
         };
+        fence(SeqCst);
         done || val == SENTINEL_VALUE
     }
 
