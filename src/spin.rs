@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU8, Ordering::{Acquire, Release, AcqRel}};
 
 pub struct SpinLock<T> {
     mark: AtomicU8,
@@ -21,7 +21,7 @@ impl<T> SpinLock<T> {
 
     pub fn lock(&self) -> SpinLockGuard<T> {
         let backoff = crossbeam_utils::Backoff::new();
-        while self.mark.compare_and_swap(0, 1, Relaxed) != 0 {
+        while self.mark.compare_and_swap(0, 1, AcqRel) != 0 {
             backoff.spin();
         }
         SpinLockGuard { lock: self }
@@ -43,7 +43,7 @@ impl<'a, T> DerefMut for SpinLockGuard<'a, T> {
 
 impl<'a, T> Drop for SpinLockGuard<'a, T> {
     fn drop(&mut self) {
-        self.lock.mark.store(0, Relaxed);
+        self.lock.mark.store(0, Release);
     }
 }
 
