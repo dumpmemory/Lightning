@@ -366,14 +366,6 @@ impl<
                 ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
-            if self.expired_epoch(epoch) {
-                if retr.is_none() {
-                    return self.remove(key, fkey);
-                } else {
-                    let re_retr = self.remove(key, fkey);
-                    return if re_retr.is_some() { re_retr } else { retr };
-                }
-            }
             if copying {
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
@@ -388,6 +380,14 @@ impl<
                     _ => {
                         trace!("Sentinal not placed");
                     }
+                }
+            }
+            if self.expired_epoch(epoch) {
+                if retr.is_none() {
+                    return self.remove(key, fkey);
+                } else {
+                    let re_retr = self.remove(key, fkey);
+                    return if re_retr.is_some() { re_retr } else { retr };
                 }
             }
             return retr;
