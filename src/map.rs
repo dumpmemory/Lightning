@@ -703,11 +703,9 @@ impl<
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
-        fence(SeqCst);
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
         };
-        fence(SeqCst);
         done || val == SENTINEL_VALUE
     }
 
@@ -772,7 +770,7 @@ impl<
         // Assertion check
         debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
         debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
-        debug_assert!(!new_chunk_ptr.is_null());
+        debug_assert!(!new_chunk_ptr.is_null());    
         let swap_old = self
             .chunk
             .compare_and_set(old_chunk_ptr, new_chunk_ptr, AcqRel, guard);
@@ -783,9 +781,10 @@ impl<
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
-        self.timestamp.store(timestamp(), Release);
-        self.new_chunk.store(Shared::null(), Release);
-        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        self.timestamp.store(timestamp(), Relaxed);
+        self.new_chunk.store(Shared::null(), Relaxed);
+        self.epoch.fetch_add(1, Relaxed); // Increase epoch by one
+        fence(AcqRel);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
@@ -806,8 +805,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         while old_address < boundary {
             // iterate the old chunk to extract entries that is NOT empty
-            let fkey = self.get_fast_key(old_address);
             let fvalue = self.get_fast_value(old_address);
+            let fkey = self.get_fast_key(old_address);
             // Reasoning value states
             match &fvalue.parsed {
                 ParsedValue::Val(v) => {
@@ -2221,6 +2220,7 @@ mod tests {
         let _ = env_logger::try_init();
         let num_threads = 64;
         let test_load = 1048576;
+        let repeat_load = 2048;
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         let mut threads = vec![];
         for i in 0..num_threads {
@@ -2229,26 +2229,29 @@ mod tests {
                 for j in 5..test_load {
                     let key = i * 10000000 + j;
                     let value = i * j;
-                    map.insert(&key, value);
-                    assert_eq!(
-                        map.get(&key),
-                        Some(value),
-                        "Is copying: {}",
-                        map.table.map_is_copying()
-                    );
-                    if j % 13 == 0 {
+                    for _ in 5..repeat_load {
+                        map.insert(&key, value);
                         assert_eq!(
-                            map.remove(&key),
+                            map.get(&key),
                             Some(value),
-                            "Remove result, copying {}",
+                            "Is copying: {}",
                             map.table.map_is_copying()
                         );
-                        assert_eq!(map.get(&key), None, "Remove recursion");
-                    }
-                    if j % 3 == 0 {
-                        let new_value = value + 7;
-                        map.insert(&key, new_value);
-                        assert_eq!(map.get(&key), Some(new_value));
+                        if j % 7 == 0 {
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}",
+                                map.get(&key),
+                                map.table.map_is_copying()
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                        }
+                        if j % 3 == 0 {
+                            let new_value = value + 7;
+                            map.insert(&key, new_value);
+                            assert_eq!(map.get(&key), Some(new_value));
+                        }
                     }
                 }
             }));
@@ -2265,7 +2268,7 @@ mod tests {
                 let get_res = map.get(&k);
                 if j % 3 == 0 {
                     assert_eq!(get_res, Some(value + 7), "Mod k :{}, i {}, j {}", k, i, j);
-                } else if j % 13 == 0 {
+                } else if j % 7 == 0 {
                     assert_eq!(get_res, None, "Remove k {}, i {}, j {}", k, i, j);
                 } else {
                     assert_eq!(get_res, Some(value), "New k {}, i {}, j {}", k, i, j)
