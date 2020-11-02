@@ -433,6 +433,7 @@ impl<
         return (Value::new::<K, V, A, ALLOC, H>(0), 0);
     }
 
+    #[inline(always)]
     fn modify_entry<'a>(
         &self,
         chunk: &'a Chunk<K, V, A, ALLOC>,
@@ -842,7 +843,9 @@ impl<
                     };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
+                    fence(SeqCst); // fence to ensure sentinel appears righr after pair copied to new chunk
                     if self.cas_sentinel(old_address, fvalue.raw) {
+                        fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
@@ -2229,21 +2232,48 @@ mod tests {
                 for j in 5..test_load {
                     let key = i * 10000000 + j;
                     let value = i * j;
-                    for _ in 5..repeat_load {
+                    for k in 5..repeat_load {
                         map.insert(&key, value);
                         assert_eq!(
                             map.get(&key),
                             Some(value),
-                            "Is copying: {}",
+                            "First getting {} Is copying: {}",
+                            key,
                             map.table.map_is_copying()
                         );
+                        for l in 5..1024 {
+                            let left = map.get(&key);
+                            let right = Some(value);
+                            if left != right {
+                                error!(
+                                    "Repeatdly getting {} Is copying: {}, round {}. Checking automatic recovery",
+                                    key,
+                                    map.table.map_is_copying(),
+                                    l
+                                );
+                                for m in 5..10240 {
+                                    let left = map.get(&key);
+                                    let right = Some(value);
+                                    if left == right {
+                                        panic!(
+                                            "Recovered at {} for {}, copying {}. Migration problem!!!", 
+                                            m, 
+                                            key, 
+                                            map.table.map_is_copying(),
+                                        );
+                                    }
+                                }
+                                panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
+                            }
+                        }
                         if j % 7 == 0 {
                             assert_eq!(
                                 map.remove(&key),
                                 Some(value),
-                                "Remove result, get {:?}, copying {}",
+                                "Remove result, get {:?}, copying {}, round {}",
                                 map.get(&key),
-                                map.table.map_is_copying()
+                                map.table.map_is_copying(),
+                                k
                             );
                             assert_eq!(map.get(&key), None, "Remove recursion");
                         }
