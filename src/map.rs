@@ -485,7 +485,6 @@ impl<
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
                                     // should fail
-                                    let (_, value) = chunk.attachment.get(idx);
                                     return ModResult::Fail;
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
@@ -499,6 +498,9 @@ impl<
                                 if self.cas_value(addr, val.raw, *fv) {
                                     let (_, value) = chunk.attachment.get(idx);
                                     return ModResult::Replaced(*fv, value, idx);
+                                } else {
+                                    trace!("Cannot upsert fast value in place for {}", fkey);
+                                    return ModResult::Fail;
                                 }
                             }
                             &ModOp::AttemptInsert(iv, _) => {
