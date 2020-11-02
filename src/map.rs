@@ -579,11 +579,14 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, 0, fval) {
+                        if self.cas_value(addr, EMPTY_VALUE, fval) {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
+                        } else {
+                            backoff.spin();
+                            continue;
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
@@ -594,9 +597,12 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, 0, fval) {
+                        if self.cas_value(addr, EMPTY_VALUE, fval) {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
+                        } else {
+                            backoff.spin();
+                            continue;
                         }
                     }
                     ModOp::Sentinel => {
@@ -605,7 +611,8 @@ impl<
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         } else {
-                            return ModResult::Fail;
+                            backoff.spin();
+                            continue;
                         }
                     }
                     ModOp::Empty => return ModResult::Fail,
