@@ -581,7 +581,6 @@ impl<
                         );
                         if self.cas_value(addr, 0, fval) {
                             // CAS value succeed, shall store key
-                            fence(SeqCst);
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
@@ -596,7 +595,6 @@ impl<
                             addr
                         );
                         if self.cas_value(addr, 0, fval) {
-                            fence(SeqCst);
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         }
@@ -604,7 +602,6 @@ impl<
                     ModOp::Sentinel => {
                         if self.cas_sentinel(addr, 0) {
                             // CAS value succeed, shall store key
-                            fence(SeqCst);
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         } else {
@@ -838,7 +835,6 @@ impl<
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     if self.cas_sentinel(old_address, fvalue.raw) {
-                        fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
