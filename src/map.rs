@@ -132,46 +132,76 @@ impl<
     }
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
+        enum FromChunkRes<V> {
+            Value(usize, Option<V>),
+            None,
+            Sentinel
+        };
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-            let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
+            let copying = Self::is_copying(epoch);
             debug_assert!(!chunk_ptr.is_null());
             let get_from = |chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
                 let chunk = unsafe { chunk_ptr.deref() };
                 let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
                 match val.parsed {
-                    ParsedValue::Prime(val) | ParsedValue::Val(val) => Some((
+                    ParsedValue::Prime(val) | ParsedValue::Val(val) => FromChunkRes::Value(
                         val,
                         if read_attachment {
                             Some(chunk.attachment.get(idx).1)
                         } else {
                             None
                         },
-                    )),
-                    ParsedValue::Empty | ParsedValue::Sentinel => {
-                        None
-                    }
+                    ),
+                    ParsedValue::Empty => FromChunkRes::None,
+                    ParsedValue::Sentinel => FromChunkRes::Sentinel
                 }
             };
             let res = {
-                let chunk_res = get_from(&chunk_ptr);
-                if chunk_res.is_some() {
-                    chunk_res
-                } else if copying {
-                    get_from(&new_chunk_ptr)
-                } else {
-                    chunk_res
+                match get_from(&chunk_ptr) {
+                    FromChunkRes::Value(fval, val) => Some((fval, val)),
+                    FromChunkRes::Sentinel => {
+                        if copying {
+                            match get_from(&new_chunk_ptr) {
+                                FromChunkRes::Value(fval, val) => Some((fval, val)),
+                                FromChunkRes::Sentinel => {
+                                    // Sentinel in new chunk, should retry
+                                    backoff.spin();
+                                    continue;
+                                },
+                                FromChunkRes::None => None
+                            }
+                        } else {
+                            backoff.spin();
+                            continue;
+                        }
+                    },
+                    FromChunkRes::None => {
+                        if copying {
+                            match get_from(&new_chunk_ptr) {
+                                FromChunkRes::Value(fval, val) => Some((fval, val)),
+                                FromChunkRes::Sentinel => {
+                                    // Sentinel in new chunk, should retry
+                                    backoff.spin();
+                                    continue;
+                                },
+                                FromChunkRes::None => None
+                            }
+                        } else {
+                            None
+                        }
+                    }
                 }
-                
             };
             if self.expired_epoch(epoch) {
                 backoff.spin();
                 continue;
             }
+            // trace!("Get key {} got value {:?}", fkey, res.as_ref().map(|t| t.0));
             return res;
         }
     }
@@ -188,10 +218,10 @@ impl<
         let guard = crossbeam_epoch::pin();
         loop {
             let epoch = self.now_epoch();
-            trace!("Inserting key: {}, value: {}", fkey, fvalue);
+            // trace!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-            let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
+            let copying = Self::is_copying(epoch);
             if !copying {
                 match self.check_migration(chunk_ptr, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
@@ -253,22 +283,23 @@ impl<
                 ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
+            fence(SeqCst);
+            if copying {
+                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+            }
             if self.expired_epoch(epoch) {
                 backoff.spin();
                 continue;
             }
-            if copying {
-                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
-            }
+            // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
         }
     }
 
     fn is_copying(
-        chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
-        new_chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
+        epoch: usize
     ) -> bool {
-        (!new_chunk_ptr.is_null()) && (chunk_ptr != new_chunk_ptr)
+        epoch | 1 == epoch
     }
 
     fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
@@ -283,7 +314,7 @@ impl<
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-            let copying = Self::is_copying(&chunk_ptr, &new_chunk_ptr);
+            let copying = Self::is_copying(epoch);
             let chunk = unsafe { chunk_ptr.deref() };
             let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
             let modify_chunk = unsafe { modify_chunk_ptr.deref() };
@@ -322,15 +353,16 @@ impl<
 
     #[inline(always)]
     fn now_epoch(&self) -> usize {
-        fence(SeqCst);
         self.epoch.load(Acquire)
     }
 
+    #[inline(always)]
     fn expired_epoch(&self, old_epoch: usize) -> bool {
         let now = self.now_epoch();
         let expired = now - old_epoch > 1;
         if expired {
             debug!("Found expired epoch now: {}, old: {}", now, old_epoch);
+            panic!("Expired");
         }
         expired
     }
@@ -342,11 +374,7 @@ impl<
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
-            if new_chunk_ptr == old_chunk_ptr {
-                backoff.spin();
-                continue;
-            }
-            let copying = Self::is_copying(&old_chunk_ptr, &new_chunk_ptr);
+            let copying = Self::is_copying(epoch);
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
             let modify_chunk = if copying { &new_chunk } else { &old_chunk };
@@ -461,7 +489,10 @@ impl<
                         &ModOp::Sentinel => {
                             // Sentinel op is allowed on old chunk
                         }
-                        _ => return ModResult::Sentinel,
+                        _ => {
+                            panic!("SENTINEL!!!");
+                            return ModResult::Sentinel
+                        },
                     },
                     _ => {}
                 }
@@ -763,8 +794,9 @@ impl<
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
-        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        self.new_chunk.store(new_chunk_ptr, Relaxed); // Stump becasue we have the lock already
+        self.epoch.fetch_add(1, Relaxed); // Increase epoch by one
+        fence(AcqRel);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -844,6 +876,7 @@ impl<
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     fence(SeqCst); // fence to ensure sentinel appears righr after pair copied to new chunk
+                    trace!("Copied key {} to new chunk", fkey);
                     if self.cas_sentinel(old_address, fvalue.raw) {
                         fence(SeqCst);
                         if let Some(new_entry_addr) = inserted_addr {
@@ -894,10 +927,7 @@ impl<
     }
 
     pub fn map_is_copying(&self) -> bool {
-        let guard = crossbeam_epoch::pin();
-        let chunk_ptr = self.chunk.load(Acquire, &guard);
-        let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-        Self::is_copying(&chunk_ptr, &new_chunk_ptr)
+        Self::is_copying(self.now_epoch())
     }
 }
 
@@ -2232,34 +2262,32 @@ mod tests {
                 for j in 5..test_load {
                     let key = i * 10000000 + j;
                     let value = i * j;
-                    for k in 5..repeat_load {
+                    for k in 1..repeat_load {
                         map.insert(&key, value);
                         assert_eq!(
                             map.get(&key),
                             Some(value),
-                            "First getting {} Is copying: {}",
+                            "First getting {} Is copying: {}, round {}",
                             key,
-                            map.table.map_is_copying()
+                            map.table.map_is_copying(),
+                            k
                         );
-                        for l in 5..1024 {
+                        for l in 1..1024 {
                             let left = map.get(&key);
                             let right = Some(value);
                             if left != right {
-                                error!(
-                                    "Repeatdly getting {} Is copying: {}, round {}. Checking automatic recovery",
-                                    key,
-                                    map.table.map_is_copying(),
-                                    l
-                                );
-                                for m in 5..10240 {
+                                let prior_epoch = map.table.now_epoch();
+                                for m in 1..10240 {
                                     let left = map.get(&key);
                                     let right = Some(value);
                                     if left == right {
                                         panic!(
-                                            "Recovered at {} for {}, copying {}. Migration problem!!!", 
+                                            "Recovered at {} for {}, copying {}, epoch {} to {}. Migration problem!!!", 
                                             m, 
                                             key, 
                                             map.table.map_is_copying(),
+                                            prior_epoch,
+                                            map.table.now_epoch(),
                                         );
                                     }
                                 }
