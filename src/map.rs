@@ -296,6 +296,7 @@ impl<
         }
     }
 
+    #[inline(always)]
     fn is_copying(
         epoch: usize
     ) -> bool {
@@ -358,11 +359,12 @@ impl<
 
     #[inline(always)]
     fn expired_epoch(&self, old_epoch: usize) -> bool {
+        let old_is_copying = Self::is_copying(old_epoch);
+        let epoch_diff = if old_is_copying { 1 } else { 0 };
         let now = self.now_epoch();
-        let expired = now - old_epoch > 1;
+        let expired = now - old_epoch > epoch_diff;
         if expired {
             debug!("Found expired epoch now: {}, old: {}", now, old_epoch);
-            panic!("Expired");
         }
         expired
     }
@@ -2263,7 +2265,9 @@ mod tests {
                     let key = i * 10000000 + j;
                     let value = i * j;
                     for k in 1..repeat_load {
+                        let pre_insert_epoch = map.table.now_epoch();
                         map.insert(&key, value);
+                        let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
                             map.get(&key),
                             Some(value),
@@ -2273,21 +2277,25 @@ mod tests {
                             k
                         );
                         for l in 1..1024 {
+                            let pre_fail_get_epoch = map.table.now_epoch();
                             let left = map.get(&key);
+                            let post_fail_get_epoch = map.table.now_epoch();
                             let right = Some(value);
                             if left != right {
-                                let prior_epoch = map.table.now_epoch();
                                 for m in 1..10240 {
                                     let left = map.get(&key);
                                     let right = Some(value);
                                     if left == right {
                                         panic!(
-                                            "Recovered at {} for {}, copying {}, epoch {} to {}. Migration problem!!!", 
+                                            "Recovered at {} for {}, copying {}, epoch {} to {} to {}, PIE: {} to {}. Migration problem!!!", 
                                             m, 
                                             key, 
                                             map.table.map_is_copying(),
-                                            prior_epoch,
+                                            pre_fail_get_epoch,
+                                            post_fail_get_epoch,
                                             map.table.now_epoch(),
+                                            pre_insert_epoch, 
+                                            post_insert_epoch
                                         );
                                     }
                                 }
