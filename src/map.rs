@@ -173,7 +173,10 @@ impl<
                                     backoff.spin();
                                     continue;
                                 },
-                                FromChunkRes::None => None
+                                FromChunkRes::None =>  {
+                                    warn!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                    None
+                                }
                             }
                         } else {
                             backoff.spin();
@@ -189,7 +192,10 @@ impl<
                                     backoff.spin();
                                     continue;
                                 },
-                                FromChunkRes::None => None
+                                FromChunkRes::None => {
+                                    warn!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                    None
+                                }
                             }
                         } else {
                             None
@@ -197,11 +203,10 @@ impl<
                     }
                 }
             };
-            if self.expired_epoch(epoch) {
+            if self.epoch_changed(epoch) {
                 backoff.spin();
                 continue;
             }
-            // trace!("Get key {} got value {:?}", fkey, res.as_ref().map(|t| t.0));
             return res;
         }
     }
@@ -287,7 +292,7 @@ impl<
             if copying {
                 self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
             }
-            if self.expired_epoch(epoch) {
+            if self.epoch_changed(epoch) {
                 backoff.spin();
                 continue;
             }
@@ -301,6 +306,11 @@ impl<
         epoch: usize
     ) -> bool {
         epoch | 1 == epoch
+    }
+
+    #[inline(always)]
+    fn epoch_changed(&self, epoch: usize) -> bool {
+        self.now_epoch() != epoch
     }
 
     fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
@@ -327,12 +337,12 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
-            if self.expired_epoch(epoch) {
-                backoff.spin();
-                continue;
-            }
             if copying {
                 self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+            }
+            if self.epoch_changed(epoch) {
+                backoff.spin();
+                continue;
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
@@ -376,6 +386,7 @@ impl<
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
+            if self.epoch_changed(epoch) { continue; }
             let copying = Self::is_copying(epoch);
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
@@ -412,7 +423,7 @@ impl<
                     }
                 }
             }
-            if self.expired_epoch(epoch) {
+            if self.epoch_changed(epoch) {
                 if retr.is_none() {
                     return self.remove(key, fkey);
                 } else {
@@ -492,7 +503,7 @@ impl<
                             // Sentinel op is allowed on old chunk
                         }
                         _ => {
-                            panic!("SENTINEL!!!");
+                            // Confirmed, this is possible
                             return ModResult::Sentinel
                         },
                     },
@@ -797,8 +808,8 @@ impl<
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         self.new_chunk.store(new_chunk_ptr, Relaxed); // Stump becasue we have the lock already
-        self.epoch.fetch_add(1, Relaxed); // Increase epoch by one
         fence(AcqRel);
+        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -813,17 +824,18 @@ impl<
             // Should not happend, we cannot fix this
             panic!("Resize swap pointer failed: {:?}", e);
         }
-        unsafe {
-            guard.defer_destroy(old_chunk_ptr);
-        }
         self.timestamp.store(timestamp(), Relaxed);
         self.new_chunk.store(Shared::null(), Relaxed);
-        self.epoch.fetch_add(1, Relaxed); // Increase epoch by one
         fence(AcqRel);
+        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
+        fence(SeqCst);
+        unsafe {
+            guard.defer_destroy(old_chunk_ptr);
+        }
         ResizeResult::Done
     }
 
@@ -897,7 +909,6 @@ impl<
                                 trace!("Value changed before strip prime for key {}", fkey);
                             }
                             old_chunk_ins.attachment.erase(idx);
-                            fence(SeqCst);
                         }
                     } else {
                         panic!("Sentinel CAS should always succeed but failed {}", fkey);
@@ -921,6 +932,7 @@ impl<
             }
             old_address += entry_size();
             idx += 1;
+            fence(SeqCst);
         }
         // resize finished, make changes on the numbers
         debug!("Migrated {} entries to new chunk", effective_copy);
@@ -2253,7 +2265,7 @@ mod tests {
     #[test]
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
-        let num_threads = 64;
+        let num_threads = 128;
         let test_load = 1048576;
         let repeat_load = 2048;
         let map = Arc::new(WordMap::<System>::with_capacity(32));
@@ -2271,12 +2283,14 @@ mod tests {
                         assert_eq!(
                             map.get(&key),
                             Some(value),
-                            "First getting {} Is copying: {}, round {}",
+                            "First getting {} Is copying: {}, round {}, epoch {} to {}",
                             key,
                             map.table.map_is_copying(),
-                            k
+                            k,
+                            pre_insert_epoch,
+                            post_insert_epoch
                         );
-                        for l in 1..1024 {
+                        for l in 1..128 {
                             let pre_fail_get_epoch = map.table.now_epoch();
                             let left = map.get(&key);
                             let post_fail_get_epoch = map.table.now_epoch();
@@ -2287,7 +2301,7 @@ mod tests {
                                     let right = Some(value);
                                     if left == right {
                                         panic!(
-                                            "Recovered at {} for {}, copying {}, epoch {} to {} to {}, PIE: {} to {}. Migration problem!!!", 
+                                            "Recovered at turn {} for {}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Migration problem!!!", 
                                             m, 
                                             key, 
                                             map.table.map_is_copying(),
@@ -2302,21 +2316,28 @@ mod tests {
                                 panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
                             }
                         }
-                        if j % 7 == 0 {
-                            assert_eq!(
-                                map.remove(&key),
-                                Some(value),
-                                "Remove result, get {:?}, copying {}, round {}",
-                                map.get(&key),
-                                map.table.map_is_copying(),
-                                k
-                            );
-                            assert_eq!(map.get(&key), None, "Remove recursion");
-                        }
+                        // if j % 7 == 0 {
+                        //     assert_eq!(
+                        //         map.remove(&key),
+                        //         Some(value),
+                        //         "Remove result, get {:?}, copying {}, round {}",
+                        //         map.get(&key),
+                        //         map.table.map_is_copying(),
+                        //         k
+                        //     );
+                        //     assert_eq!(map.get(&key), None, "Remove recursion");
+                        // }
                         if j % 3 == 0 {
                             let new_value = value + 7;
+                            let pre_insert_epoch = map.table.now_epoch();
                             map.insert(&key, new_value);
-                            assert_eq!(map.get(&key), Some(new_value));
+                            let post_insert_epoch = map.table.now_epoch();
+                            assert_eq!(
+                                map.get(&key), 
+                                Some(new_value), 
+                                "Checking immediate update, key {}, epoch {} to {}",
+                                key, pre_insert_epoch, post_insert_epoch
+                            );
                         }
                     }
                 }
