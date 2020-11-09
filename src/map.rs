@@ -2272,7 +2272,7 @@ mod tests {
         let _ = env_logger::try_init();
         let num_threads = 128;
         let test_load = 1048576;
-        let repeat_load = 2048;
+        let repeat_load = 32;
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         let mut threads = vec![];
         for i in 0..num_threads {
@@ -2285,13 +2285,13 @@ mod tests {
                         let pre_insert_epoch = map.table.now_epoch();
                         map.insert(&key, value);
                         let post_insert_epoch = map.table.now_epoch();
-                        for l in 1..128 {
+                        for l in 1..1024 {
                             let pre_fail_get_epoch = map.table.now_epoch();
                             let left = map.get(&key);
                             let post_fail_get_epoch = map.table.now_epoch();
                             let right = Some(value);
                             if left != right {
-                                for m in 1..10240 {
+                                for m in 1..1024 {
                                     let left = map.get(&key);
                                     let right = Some(value);
                                     if left == right {
