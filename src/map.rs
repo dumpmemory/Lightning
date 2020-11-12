@@ -24,6 +24,7 @@ const SENTINEL_VALUE: usize = 1;
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
 const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
+const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 
 struct Value {
     raw: usize,
@@ -453,14 +454,13 @@ impl<
     ) -> (Value, usize) {
         assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash::<H>(fkey);
-        let entry_size = mem::size_of::<EntryTemplate>();
         let cap = chunk.capacity;
         let base = chunk.base;
         let cap_mask = chunk.cap_mask();
         let mut counter = 0;
         while counter < cap {
             idx &= cap_mask;
-            let addr = base + idx * entry_size;
+            let addr = base + idx * ENTRY_SIZE;
             let k = self.get_fast_key(addr);
             if k == fkey && chunk.attachment.probe(idx, key) {
                 let val_res = self.get_fast_value(addr);
@@ -492,13 +492,12 @@ impl<
         let cap = chunk.capacity;
         let base = chunk.base;
         let mut idx = hash::<H>(fkey);
-        let entry_size = mem::size_of::<EntryTemplate>();
         let mut count = 0;
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
         while count <= cap {
             idx &= cap_mask;
-            let addr = base + idx * entry_size;
+            let addr = base + idx * ENTRY_SIZE;
             let k = self.get_fast_key(addr);
             let v = self.get_fast_value(addr);
             {
@@ -684,7 +683,6 @@ impl<
 
     fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(usize, usize, K, V)> {
         let mut idx = 0;
-        let entry_size = mem::size_of::<EntryTemplate>();
         let cap = chunk.capacity;
         let base = chunk.base;
         let mut counter = 0;
@@ -692,7 +690,7 @@ impl<
         let cap_mask = chunk.cap_mask();
         while counter < cap {
             idx &= cap_mask;
-            let addr = base + idx * entry_size;
+            let addr = base + idx * ENTRY_SIZE;
             let k = self.get_fast_key(addr);
             if k != EMPTY_KEY {
                 let val_res = self.get_fast_value(addr);
@@ -873,24 +871,35 @@ impl<
                     trace!("Moving key: {}, value: {}", fkey, v);
                     let primed_fval = fvalue.raw | INV_VAL_BIT_MASK;
                     let (key, value) = old_chunk_ins.attachment.get(idx);
-                    let new_chunk_insertion = self.modify_entry(
-                        &*new_chunk_ins,
-                        &key,
-                        fkey,
-                        ModOp::AttemptInsert(primed_fval, &value),
-                        guard,
-                    );
-                    let inserted_addr = match new_chunk_insertion {
-                        ModResult::Done(addr, _) => Some(addr), // continue procedure
-                        ModResult::Existed(_, _) => None,
-                        ModResult::Fail => unreachable!("Should not fail"),
-                        ModResult::Replaced(_, _, _) => {
-                            unreachable!("Attempt insert does not replace anything")
+                    let inserted_addr = {
+                        // Make insertion for migration inlined, hopefully the ordering will be right
+                        let cap = new_chunk_ins.capacity;
+                        let base = new_chunk_ins.base;
+                        let mut idx = hash::<H>(fkey);
+                        let cap_mask = new_chunk_ins.cap_mask();
+                        let mut count = 0;
+                        let mut res = None;
+                        while count <= cap {
+                            idx &= cap_mask;
+                            let addr = base + idx * ENTRY_SIZE;
+                            let k = self.get_fast_key(addr);
+                            if k == fkey && new_chunk_ins.attachment.probe(idx, &key) {
+                                // New value existed, skip with None result
+                                break;
+                            } else if k == EMPTY_KEY {
+                                // Try insert to this slot
+                                if self.cas_value(addr, EMPTY_VALUE, fvalue.raw) {
+                                    new_chunk_ins.attachment.set(idx, key, value);
+                                    unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+                                    res = Some(addr);
+                                    break;
+                                }
+                            }
+                            idx += 1; // reprobe
+                            count += 1;
                         }
-                        ModResult::Sentinel => unreachable!("New chunk should not have sentinel"),
-                        ModResult::NotFound => unreachable!("Not found on resize"),
-                        ModResult::TableFull => unreachable!("Table full when resize"),
-                        ModResult::Aborted => unreachable!("Should not abort"),
+                        debug_assert!(count <= cap);
+                        res
                     };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
@@ -935,7 +944,7 @@ impl<
                     }
                 }
             }
-            old_address += entry_size();
+            old_address += ENTRY_SIZE;
             idx += 1;
             fence(SeqCst);
         }
@@ -1133,13 +1142,8 @@ fn occupation_limit(cap: usize) -> usize {
 }
 
 #[inline(always)]
-fn entry_size() -> usize {
-    mem::size_of::<EntryTemplate>()
-}
-
-#[inline(always)]
 fn chunk_size_of(cap: usize) -> usize {
-    cap * entry_size()
+    cap * ENTRY_SIZE
 }
 
 #[inline(always)]
