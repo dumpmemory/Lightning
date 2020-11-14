@@ -176,7 +176,7 @@ impl<
                                     continue;
                                 },
                                 FromChunkRes::None =>  {
-                                    warn!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                    trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
                                     None
                                 }
                             }
@@ -198,7 +198,7 @@ impl<
                                     continue;
                                 },
                                 FromChunkRes::None => {
-                                    warn!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                    trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
                                     None
                                 }
                             }
@@ -300,10 +300,6 @@ impl<
             if copying {
                 self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
             }
-            if self.epoch_changed(epoch) {
-                backoff.spin();
-                continue;
-            }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
         }
@@ -347,10 +343,6 @@ impl<
             );
             if copying {
                 self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
-            }
-            if self.epoch_changed(epoch) {
-                backoff.spin();
-                continue;
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
