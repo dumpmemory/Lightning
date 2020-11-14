@@ -402,11 +402,11 @@ impl<
             let res = self.modify_entry(&*modify_chunk, key, fkey, ModOp::Tombstone, &guard);
             let mut retr = None;
             match res {
-                ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
+                ModResult::Replaced(fvalue, value, _) => {
                     retr = Some((fvalue, value));
                     self.count.fetch_sub(1, AcqRel);
                 }
-                ModResult::Done(_, None) => unreachable!("Remove shall not have done"),
+                ModResult::Done(_, _) => unreachable!("Remove shall not have done"),
                 ModResult::NotFound => {}
                 ModResult::Sentinel => {
                     backoff.spin();
@@ -415,7 +415,7 @@ impl<
                 ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
-            if copying && retr.is_some() {
+            if copying {
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Sentinel, &guard);
@@ -2347,17 +2347,19 @@ mod tests {
                                 panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
                             }
                         }
-                        // if j % 7 == 0 {
-                        //     assert_eq!(
-                        //         map.remove(&key),
-                        //         Some(value),
-                        //         "Remove result, get {:?}, copying {}, round {}",
-                        //         map.get(&key),
-                        //         map.table.map_is_copying(),
-                        //         k
-                        //     );
-                        //     assert_eq!(map.get(&key), None, "Remove recursion");
-                        // }
+                        if j % 7 == 0 {
+
+                            //map.remove(&key);
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                        }
                         if j % 3 == 0 {
                             let new_value = value + 7;
                             let pre_insert_epoch = map.table.now_epoch();
