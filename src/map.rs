@@ -21,6 +21,7 @@ pub struct EntryTemplate(usize, usize);
 const EMPTY_KEY: usize = 0;
 const EMPTY_VALUE: usize = 0;
 const SENTINEL_VALUE: usize = 1;
+const TOMBSTONE_VALUE: usize = 2;
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
 const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
@@ -32,7 +33,7 @@ struct Value {
 }
 
 enum ParsedValue {
-    Val(usize),
+    Val(Option<usize>), // None for tombstone
     Prime(usize),
     Sentinel,
     Empty,
@@ -56,7 +57,7 @@ enum ModOp<'a, V> {
     AttemptInsert(usize, &'a V),
     SwapFastVal(Box<dyn Fn(usize) -> Option<usize>>),
     Sentinel,
-    Empty,
+    Tombstone,
 }
 
 pub enum InsertOp {
@@ -150,7 +151,7 @@ impl<
                 let chunk = unsafe { chunk_ptr.deref() };
                 let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
                 match val.parsed {
-                    ParsedValue::Prime(val) | ParsedValue::Val(val) => FromChunkRes::Value(
+                    ParsedValue::Prime(val) | ParsedValue::Val(Some(val)) => FromChunkRes::Value(
                         val,
                         if read_attachment {
                             Some(chunk.attachment.get(idx).1)
@@ -158,7 +159,7 @@ impl<
                             None
                         },
                     ),
-                    ParsedValue::Empty => FromChunkRes::None,
+                    ParsedValue::Empty | ParsedValue::Val(None) => FromChunkRes::None,
                     ParsedValue::Sentinel => FromChunkRes::Sentinel
                 }
             };
@@ -398,7 +399,7 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
             let modify_chunk = if copying { &new_chunk } else { &old_chunk };
-            let res = self.modify_entry(&*modify_chunk, key, fkey, ModOp::Empty, &guard);
+            let res = self.modify_entry(&*modify_chunk, key, fkey, ModOp::Tombstone, &guard);
             let mut retr = None;
             match res {
                 ModResult::Done(fvalue, Some(value)) | ModResult::Replaced(fvalue, value, _) => {
@@ -414,7 +415,7 @@ impl<
                 ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
-            if copying {
+            if copying && retr.is_some() {
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, key, fkey, ModOp::Sentinel, &guard);
@@ -433,9 +434,6 @@ impl<
             if self.epoch_changed(epoch) {
                 if retr.is_none() {
                     return self.remove(key, fkey);
-                } else {
-                    let re_retr = self.remove(key, fkey);
-                    return if re_retr.is_some() { re_retr } else { retr };
                 }
             }
             return retr;
@@ -525,13 +523,21 @@ impl<
                                 if self.cas_sentinel(addr, val.raw) {
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
-                                    return ModResult::Done(*v, Some(value));
+                                    if let Some(v) = v {
+                                        return ModResult::Done(*v, Some(value));
+                                    } else {
+                                        return ModResult::Done(addr, None);
+                                    }
                                 } else {
                                     return ModResult::Fail;
                                 }
                             }
-                            &ModOp::Empty => {
-                                if !self.cas_tombstone(addr, val.raw) {
+                            &ModOp::Tombstone => {
+                                if v.is_none() {
+                                    // Already tombstone
+                                    return ModResult::NotFound;
+                                }
+                                if !self.cas_tombstone(addr, val.raw).1 {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
                                     // should fail
@@ -541,27 +547,46 @@ impl<
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
                                     chunk.empty_entries.fetch_add(1, Relaxed);
-                                    return ModResult::Replaced(*v, value, idx);
+                                    return ModResult::Replaced(v.unwrap(), value, idx);
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
-                                if self.cas_value(addr, val.raw, *fv) {
+                                if self.cas_value(addr, val.raw, *fv).1 {
                                     let (_, value) = chunk.attachment.get(idx);
-                                    return ModResult::Replaced(*fv, value, idx);
+                                    if let Some(v) = v {
+                                        return ModResult::Replaced(*v, value, idx);
+                                    } else {
+                                        return ModResult::Done(addr, None);
+                                    }
                                 } else {
                                     trace!("Cannot upsert fast value in place for {}", fkey);
                                     return ModResult::Fail;
                                 }
                             }
-                            &ModOp::AttemptInsert(iv, _) => {
-                                trace!(
-                                    "Attempting insert existed entry {}, {}, have key {}, skip",
-                                    k,
-                                    iv,
-                                    v
-                                );
-                                let (_, value) = chunk.attachment.get(idx);
-                                return ModResult::Existed(*v, value);
+                            &ModOp::AttemptInsert(fval, oval) => {
+                                if v.is_some() {
+                                    trace!(
+                                        "Attempting insert existed entry {}, {}, have key {:?}, skip",
+                                        k,
+                                        fval,
+                                        v
+                                    );
+                                    let (_, value) = chunk.attachment.get(idx);
+                                    return ModResult::Existed(v.unwrap(), value);
+                                } else {
+                                    let primed_fval = fval | INV_VAL_BIT_MASK;
+                                    let (act_val, replaced) = self.cas_value(addr, val.raw, primed_fval);
+                                    if replaced {
+                                        let (_, prev_val) = chunk.attachment.get(idx);
+                                        chunk.attachment.set(idx, key.clone(), (*oval).clone());
+                                        let stripped_prime = self.cas_value(addr, primed_fval, fval).1;
+                                        debug_assert!(stripped_prime);
+                                        return ModResult::Replaced(val.raw, prev_val, idx);
+                                    } else {
+                                        let (_, value) = chunk.attachment.get(idx);
+                                        return ModResult::Existed(act_val, value);
+                                    }
+                                }
                             }
                             &ModOp::SwapFastVal(ref swap) => {
                                 trace!(
@@ -571,9 +596,13 @@ impl<
                                 );
                                 match &val.parsed {
                                     ParsedValue::Val(pval) => {
+                                        if pval.is_none() {
+                                            return ModResult::NotFound;
+                                        }
+                                        let pval = pval.unwrap();
                                         let aval = chunk.attachment.get(idx).1;
-                                        if let Some(v) = swap(*pval) {
-                                            if self.cas_value(addr, *pval, v) {
+                                        if let Some(v) = swap(pval) {
+                                            if self.cas_value(addr, pval, v).1 {
                                                 // swap success
                                                 return ModResult::Replaced(val.raw, aval, idx);
                                             } else {
@@ -593,10 +622,10 @@ impl<
                                 // duplicate key discovered
                                 debug!("Inserting in place for {}", fkey);
                                 let primed_fval = fval | INV_VAL_BIT_MASK;
-                                if self.cas_value(addr, val.raw, primed_fval) {
+                                if self.cas_value(addr, val.raw, primed_fval).1 {
                                     let (_, prev_val) = chunk.attachment.get(idx);
                                     chunk.attachment.set(idx, key.clone(), (*v).clone());
-                                    let stripped_prime = self.cas_value(addr, primed_fval, fval);
+                                    let stripped_prime = self.cas_value(addr, primed_fval, fval).1;
                                     debug_assert!(stripped_prime);
                                     return ModResult::Replaced(val.raw, prev_val, idx);
                                 } else {
@@ -631,7 +660,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval) {
+                        if self.cas_value(addr, EMPTY_VALUE, fval).1 {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -649,7 +678,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval) {
+                        if self.cas_value(addr, EMPTY_VALUE, fval).1 {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None);
                         } else {
@@ -667,7 +696,7 @@ impl<
                             continue;
                         }
                     }
-                    ModOp::Empty => return ModResult::Fail,
+                    ModOp::Tombstone => return ModResult::Fail,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
@@ -695,7 +724,7 @@ impl<
             if k != EMPTY_KEY {
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
-                    ParsedValue::Val(v) | ParsedValue::Prime(v) => {
+                    ParsedValue::Val(Some(v)) | ParsedValue::Prime(v) => {
                         let (key, value) = chunk.attachment.get(idx);
                         res.push((k, v, key, value))
                     }
@@ -736,16 +765,16 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> bool {
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> (usize, bool) {
         debug_assert!(entry_addr > 0);
-        self.cas_value(entry_addr, original, EMPTY_VALUE)
+        self.cas_value(entry_addr, original, TOMBSTONE_VALUE)
     }
     #[inline(always)]
-    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
+    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> (usize, bool) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe {
-            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value).0 == original
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value)
         }
     }
     #[inline(always)]
@@ -846,7 +875,7 @@ impl<
         &self,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
-        guard: &crossbeam_epoch::Guard,
+        _guard: &crossbeam_epoch::Guard,
     ) -> usize {
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
@@ -859,7 +888,7 @@ impl<
             let fkey = self.get_fast_key(old_address);
             // Reasoning value states
             match &fvalue.parsed {
-                ParsedValue::Val(v) => {
+                ParsedValue::Val(Some(v)) => {
                     if fkey == EMPTY_KEY {
                         // Value have no key, insertion in progress
                         backoff.spin();
@@ -888,7 +917,7 @@ impl<
                                 break;
                             } else if k == EMPTY_KEY {
                                 // Try insert to this slot
-                                if self.cas_value(addr, EMPTY_VALUE, fvalue.raw) {
+                                if self.cas_value(addr, EMPTY_VALUE, fvalue.raw).1 {
                                     new_chunk_ins.attachment.set(idx, key, value);
                                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                                     res = Some(addr);
@@ -911,7 +940,7 @@ impl<
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
                             debug_assert_ne!(stripped, SENTINEL_VALUE);
-                            if self.cas_value(new_entry_addr, primed_fval, stripped) {
+                            if self.cas_value(new_entry_addr, primed_fval, stripped).1 {
                                 trace!(
                                     "Effective copy key: {}, value {}, addr: {}",
                                     fkey,
@@ -936,7 +965,7 @@ impl<
                     // Sentinel in old chunk implies its new value have already in the new chunk
                     trace!("Skip copy sentinel");
                 }
-                ParsedValue::Empty => {
+                ParsedValue::Empty | ParsedValue::Val(None) => {
                     if !self.cas_sentinel(old_address, fvalue.raw) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
@@ -971,10 +1000,13 @@ impl Value {
                 let flag = val & INV_VAL_BIT_MASK;
                 if flag != 0 {
                     ParsedValue::Prime(actual_val)
-                } else if actual_val == 1 {
+                } else if actual_val == SENTINEL_VALUE {
                     ParsedValue::Sentinel
+                
+                } else if actual_val == TOMBSTONE_VALUE {
+                    ParsedValue::Val(None)
                 } else {
-                    ParsedValue::Val(actual_val)
+                    ParsedValue::Val(Some(actual_val))
                 }
             }
         };
@@ -2315,7 +2347,6 @@ mod tests {
                                 panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
                             }
                         }
-                        // Remove then insert are errorous
                         // if j % 7 == 0 {
                         //     assert_eq!(
                         //         map.remove(&key),
