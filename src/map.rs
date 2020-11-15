@@ -163,56 +163,49 @@ impl<
                     ParsedValue::Sentinel => FromChunkRes::Sentinel
                 }
             };
-            let res = {
-                match get_from(&chunk_ptr) {
-                    FromChunkRes::Value(fval, val) => Some((fval, val)),
-                    FromChunkRes::Sentinel => {
-                        if copying && !new_chunk_ptr.is_null() {
-                            match get_from(&new_chunk_ptr) {
-                                FromChunkRes::Value(fval, val) => Some((fval, val)),
-                                FromChunkRes::Sentinel => {
-                                    // Sentinel in new chunk, should retry
-                                    backoff.spin();
-                                    continue;
-                                },
-                                FromChunkRes::None =>  {
-                                    trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
-                                    None
-                                }
+            return match get_from(&chunk_ptr) {
+                FromChunkRes::Value(fval, val) => Some((fval, val)),
+                FromChunkRes::Sentinel => {
+                    if copying && !new_chunk_ptr.is_null() {
+                        match get_from(&new_chunk_ptr) {
+                            FromChunkRes::Value(fval, val) => Some((fval, val)),
+                            FromChunkRes::Sentinel => {
+                                // Sentinel in new chunk, should retry
+                                backoff.spin();
+                                continue;
+                            },
+                            FromChunkRes::None =>  {
+                                trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                None
                             }
-                        } else {
-                            backoff.spin();
+                        }
+                    } else {
+                        backoff.spin();
+                        continue;
+                    }
+                },
+                FromChunkRes::None => {
+                    if copying {
+                        if new_chunk_ptr.is_null() {
                             continue;
                         }
-                    },
-                    FromChunkRes::None => {
-                        if copying {
-                            if new_chunk_ptr.is_null() {
+                        match get_from(&new_chunk_ptr) {
+                            FromChunkRes::Value(fval, val) => Some((fval, val)),
+                            FromChunkRes::Sentinel => {
+                                // Sentinel in new chunk, should retry
+                                backoff.spin();
                                 continue;
+                            },
+                            FromChunkRes::None => {
+                                trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                None
                             }
-                            match get_from(&new_chunk_ptr) {
-                                FromChunkRes::Value(fval, val) => Some((fval, val)),
-                                FromChunkRes::Sentinel => {
-                                    // Sentinel in new chunk, should retry
-                                    backoff.spin();
-                                    continue;
-                                },
-                                FromChunkRes::None => {
-                                    trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
-                                    None
-                                }
-                            }
-                        } else {
-                            None
                         }
+                    } else {
+                        None
                     }
                 }
-            };
-            if self.epoch_changed(epoch) {
-                backoff.spin();
-                continue;
             }
-            return res;
         }
     }
 
@@ -365,18 +358,6 @@ impl<
     #[inline(always)]
     fn now_epoch(&self) -> usize {
         self.epoch.load(Acquire)
-    }
-
-    #[inline(always)]
-    fn expired_epoch(&self, old_epoch: usize) -> bool {
-        let old_is_copying = Self::is_copying(old_epoch);
-        let epoch_diff = if old_is_copying { 1 } else { 0 };
-        let now = self.now_epoch();
-        let expired = now - old_epoch > epoch_diff;
-        if expired {
-            debug!("Found expired epoch now: {}, old: {}", now, old_epoch);
-        }
-        expired
     }
 
     pub fn remove(&self, key: &K, fkey: usize) -> Option<(usize, V)> {
