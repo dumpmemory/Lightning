@@ -141,6 +141,7 @@ impl<
         };
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
+        let hash = hash::<H>(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -149,7 +150,7 @@ impl<
             debug_assert!(!chunk_ptr.is_null());
             let get_from = |chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
                 let chunk = unsafe { chunk_ptr.deref() };
-                let (val, idx) = self.get_from_chunk(&*chunk, key, fkey);
+                let (val, idx) = self.get_from_chunk(&*chunk, hash, key, fkey);
                 match val.parsed {
                     ParsedValue::Prime(val) | ParsedValue::Val(Some(val)) => FromChunkRes::Value(
                         val,
@@ -219,6 +220,7 @@ impl<
     ) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
+        let hash = hash::<H>(fkey);
         loop {
             let epoch = self.now_epoch();
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
@@ -248,7 +250,7 @@ impl<
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
             };
-            let value_insertion = self.modify_entry(&*modify_chunk, key, fkey, mod_op, &guard);
+            let value_insertion = self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _) => {
@@ -291,7 +293,7 @@ impl<
             }
             fence(SeqCst);
             if copying {
-                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
@@ -318,6 +320,7 @@ impl<
         guard: &'a Guard,
     ) -> SwapResult<'a, K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
+        let hash = hash::<H>(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -329,13 +332,14 @@ impl<
             trace!("Swaping for key {}, copying {}", fkey, copying);
             let mod_res = self.modify_entry(
                 modify_chunk,
+                hash,
                 key,
                 fkey,
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
             if copying {
-                self.modify_entry(chunk, key, fkey, ModOp::Sentinel, &guard);
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
@@ -363,6 +367,7 @@ impl<
     pub fn remove(&self, key: &K, fkey: usize) -> Option<(usize, V)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
+        let hash = hash::<H>(fkey);
         loop {
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
@@ -372,7 +377,7 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
             let modify_chunk = if copying { &new_chunk } else { &old_chunk };
-            let res = self.modify_entry(&*modify_chunk, key, fkey, ModOp::Tombstone, &guard);
+            let res = self.modify_entry(&*modify_chunk, hash, key, fkey, ModOp::Tombstone, &guard);
             let mut retr = None;
             match res {
                 ModResult::Replaced(fvalue, value, _) => {
@@ -391,7 +396,7 @@ impl<
             if copying {
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
-                    self.modify_entry(&*old_chunk, key, fkey, ModOp::Sentinel, &guard);
+                    self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
                 match remove_from_old {
                     ModResult::Done(fvalue, Some(value))
                     | ModResult::Replaced(fvalue, value, _) => {
@@ -420,11 +425,12 @@ impl<
     fn get_from_chunk(
         &self,
         chunk: &Chunk<K, V, A, ALLOC>,
+        hash: usize,
         key: &K,
         fkey: usize,
     ) -> (Value, usize) {
         assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
-        let mut idx = hash::<H>(fkey);
+        let mut idx = hash;
         let cap = chunk.capacity;
         let base = chunk.base;
         let cap_mask = chunk.cap_mask();
@@ -455,6 +461,7 @@ impl<
     fn modify_entry<'a>(
         &self,
         chunk: &'a Chunk<K, V, A, ALLOC>,
+        hash: usize,
         key: &K,
         fkey: usize,
         op: ModOp<V>,
@@ -462,7 +469,7 @@ impl<
     ) -> ModResult<V> {
         let cap = chunk.capacity;
         let base = chunk.base;
-        let mut idx = hash::<H>(fkey);
+        let mut idx = hash;
         let mut count = 0;
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
@@ -2279,7 +2286,7 @@ mod tests {
     #[test]
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
-        let num_threads = 128;
+        let num_threads = 12;
         let test_load = 1048576;
         let repeat_load = 32;
         let map = Arc::new(WordMap::<System>::with_capacity(32));
