@@ -38,9 +38,8 @@ impl<T> LinkedObjectMap<T> {
         debug_assert_ne!(*key, NONE_KEY);
         let backoff = crossbeam_utils::Backoff::new();
         let new_front = Node::new(value, NONE_KEY, NONE_KEY);
-        if let Some(existed_node) = self.map.insert(key, new_front.clone()) {
-            // TODO: Eliminate the hazard when the node does not existed in the linked list
-            self.remove_node(*key, existed_node);
+        if let Some(_) = self.map.insert(key, new_front.clone()) {
+            return;
         }
         let _new_guard = new_front.lock.lock();
         loop {
@@ -77,9 +76,8 @@ impl<T> LinkedObjectMap<T> {
         let backoff = crossbeam_utils::Backoff::new();
         let new_back = Node::new(value, NONE_KEY, NONE_KEY);
         let _new_guard = new_back.lock.lock();
-        if let Some(existed_node) = self.map.insert(key, new_back.clone()) {
-            // TODO: Eliminate the hazard when the node does not existed in the linked list
-            self.remove_node(*key, existed_node);
+        if let Some(_) = self.map.insert(key, new_back.clone()) {
+            return;
         }
         loop {
             let back = self.tail.load(Acquire);
