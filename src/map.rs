@@ -837,7 +837,8 @@ impl<
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         fence(SeqCst);
-        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        debug_assert_eq!(prev_epoch % 2, 0);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -854,7 +855,9 @@ impl<
         }
         self.timestamp.store(timestamp(), Release);
         self.new_chunk.store(Shared::null(), Release);
-        self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        fence(SeqCst);
+        let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        debug_assert!(prev_epoch % 2, 1);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
