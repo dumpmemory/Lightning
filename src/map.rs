@@ -765,9 +765,16 @@ impl<
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
-        debug_assert!(entry_addr > 0);
-        debug_assert!(Self::is_copying(self.epoch.load(Acquire)));
-        debug_assert!(!self.new_chunk.load(Acquire, &crossbeam_epoch::pin()).is_null());
+        if cfg!(debug_assert) {
+            let guard = crossbeam_epoch::pin();
+            assert!(entry_addr > 0);
+            assert!(Self::is_copying(self.epoch.load(Acquire)));
+            assert!(!self.new_chunk.load(Acquire, &guard).is_null());
+            let chunk = self.chunk.load(Acquire, &guard);
+            let chunk_ref = unsafe { chunk.deref() };
+            assert!(entry_addr >= chunk_ref.base);
+            assert!(entry_addr < chunk_ref.base + chunk_ref.total_size);
+        }
         let addr = entry_addr + mem::size_of::<usize>();
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
