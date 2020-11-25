@@ -6,7 +6,7 @@ use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
-use core::sync::atomic::{fence, AtomicU64, AtomicUsize};
+use core::sync::atomic::{fence, compiler_fence, AtomicU64, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -147,7 +147,6 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
-            let has_new_chunk = !new_chunk_ptr.is_null() && chunk_ptr != new_chunk_ptr;
             debug_assert!(!chunk_ptr.is_null());
             let get_from = |chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
                 let chunk = unsafe { chunk_ptr.deref() };
@@ -168,7 +167,7 @@ impl<
             return match get_from(&chunk_ptr) {
                 FromChunkRes::Value(fval, val) => Some((fval, val)),
                 FromChunkRes::Sentinel => {
-                    if copying && has_new_chunk {
+                    if copying {
                         match get_from(&new_chunk_ptr) {
                             FromChunkRes::Value(fval, val) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
@@ -194,7 +193,7 @@ impl<
                     }
                 },
                 FromChunkRes::None => {
-                    if copying && has_new_chunk {
+                    if copying {
                         if new_chunk_ptr.is_null() {
                             continue;
                         }
@@ -235,7 +234,6 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
-            let has_new_chunk = !new_chunk_ptr.is_null() && chunk_ptr != new_chunk_ptr;
             if !copying {
                 match self.check_migration(chunk_ptr, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
@@ -301,8 +299,8 @@ impl<
                 ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            fence(SeqCst);
-            if copying && has_new_chunk {
+            dfence();
+            if copying {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
@@ -336,7 +334,6 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
-            let has_new_chunk = !new_chunk_ptr.is_null() && chunk_ptr != new_chunk_ptr;
             let chunk = unsafe { chunk_ptr.deref() };
             let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
             let modify_chunk = unsafe { modify_chunk_ptr.deref() };
@@ -349,7 +346,7 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
-            if copying && has_new_chunk {
+            if copying {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             return match mod_res {
@@ -384,7 +381,6 @@ impl<
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
             if self.epoch_changed(epoch) { continue; }
-            let has_new_chunk = !new_chunk_ptr.is_null() && old_chunk_ptr != new_chunk_ptr;
             let copying = Self::is_copying(epoch);
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
@@ -405,7 +401,7 @@ impl<
                 ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
-            if copying && has_new_chunk {
+            if copying {
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
@@ -845,14 +841,14 @@ impl<
         if self.chunk.load(Acquire, guard) != old_chunk_ptr {
             warn!("Give up on resize due to old chunk changed after lock obtained");
             self.new_chunk.store(Shared::null(), Release);
-            fence(SeqCst);
+            dfence();
             return ResizeResult::ChunkChanged;
         }
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-        fence(SeqCst);
+        dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 0);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
@@ -871,14 +867,14 @@ impl<
         }
         self.timestamp.store(timestamp(), Release);
         self.new_chunk.store(Shared::null(), Release);
-        fence(SeqCst);
+        dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 1);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
-        fence(SeqCst);
+        dfence();
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
@@ -949,10 +945,10 @@ impl<
                     };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
-                    fence(SeqCst); // fence to ensure sentinel appears righr after pair copied to new chunk
+                    dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
                     trace!("Copied key {} to new chunk", fkey);
                     if self.cas_sentinel(old_address, fvalue.raw) {
-                        fence(SeqCst);
+                        dfence();
                         if let Some(new_entry_addr) = inserted_addr {
                             // strip prime
                             let stripped = primed_fval & VAL_BIT_MASK;
@@ -992,7 +988,7 @@ impl<
             }
             old_address += ENTRY_SIZE;
             idx += 1;
-            fence(SeqCst);
+            dfence();
         }
         // resize finished, make changes on the numbers
         debug!("Migrated {} entries to new chunk", effective_copy);
@@ -1206,6 +1202,12 @@ pub fn hash_key<K: Hash, H: Hasher + Default>(key: &K) -> usize {
     let mut hasher = H::default();
     key.hash(&mut hasher);
     hasher.finish() as usize
+}
+
+#[inline(always)]
+fn dfence() {
+    compiler_fence(SeqCst);
+    fence(SeqCst);
 }
 
 pub trait Attachment<K, V> {
