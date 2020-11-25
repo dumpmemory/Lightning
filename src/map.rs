@@ -182,9 +182,11 @@ impl<
                         }
                     } else {
                         warn!(
-                            "Got sentinel on get but new chunk is null, retry. Copying {}, epoch {}",
+                            "Got sentinel on get but new chunk is null for {}, retry. Copying {}, epoch {}, now epoch {}",
+                            fkey,
                             copying,
-                            epoch
+                            epoch,
+                            self.epoch.load(Acquire)
                         );
                         backoff.spin();
                         continue;
@@ -758,6 +760,7 @@ impl<
     #[inline(always)]
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> (usize, bool) {
         debug_assert!(entry_addr > 0);
+        debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe {
             intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value)
@@ -765,9 +768,9 @@ impl<
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
+        assert!(entry_addr > 0);
         if cfg!(debug_assert) {
             let guard = crossbeam_epoch::pin();
-            assert!(entry_addr > 0);
             assert!(Self::is_copying(self.epoch.load(Acquire)));
             assert!(!self.new_chunk.load(Acquire, &guard).is_null());
             let chunk = self.chunk.load(Acquire, &guard);
@@ -905,6 +908,7 @@ impl<
                     // Insert entry into new chunk, in case of failure, skip this entry
                     // Value should be primed
                     trace!("Moving key: {}, value: {}", fkey, v);
+                    assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
                     let primed_fval = fvalue.raw | INV_VAL_BIT_MASK;
                     let (key, value) = old_chunk_ins.attachment.get(idx);
                     let inserted_addr = {
@@ -924,7 +928,9 @@ impl<
                                 break;
                             } else if k == EMPTY_KEY {
                                 // Try insert to this slot
-                                if self.cas_value(addr, EMPTY_VALUE, fvalue.raw).1 {
+                                let (val, done) = self.cas_value(addr, EMPTY_VALUE, fvalue.raw);
+                                debug_assert_ne!(val & VAL_BIT_MASK, SENTINEL_VALUE);
+                                if done {
                                     new_chunk_ins.attachment.set(idx, key, value);
                                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                                     res = Some(addr);
@@ -1009,7 +1015,6 @@ impl Value {
                     ParsedValue::Prime(actual_val)
                 } else if actual_val == SENTINEL_VALUE {
                     ParsedValue::Sentinel
-                
                 } else if actual_val == TOMBSTONE_VALUE {
                     ParsedValue::Val(None)
                 } else {
@@ -2243,6 +2248,7 @@ mod tests {
     use std::collections::HashMap;
     use std::thread;
     use test::Bencher;
+    use rayon::prelude::*;
 
     #[test]
     fn will_not_overflow() {
@@ -2313,9 +2319,9 @@ mod tests {
     #[test]
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
-        let num_threads = 12;
-        let test_load = 1048576;
-        let repeat_load = 32;
+        let num_threads = num_cpus::get();
+        let test_load = 4096;
+        let repeat_load = 16;
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         let mut threads = vec![];
         for i in 0..num_threads {
@@ -2328,13 +2334,13 @@ mod tests {
                         let pre_insert_epoch = map.table.now_epoch();
                         map.insert(&key, value);
                         let post_insert_epoch = map.table.now_epoch();
-                        for l in 1..1024 {
+                        for l in 1..128 {
                             let pre_fail_get_epoch = map.table.now_epoch();
                             let left = map.get(&key);
                             let post_fail_get_epoch = map.table.now_epoch();
                             let right = Some(value);
                             if left != right {
-                                for m in 1..1024 {
+                                for m in 1..256 {
                                     let left = map.get(&key);
                                     let right = Some(value);
                                     if left == right {
@@ -2388,7 +2394,7 @@ mod tests {
             let _ = thread.join();
         }
         info!("Checking final value");
-        for i in 0..num_threads {
+        (0..num_threads).collect::<Vec<_>>().par_iter().for_each(|i| {
             for j in 5..test_load {
                 let k = i * 10000000 + j;
                 let value = i * j;
@@ -2401,7 +2407,7 @@ mod tests {
                     assert_eq!(get_res, Some(value), "New k {}, i {}, j {}", k, i, j)
                 }
             }
-        }
+        });
     }
 
     #[test]
