@@ -261,13 +261,14 @@ impl<
                 ModResult::Fail => {
                     // If fail insertion then retry
                     warn!(
-                        "Insertion failed, retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
+                        "Insertion failed, do migration and retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
                         copying,
                         modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
                         chunk_ptr,
                         new_chunk_ptr
                     );
+                    self.do_migration(chunk_ptr, &guard);
                     backoff.spin();
                     continue;
                 }
@@ -779,6 +780,14 @@ impl<
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
         }
+        self.do_migration(old_chunk_ptr, guard)
+    }
+
+    fn do_migration<'a>(
+        &self,
+        old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        guard: &crossbeam_epoch::Guard,
+    ) -> ResizeResult {
         let epoch = self.now_epoch();
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
@@ -829,7 +838,7 @@ impl<
         // Assertion check
         debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
         debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
-        debug_assert!(!new_chunk_ptr.is_null());    
+        debug_assert!(!new_chunk_ptr.is_null());
         let swap_old = self
             .chunk
             .compare_and_set(old_chunk_ptr, new_chunk_ptr, AcqRel, guard);
