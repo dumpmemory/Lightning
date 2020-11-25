@@ -147,6 +147,7 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
+            let has_new_chunk = !new_chunk_ptr.is_null() && chunk_ptr != new_chunk_ptr;
             debug_assert!(!chunk_ptr.is_null());
             let get_from = |chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
                 let chunk = unsafe { chunk_ptr.deref() };
@@ -167,7 +168,7 @@ impl<
             return match get_from(&chunk_ptr) {
                 FromChunkRes::Value(fval, val) => Some((fval, val)),
                 FromChunkRes::Sentinel => {
-                    if copying && !new_chunk_ptr.is_null() {
+                    if copying && has_new_chunk {
                         match get_from(&new_chunk_ptr) {
                             FromChunkRes::Value(fval, val) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
@@ -193,7 +194,7 @@ impl<
                     }
                 },
                 FromChunkRes::None => {
-                    if copying {
+                    if copying && has_new_chunk {
                         if new_chunk_ptr.is_null() {
                             continue;
                         }
@@ -234,6 +235,7 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
+            let has_new_chunk = !new_chunk_ptr.is_null() && chunk_ptr != new_chunk_ptr;
             if !copying {
                 match self.check_migration(chunk_ptr, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
@@ -300,7 +302,7 @@ impl<
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
             fence(SeqCst);
-            if copying {
+            if copying && has_new_chunk {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
@@ -334,6 +336,7 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
+            let has_new_chunk = !new_chunk_ptr.is_null() && chunk_ptr != new_chunk_ptr;
             let chunk = unsafe { chunk_ptr.deref() };
             let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
             let modify_chunk = unsafe { modify_chunk_ptr.deref() };
@@ -346,7 +349,7 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
-            if copying {
+            if copying && has_new_chunk {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             return match mod_res {
@@ -381,6 +384,7 @@ impl<
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
             if self.epoch_changed(epoch) { continue; }
+            let has_new_chunk = !new_chunk_ptr.is_null() && old_chunk_ptr != new_chunk_ptr;
             let copying = Self::is_copying(epoch);
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
@@ -401,7 +405,7 @@ impl<
                 ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
-            if copying {
+            if copying && has_new_chunk {
                 trace!("Put sentinel in old chunk for removal");
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
