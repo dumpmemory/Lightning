@@ -181,6 +181,11 @@ impl<
                             }
                         }
                     } else {
+                        warn!(
+                            "Got sentinel on get but new chunk is null, retry. Copying {}, epoch {}",
+                            copying,
+                            epoch
+                        );
                         backoff.spin();
                         continue;
                     }
