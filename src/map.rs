@@ -857,7 +857,7 @@ impl<
         self.new_chunk.store(Shared::null(), Release);
         fence(SeqCst);
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
-        debug_assert!(prev_epoch % 2, 1);
+        debug_assert_eq!(prev_epoch % 2, 1);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
