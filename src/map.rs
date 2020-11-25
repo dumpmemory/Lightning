@@ -789,6 +789,7 @@ impl<
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         let epoch = self.now_epoch();
+        let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
