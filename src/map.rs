@@ -268,7 +268,6 @@ impl<
                         chunk_ptr,
                         new_chunk_ptr
                     );
-                    self.do_migration(chunk_ptr, &guard);
                     backoff.spin();
                     continue;
                 }
@@ -281,6 +280,7 @@ impl<
                         chunk_ptr,
                         new_chunk_ptr
                     );
+                    self.do_migration(chunk_ptr, &guard);
                     backoff.spin();
                     continue;
                 }
