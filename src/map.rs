@@ -767,7 +767,7 @@ impl<
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
         debug_assert!(entry_addr > 0);
         debug_assert!(Self::is_copying(self.epoch.load(Acquire)));
-        debug_assert!(self.new_chunk.load(Acquire, &crossbeam_epoch::pin()).is_null());
+        debug_assert!(!self.new_chunk.load(Acquire, &crossbeam_epoch::pin()).is_null());
         let addr = entry_addr + mem::size_of::<usize>();
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
