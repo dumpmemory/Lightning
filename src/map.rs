@@ -168,6 +168,7 @@ impl<
                 FromChunkRes::Value(fval, val) => Some((fval, val)),
                 FromChunkRes::Sentinel => {
                     if copying {
+                        dfence();
                         match get_from(&new_chunk_ptr) {
                             FromChunkRes::Value(fval, val) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
@@ -194,6 +195,7 @@ impl<
                 },
                 FromChunkRes::None => {
                     if copying {
+                        dfence();
                         if new_chunk_ptr.is_null() {
                             continue;
                         }
@@ -299,8 +301,10 @@ impl<
                 ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            dfence();
             if copying {
+                dfence();
+                assert_ne!(chunk_ptr, new_chunk_ptr);
+                assert_ne!(new_chunk_ptr, Shared::null());
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
@@ -347,6 +351,8 @@ impl<
                 guard,
             );
             if copying {
+                assert_ne!(chunk_ptr, new_chunk_ptr);
+                assert_ne!(new_chunk_ptr, Shared::null());
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             return match mod_res {
@@ -403,6 +409,8 @@ impl<
             };
             if copying {
                 trace!("Put sentinel in old chunk for removal");
+                assert_ne!(old_chunk_ptr, new_chunk_ptr);
+                assert_ne!(new_chunk_ptr, Shared::null());
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
                 match remove_from_old {
@@ -838,6 +846,7 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
+        dfence();
         if self.chunk.load(Acquire, guard) != old_chunk_ptr {
             warn!("Give up on resize due to old chunk changed after lock obtained");
             self.new_chunk.store(Shared::null(), Release);
@@ -847,11 +856,12 @@ impl<
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
+        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
+        assert_ne!(new_chunk_ptr, old_chunk_ptr);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 0);
-        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
         // Assertion check
