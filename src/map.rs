@@ -167,7 +167,7 @@ impl<
             return match get_from(&chunk_ptr) {
                 FromChunkRes::Value(fval, val) => Some((fval, val)),
                 FromChunkRes::Sentinel => {
-                    if copying {
+                    if copying && self.now_epoch() == epoch {
                         dfence();
                         match get_from(&new_chunk_ptr) {
                             FromChunkRes::Value(fval, val) => Some((fval, val)),
@@ -301,7 +301,7 @@ impl<
                 ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            if copying {
+            if copying && self.now_epoch() == epoch {
                 dfence();
                 assert_ne!(chunk_ptr, new_chunk_ptr);
                 assert_ne!(new_chunk_ptr, Shared::null());
@@ -350,7 +350,7 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 guard,
             );
-            if copying {
+            if copying && self.now_epoch() == epoch {
                 assert_ne!(chunk_ptr, new_chunk_ptr);
                 assert_ne!(new_chunk_ptr, Shared::null());
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
@@ -407,9 +407,9 @@ impl<
                 ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
                 _ => {}
             };
-            if copying {
+            let epoch_changed = self.epoch_changed(epoch);
+            if copying && !epoch_changed{
                 trace!("Put sentinel in old chunk for removal");
-                assert_ne!(old_chunk_ptr, new_chunk_ptr);
                 assert_ne!(new_chunk_ptr, Shared::null());
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
@@ -425,7 +425,7 @@ impl<
                     }
                 }
             }
-            if self.epoch_changed(epoch) {
+            if epoch_changed {
                 if retr.is_none() {
                     return self.remove(key, fkey);
                 }
@@ -868,15 +868,8 @@ impl<
         debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
         debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
         debug_assert!(!new_chunk_ptr.is_null());
-        let swap_old = self
-            .chunk
-            .compare_and_set(old_chunk_ptr, new_chunk_ptr, AcqRel, guard);
-        if let Err(e) = swap_old {
-            // Should not happend, we cannot fix this
-            panic!("Resize swap pointer failed: {:?}", e);
-        }
+        self.chunk.store(new_chunk_ptr, Release);
         self.timestamp.store(timestamp(), Release);
-        self.new_chunk.store(Shared::null(), Release);
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 1);
@@ -885,6 +878,7 @@ impl<
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
         dfence();
+        self.new_chunk.store(Shared::null(), Release);
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
@@ -2642,6 +2636,79 @@ mod tests {
                     None => panic!("{}", i),
                 }
             }
+        }
+    }
+
+    use std::thread::JoinHandle;
+    #[test]
+    fn atomic_ordering() {
+        let test_load = 1024;
+        let epoch = Arc::new(AtomicUsize::new(0));
+        let old_ptr = Arc::new(AtomicUsize::new(0));
+        let new_ptr = Arc::new(AtomicUsize::new(0));
+        let write = || -> JoinHandle<()> {
+            let epoch = epoch.clone();
+            let old_ptr = old_ptr.clone();
+            let new_ptr = new_ptr.clone();
+            thread::spawn(move || {
+                for _ in 0..test_load {
+                    let old = old_ptr.load(Acquire);
+                    if new_ptr.compare_and_swap(0, old, AcqRel) != 0 {
+                        return;
+                    }
+                    dfence();
+                    if old_ptr.load(Acquire) != old {
+                        new_ptr.store(0, Release);
+                        dfence();
+                        return;
+                    }
+                    let new = old + 1;
+                    new_ptr.store(new, Release);
+                    dfence();
+                    assert_eq!(epoch.fetch_add(1, AcqRel) % 2, 0);
+                    // Do something
+                    thread::sleep_ms(100);
+                    old_ptr.store(new, Release);
+                    dfence();
+                    assert_eq!(epoch.fetch_add(1, AcqRel) % 2, 1);
+                    dfence();
+                    new_ptr.store(0, Release);
+                }
+            })
+        };
+        let read = || -> JoinHandle<()> {
+            let epoch = epoch.clone();
+            let old_ptr = old_ptr.clone();
+            let new_ptr = new_ptr.clone();
+            thread::spawn(move || {
+                for _ in 0..test_load {
+                    let epoch_val = epoch.load(Acquire);
+                    let old = old_ptr.load(Acquire);
+                    let new = new_ptr.load(Acquire);
+                    let changing = epoch_val % 2 == 1;
+                    thread::sleep_ms(50);
+                    if changing && epoch.load(Acquire) == epoch_val {
+                        assert_ne!(old, new);
+                        assert_ne!(new, 0);
+                    }
+                }
+            })
+        };
+        let num_writers = 5;
+        let mut writers = Vec::with_capacity(num_writers);
+        for _ in 0..num_writers {
+            writers.push(write());
+        }
+        let num_readers = num_cpus::get();
+        let mut readers = Vec::with_capacity(num_readers);
+        for _ in 0..num_readers {
+            readers.push(read());
+        }
+        for reader in readers {
+            reader.join();
+        }
+        for writer in writers {
+            writer.join();
         }
     }
 
