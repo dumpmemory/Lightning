@@ -2642,7 +2642,7 @@ mod tests {
     use std::thread::JoinHandle;
     #[test]
     fn atomic_ordering() {
-        let test_load = 1024;
+        let test_load = 102400;
         let epoch = Arc::new(AtomicUsize::new(0));
         let old_ptr = Arc::new(AtomicUsize::new(0));
         let new_ptr = Arc::new(AtomicUsize::new(0));
@@ -2667,7 +2667,9 @@ mod tests {
                     dfence();
                     assert_eq!(epoch.fetch_add(1, AcqRel) % 2, 0);
                     // Do something
-                    thread::sleep_ms(100);
+                    for _ in 0..1000 {
+                        std::sync::atomic::spin_loop_hint();
+                    }
                     old_ptr.store(new, Release);
                     dfence();
                     assert_eq!(epoch.fetch_add(1, AcqRel) % 2, 1);
@@ -2686,7 +2688,9 @@ mod tests {
                     let old = old_ptr.load(Acquire);
                     let new = new_ptr.load(Acquire);
                     let changing = epoch_val % 2 == 1;
-                    thread::sleep_ms(50);
+                    for _ in 0..500 {
+                        std::sync::atomic::spin_loop_hint();
+                    }
                     if changing && epoch.load(Acquire) == epoch_val {
                         assert_ne!(old, new);
                         assert_ne!(new, 0);
@@ -2705,10 +2709,10 @@ mod tests {
             readers.push(read());
         }
         for reader in readers {
-            reader.join();
+            reader.join().unwrap();
         }
         for writer in writers {
-            writer.join();
+            writer.join().unwrap();
         }
     }
 
