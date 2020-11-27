@@ -6,7 +6,7 @@ use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
-use core::sync::atomic::{fence, compiler_fence, AtomicU64, AtomicUsize};
+use core::sync::atomic::{compiler_fence, fence, AtomicU64, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -137,7 +137,7 @@ impl<
         enum FromChunkRes<V> {
             Value(usize, Option<V>),
             None,
-            Sentinel
+            Sentinel,
         };
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
@@ -161,7 +161,7 @@ impl<
                         },
                     ),
                     ParsedValue::Empty | ParsedValue::Val(None) => FromChunkRes::None,
-                    ParsedValue::Sentinel => FromChunkRes::Sentinel
+                    ParsedValue::Sentinel => FromChunkRes::Sentinel,
                 }
             };
             return match get_from(&chunk_ptr) {
@@ -175,9 +175,13 @@ impl<
                                 // Sentinel in new chunk, should retry
                                 backoff.spin();
                                 continue;
-                            },
-                            FromChunkRes::None =>  {
-                                trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                            }
+                            FromChunkRes::None => {
+                                trace!(
+                                    "Got non from new chunk for {} at epoch {}",
+                                    fkey - 5,
+                                    epoch
+                                );
                                 None
                             }
                         }
@@ -192,7 +196,7 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                },
+                }
                 FromChunkRes::None => {
                     if copying {
                         dfence();
@@ -205,9 +209,13 @@ impl<
                                 // Sentinel in new chunk, should retry
                                 backoff.spin();
                                 continue;
-                            },
+                            }
                             FromChunkRes::None => {
-                                trace!("Got non from new chunk for {} at epoch {}", fkey - 5, epoch);
+                                trace!(
+                                    "Got non from new chunk for {} at epoch {}",
+                                    fkey - 5,
+                                    epoch
+                                );
                                 None
                             }
                         }
@@ -215,7 +223,7 @@ impl<
                         None
                     }
                 }
-            }
+            };
         }
     }
 
@@ -245,7 +253,8 @@ impl<
                     }
                     ResizeResult::NoNeed => {}
                 }
-            } else if new_chunk_ptr.is_null() { // Copying, must have new chunk
+            } else if new_chunk_ptr.is_null() {
+                // Copying, must have new chunk
                 warn!("Chunk ptrs does not consist with epoch");
                 continue;
             }
@@ -259,7 +268,8 @@ impl<
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
             };
-            let value_insertion = self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
+            let value_insertion =
+                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _) => {
@@ -303,8 +313,19 @@ impl<
             }
             if copying && self.now_epoch() == epoch {
                 dfence();
-                assert_ne!(chunk_ptr, new_chunk_ptr);
-                assert_ne!(new_chunk_ptr, Shared::null());
+                assert_ne!(
+                    chunk_ptr, new_chunk_ptr,
+                    "at epoch {}, inserting k:{}, v:{}",
+                    epoch, fkey, fvalue
+                );
+                assert_ne!(
+                    new_chunk_ptr,
+                    Shared::null(),
+                    "at epoch {}, inserting k:{}, v:{}",
+                    epoch,
+                    fkey,
+                    fvalue
+                );
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
@@ -313,9 +334,7 @@ impl<
     }
 
     #[inline(always)]
-    fn is_copying(
-        epoch: usize
-    ) -> bool {
+    fn is_copying(epoch: usize) -> bool {
         epoch | 1 == epoch
     }
 
@@ -386,7 +405,9 @@ impl<
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
-            if self.epoch_changed(epoch) { continue; }
+            if self.epoch_changed(epoch) {
+                continue;
+            }
             let copying = Self::is_copying(epoch);
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
@@ -408,7 +429,7 @@ impl<
                 _ => {}
             };
             let epoch_changed = self.epoch_changed(epoch);
-            if copying && !epoch_changed{
+            if copying && !epoch_changed {
                 trace!("Put sentinel in old chunk for removal");
                 assert_ne!(new_chunk_ptr, Shared::null());
                 let remove_from_old =
@@ -503,8 +524,8 @@ impl<
                         }
                         _ => {
                             // Confirmed, this is possible
-                            return ModResult::Sentinel
-                        },
+                            return ModResult::Sentinel;
+                        }
                     },
                     _ => {}
                 }
@@ -571,11 +592,13 @@ impl<
                                     return ModResult::Existed(v.unwrap(), value);
                                 } else {
                                     let primed_fval = fval | INV_VAL_BIT_MASK;
-                                    let (act_val, replaced) = self.cas_value(addr, val.raw, primed_fval);
+                                    let (act_val, replaced) =
+                                        self.cas_value(addr, val.raw, primed_fval);
                                     if replaced {
                                         let (_, prev_val) = chunk.attachment.get(idx);
                                         chunk.attachment.set(idx, key.clone(), (*oval).clone());
-                                        let stripped_prime = self.cas_value(addr, primed_fval, fval).1;
+                                        let stripped_prime =
+                                            self.cas_value(addr, primed_fval, fval).1;
                                         debug_assert!(stripped_prime);
                                         return ModResult::Replaced(val.raw, prev_val, idx);
                                     } else {
@@ -770,9 +793,7 @@ impl<
         debug_assert!(entry_addr > 0);
         debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
-        unsafe {
-            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value)
-        }
+        unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value) }
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
@@ -873,15 +894,15 @@ impl<
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 1);
-        debug!(
-            "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
-            old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
-        );
         dfence();
         self.new_chunk.store(Shared::null(), Release);
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
+        debug!(
+            "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
+            old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
+        );
         ResizeResult::Done
     }
 
@@ -936,7 +957,9 @@ impl<
                                 debug_assert_ne!(val & VAL_BIT_MASK, SENTINEL_VALUE);
                                 if done {
                                     new_chunk_ins.attachment.set(idx, key, value);
-                                    unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+                                    unsafe {
+                                        intrinsics::atomic_store_rel(addr as *mut usize, fkey)
+                                    }
                                     res = Some(addr);
                                     break;
                                 }
@@ -2254,11 +2277,11 @@ fn timestamp() -> u64 {
 mod tests {
     use crate::map::*;
     use alloc::sync::Arc;
+    use rayon::prelude::*;
     use std::alloc::System;
     use std::collections::HashMap;
     use std::thread;
     use test::Bencher;
-    use rayon::prelude::*;
 
     #[test]
     fn will_not_overflow() {
@@ -2404,20 +2427,23 @@ mod tests {
             let _ = thread.join();
         }
         info!("Checking final value");
-        (0..num_threads).collect::<Vec<_>>().par_iter().for_each(|i| {
-            for j in 5..test_load {
-                let k = i * 10000000 + j;
-                let value = i * j;
-                let get_res = map.get(&k);
-                if j % 3 == 0 {
-                    assert_eq!(get_res, Some(value + 7), "Mod k :{}, i {}, j {}", k, i, j);
-                } else if j % 7 == 0 {
-                    assert_eq!(get_res, None, "Remove k {}, i {}, j {}", k, i, j);
-                } else {
-                    assert_eq!(get_res, Some(value), "New k {}, i {}, j {}", k, i, j)
+        (0..num_threads)
+            .collect::<Vec<_>>()
+            .par_iter()
+            .for_each(|i| {
+                for j in 5..test_load {
+                    let k = i * 10000000 + j;
+                    let value = i * j;
+                    let get_res = map.get(&k);
+                    if j % 3 == 0 {
+                        assert_eq!(get_res, Some(value + 7), "Mod k :{}, i {}, j {}", k, i, j);
+                    } else if j % 7 == 0 {
+                        assert_eq!(get_res, None, "Remove k {}, i {}, j {}", k, i, j);
+                    } else {
+                        assert_eq!(get_res, Some(value), "New k {}, i {}, j {}", k, i, j)
+                    }
                 }
-            }
-        });
+            });
     }
 
     #[test]
