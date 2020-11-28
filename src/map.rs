@@ -883,6 +883,7 @@ impl<
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 0);
+        dfence();
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
         // Assertion check
@@ -2436,11 +2437,11 @@ mod tests {
                     let value = i * j;
                     let get_res = map.get(&k);
                     if j % 3 == 0 {
-                        assert_eq!(get_res, Some(value + 7), "Mod k :{}, i {}, j {}", k, i, j);
+                        assert_eq!(get_res, Some(value + 7), "Mod k :{}, i {}, j {}, epoch {}", k, i, j, map.table.now_epoch());
                     } else if j % 7 == 0 {
-                        assert_eq!(get_res, None, "Remove k {}, i {}, j {}", k, i, j);
+                        assert_eq!(get_res, None, "Remove k {}, i {}, j {}, epoch {}", k, i, j, map.table.now_epoch());
                     } else {
-                        assert_eq!(get_res, Some(value), "New k {}, i {}, j {}", k, i, j)
+                        assert_eq!(get_res, Some(value), "New k {}, i {}, j {}, epoch {}", k, i, j, map.table.now_epoch());
                     }
                 }
             });
