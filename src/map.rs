@@ -872,6 +872,7 @@ impl<
             warn!("Give up on resize due to old chunk changed after lock obtained");
             self.new_chunk.store(Shared::null(), Release);
             dfence();
+            debug_assert_eq!(self.now_epoch() % 2, 0);
             return ResizeResult::ChunkChanged;
         }
         debug!("Resizing {:?}", old_chunk_ptr);
@@ -890,16 +891,17 @@ impl<
         debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
         debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
         debug_assert!(!new_chunk_ptr.is_null());
-        self.chunk.store(new_chunk_ptr, Release);
-        self.timestamp.store(timestamp(), Release);
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 1);
         dfence();
-        self.new_chunk.store(Shared::null(), Release);
+        self.chunk.store(new_chunk_ptr, Release);
+        self.timestamp.store(timestamp(), Release);
+        dfence();
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
         }
+        self.new_chunk.store(Shared::null(), Release);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
