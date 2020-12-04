@@ -2397,8 +2397,6 @@ mod tests {
                             }
                         }
                         if j % 7 == 0 {
-
-                            //map.remove(&key);
                             assert_eq!(
                                 map.remove(&key),
                                 Some(value),
