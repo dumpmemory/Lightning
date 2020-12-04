@@ -2502,6 +2502,38 @@ mod tests {
     }
 
     #[test]
+    fn parallel_word_map_multi_mutex() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        let mut threads = vec![];
+        let num_threads = num_cpus::get();
+        let test_load = 10240;
+        let update_load = 128;
+        for thread_id in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let target = thread_id; 
+                for i in 0..test_load {
+                    let key = target * 1000000 + i;
+                    {
+                        let mut mutex = map.try_insert_locked(key).unwrap();
+                        *mutex = 1;
+                    }
+                    for j in 1..update_load {
+                        let mut mutex = map.lock(key).unwrap();
+                        assert_eq!(*mutex, j);
+                        *mutex += 1;
+                    }
+                    assert_eq!(*map.lock(key).unwrap(), update_load);
+                }
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+    }
+
+    #[test]
     fn parallel_obj_map_rwlock() {
         let _ = env_logger::try_init();
         let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
