@@ -1694,7 +1694,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
-                    if fast_value & MUTEX_BIT_MASK > 0 {
+                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    if fast_value == locked_val {
                         // Locked, unchanged
                         trace!("The key {} have locked, unchanged and try again", key);
                         None
@@ -1705,7 +1706,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                             key,
                             fast_value & WORD_MUTEX_DATA_BIT_MASK
                         );
-                        Some(fast_value | MUTEX_BIT_MASK)
+                        Some(locked_val)
                     }
                 },
                 &guard,
@@ -2520,9 +2521,23 @@ mod tests {
                         *mutex = 1;
                     }
                     for j in 1..update_load {
-                        let mut mutex = map.lock(key).unwrap();
-                        assert_eq!(*mutex, j);
-                        *mutex += 1;
+                        assert!(
+                            map.get(&key).is_some(), 
+                            "Pre getting value for mutex, key {}, epoch {}",
+                            key, map.table.now_epoch()
+                        ); 
+                        {
+                            let mut mutex = map.lock(key).expect(
+                                &format!("Locking key {}, copying {}", key, map.table.now_epoch())
+                            );
+                            assert_eq!(*mutex, j);
+                            *mutex += 1;
+                        }
+                        assert!(
+                            map.get(&key).is_some(), 
+                            "Post getting value for mutex, key {}, epoch {}",
+                            key, map.table.now_epoch()
+                        ); 
                     }
                     assert_eq!(*map.lock(key).unwrap(), update_load);
                 }
