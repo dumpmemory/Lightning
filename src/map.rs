@@ -2507,8 +2507,8 @@ mod tests {
         let map = Arc::new(WordMap::<System>::with_capacity(4));
         let mut threads = vec![];
         let num_threads = num_cpus::get();
-        let test_load = 10240;
-        let update_load = 128;
+        let test_load = 4096;
+        let update_load = 256;
         for thread_id in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
