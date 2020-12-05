@@ -366,9 +366,22 @@ impl<
                 if fval != SENTINEL_VALUE && fval != EMPTY_VALUE && fval != TOMBSTONE_VALUE {
                     if let Some(new_val) = func(fval) {
                         let val = chunk.attachment.get(idx).1;
-                        match self.modify_entry(new_chunk, hash, key, fkey, ModOp::AttemptInsert(new_val, &val), guard) {
-                            ModResult::Replaced(_, _, index) | ModResult::Done(_, _, index) => return SwapResult::Succeed(fval & VAL_BIT_MASK, index, new_chunk_ptr),
-                            _ => {},
+                        match self.modify_entry(
+                            new_chunk,
+                            hash,
+                            key,
+                            fkey,
+                            ModOp::AttemptInsert(new_val, &val),
+                            guard,
+                        ) {
+                            ModResult::Replaced(_, _, index) | ModResult::Done(_, _, index) => {
+                                return SwapResult::Succeed(
+                                    fval & VAL_BIT_MASK,
+                                    index,
+                                    new_chunk_ptr,
+                                )
+                            }
+                            _ => {}
                         }
                     } else {
                         return SwapResult::Aborted;
@@ -2455,11 +2468,35 @@ mod tests {
                     let value = i * j;
                     let get_res = map.get(&k);
                     if j % 3 == 0 {
-                        assert_eq!(get_res, Some(value + 7), "Mod k :{}, i {}, j {}, epoch {}", k, i, j, map.table.now_epoch());
+                        assert_eq!(
+                            get_res,
+                            Some(value + 7),
+                            "Mod k :{}, i {}, j {}, epoch {}",
+                            k,
+                            i,
+                            j,
+                            map.table.now_epoch()
+                        );
                     } else if j % 7 == 0 {
-                        assert_eq!(get_res, None, "Remove k {}, i {}, j {}, epoch {}", k, i, j, map.table.now_epoch());
+                        assert_eq!(
+                            get_res,
+                            None,
+                            "Remove k {}, i {}, j {}, epoch {}",
+                            k,
+                            i,
+                            j,
+                            map.table.now_epoch()
+                        );
                     } else {
-                        assert_eq!(get_res, Some(value), "New k {}, i {}, j {}, epoch {}", k, i, j, map.table.now_epoch());
+                        assert_eq!(
+                            get_res,
+                            Some(value),
+                            "New k {}, i {}, j {}, epoch {}",
+                            k,
+                            i,
+                            j,
+                            map.table.now_epoch()
+                        );
                     }
                 }
             });
@@ -2530,7 +2567,7 @@ mod tests {
         for thread_id in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let target = thread_id; 
+                let target = thread_id;
                 for i in 0..test_load {
                     let key = target * 1000000 + i;
                     {
@@ -2539,22 +2576,26 @@ mod tests {
                     }
                     for j in 1..update_load {
                         assert!(
-                            map.get(&key).is_some(), 
+                            map.get(&key).is_some(),
                             "Pre getting value for mutex, key {}, epoch {}",
-                            key, map.table.now_epoch()
-                        ); 
+                            key,
+                            map.table.now_epoch()
+                        );
                         {
-                            let mut mutex = map.lock(key).expect(
-                                &format!("Locking key {}, copying {}", key, map.table.now_epoch())
-                            );
+                            let mut mutex = map.lock(key).expect(&format!(
+                                "Locking key {}, copying {}",
+                                key,
+                                map.table.now_epoch()
+                            ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
                         }
                         assert!(
-                            map.get(&key).is_some(), 
+                            map.get(&key).is_some(),
                             "Post getting value for mutex, key {}, epoch {}",
-                            key, map.table.now_epoch()
-                        ); 
+                            key,
+                            map.table.now_epoch()
+                        );
                     }
                     assert_eq!(*map.lock(key).unwrap(), update_load);
                 }
