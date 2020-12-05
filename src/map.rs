@@ -46,7 +46,7 @@ enum ModResult<V> {
     Fail,
     Sentinel,
     NotFound,
-    Done(usize, Option<V>),
+    Done(usize, Option<V>, usize), // _, value, index
     TableFull,
     Aborted,
 }
@@ -272,7 +272,7 @@ impl<
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
             let mut result = None;
             match value_insertion {
-                ModResult::Done(_, _) => {
+                ModResult::Done(_, _, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, AcqRel);
                 }
@@ -358,6 +358,23 @@ impl<
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
             let chunk = unsafe { chunk_ptr.deref() };
+            let new_chunk = unsafe { new_chunk_ptr.deref() };
+            if copying && self.now_epoch() == epoch {
+                // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
+                let (parsed_val, idx) = self.get_from_chunk(chunk, hash, key, fkey);
+                let fval = parsed_val.raw;
+                if fval != SENTINEL_VALUE && fval != EMPTY_VALUE && fval != TOMBSTONE_VALUE {
+                    if let Some(new_val) = func(fval) {
+                        let val = chunk.attachment.get(idx).1;
+                        match self.modify_entry(new_chunk, hash, key, fkey, ModOp::AttemptInsert(new_val, &val), guard) {
+                            ModResult::Replaced(_, _, index) | ModResult::Done(_, _, index) => return SwapResult::Succeed(fval & VAL_BIT_MASK, index, new_chunk_ptr),
+                            _ => {},
+                        }
+                    } else {
+                        return SwapResult::Aborted;
+                    }
+                }
+            }
             let modify_chunk_ptr = if copying { new_chunk_ptr } else { chunk_ptr };
             let modify_chunk = unsafe { modify_chunk_ptr.deref() };
             trace!("Swaping for key {}, copying {}", fkey, copying);
@@ -386,7 +403,7 @@ impl<
                     continue;
                 }
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
-                ModResult::Done(_, _) => unreachable!("Swap Done"),
+                ModResult::Done(_, _, _) => unreachable!("Swap Done"),
                 ModResult::TableFull => unreachable!("Swap table full"),
             };
         }
@@ -419,7 +436,7 @@ impl<
                     retr = Some((fvalue, value));
                     self.count.fetch_sub(1, AcqRel);
                 }
-                ModResult::Done(_, _) => unreachable!("Remove shall not have done"),
+                ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
                 ModResult::NotFound => {}
                 ModResult::Sentinel => {
                     backoff.spin();
@@ -435,12 +452,12 @@ impl<
                 let remove_from_old =
                     self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
                 match remove_from_old {
-                    ModResult::Done(fvalue, Some(value))
+                    ModResult::Done(fvalue, Some(value), _)
                     | ModResult::Replaced(fvalue, value, _) => {
                         trace!("Sentinal placed");
                         retr = Some((fvalue, value));
                     }
-                    ModResult::Done(_, None) => {}
+                    ModResult::Done(_, None, _) => {}
                     _ => {
                         trace!("Sentinal not placed");
                     }
@@ -541,9 +558,9 @@ impl<
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
                                     if let Some(v) = v {
-                                        return ModResult::Done(*v, Some(value));
+                                        return ModResult::Done(*v, Some(value), idx);
                                     } else {
-                                        return ModResult::Done(addr, None);
+                                        return ModResult::Done(addr, None, idx);
                                     }
                                 } else {
                                     return ModResult::Fail;
@@ -573,7 +590,7 @@ impl<
                                     if let Some(v) = v {
                                         return ModResult::Replaced(*v, value, idx);
                                     } else {
-                                        return ModResult::Done(addr, None);
+                                        return ModResult::Done(addr, None, idx);
                                     }
                                 } else {
                                     trace!("Cannot upsert fast value in place for {}", fkey);
@@ -683,7 +700,7 @@ impl<
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
-                            return ModResult::Done(addr, None);
+                            return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
                             continue;
@@ -699,7 +716,7 @@ impl<
                         );
                         if self.cas_value(addr, EMPTY_VALUE, fval).1 {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
-                            return ModResult::Done(addr, None);
+                            return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
                             continue;
@@ -709,7 +726,7 @@ impl<
                         if self.cas_sentinel(addr, 0) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
-                            return ModResult::Done(addr, None);
+                            return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
                             continue;
@@ -2508,7 +2525,7 @@ mod tests {
         let map = Arc::new(WordMap::<System>::with_capacity(4));
         let mut threads = vec![];
         let num_threads = num_cpus::get();
-        let test_load = 4096;
+        let test_load = 2048;
         let update_load = 256;
         for thread_id in 0..num_threads {
             let map = map.clone();
