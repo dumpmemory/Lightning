@@ -435,31 +435,16 @@ impl<
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
-            if self.epoch_changed(epoch) {
+            let copying = Self::is_copying(epoch);
+            if copying && (new_chunk_ptr.is_null() || new_chunk_ptr == old_chunk_ptr) {
                 continue;
             }
-            let copying = Self::is_copying(epoch);
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             let old_chunk = unsafe { old_chunk_ptr.deref() };
-            let modify_chunk = if copying { &new_chunk } else { &old_chunk };
-            let res = self.modify_entry(&*modify_chunk, hash, key, fkey, ModOp::Tombstone, &guard);
             let mut retr = None;
-            match res {
-                ModResult::Replaced(fvalue, value, _) => {
-                    retr = Some((fvalue, value));
-                    self.count.fetch_sub(1, AcqRel);
-                }
-                ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
-                ModResult::NotFound => {}
-                ModResult::Sentinel => {
-                    backoff.spin();
-                    continue;
-                }
-                ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
-                _ => {}
-            };
-            let epoch_changed = self.epoch_changed(epoch);
-            if copying && !epoch_changed {
+            if copying {
+                // Put sentinel to the old before putting tombstone to the new
+                // If not migration might put the old value back
                 trace!("Put sentinel in old chunk for removal");
                 assert_ne!(new_chunk_ptr, Shared::null());
                 let remove_from_old =
@@ -476,6 +461,23 @@ impl<
                     }
                 }
             }
+            let modify_chunk = if copying { &new_chunk } else { &old_chunk };
+            let res = self.modify_entry(&*modify_chunk, hash, key, fkey, ModOp::Tombstone, &guard);
+            match res {
+                ModResult::Replaced(fvalue, value, _) => {
+                    retr = Some((fvalue, value));
+                    self.count.fetch_sub(1, AcqRel);
+                }
+                ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
+                ModResult::NotFound => {}
+                ModResult::Sentinel => {
+                    backoff.spin();
+                    continue;
+                }
+                ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
+                _ => {}
+            };
+            let epoch_changed = self.epoch_changed(epoch);
             if epoch_changed {
                 if retr.is_none() {
                     return self.remove(key, fkey);
@@ -977,7 +979,7 @@ impl<
                         let cap_mask = new_chunk_ins.cap_mask();
                         let mut count = 0;
                         let mut res = None;
-                        while count <= cap {
+                        while count < cap {
                             idx &= cap_mask;
                             let addr = base + idx * ENTRY_SIZE;
                             let k = self.get_fast_key(addr);
@@ -1000,7 +1002,6 @@ impl<
                             idx += 1; // reprobe
                             count += 1;
                         }
-                        debug_assert!(count <= cap);
                         res
                     };
                     // CAS to ensure sentinel into old chunk (spec)
@@ -1696,21 +1697,21 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
     fn create(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
         let key = key + NUM_FIX;
         let value = 0;
-        if table
-            .insert(
-                InsertOp::TryInsert,
-                &(),
-                Some(()),
-                key,
-                value | MUTEX_BIT_MASK,
-            )
-            .is_none()
-        {
-            trace!("Created locked key {}", key);
-            Some(Self { table, key, value })
-        } else {
-            trace!("Cannot create locked key {} ", key);
-            None
+        match table.insert(
+            InsertOp::TryInsert,
+            &(),
+            Some(()),
+            key,
+            value | MUTEX_BIT_MASK,
+        ) {
+            None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
+                trace!("Created locked key {}", key);
+                Some(Self { table, key, value })
+            },
+            _ => {
+                trace!("Cannot create locked key {} ", key);
+                None
+            }
         }
     }
     fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
@@ -2437,6 +2438,7 @@ mod tests {
                                 k
                             );
                             assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.lock(key).is_none(), "Remove recursion with lock");
                         }
                         if j % 3 == 0 {
                             let new_value = value + 7;
@@ -2562,8 +2564,8 @@ mod tests {
         let map = Arc::new(WordMap::<System>::with_capacity(4));
         let mut threads = vec![];
         let num_threads = num_cpus::get();
-        let test_load = 2048;
-        let update_load = 256;
+        let test_load = 4096;
+        let update_load = 128;
         for thread_id in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
@@ -2581,7 +2583,7 @@ mod tests {
                             key,
                             map.table.now_epoch()
                         );
-                        {
+                        let val = {
                             let mut mutex = map.lock(key).expect(&format!(
                                 "Locking key {}, copying {}",
                                 key,
@@ -2589,13 +2591,26 @@ mod tests {
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
-                        }
+                            *mutex
+                        };
                         assert!(
                             map.get(&key).is_some(),
                             "Post getting value for mutex, key {}, epoch {}",
                             key,
                             map.table.now_epoch()
                         );
+                        // if j % 7 == 0 {
+                        //     {
+                        //         let mutex = map.lock(key).expect(&format!(
+                        //             "Remove locking key {}, copying {}",
+                        //             key,
+                        //             map.table.now_epoch()
+                        //         ));
+                        //         mutex.remove();
+                        //     }
+                        //     assert!(map.lock(key).is_none());
+                        //     *map.try_insert_locked(key).unwrap() = val;
+                        // }
                     }
                     assert_eq!(*map.lock(key).unwrap(), update_load);
                 }
