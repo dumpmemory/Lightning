@@ -361,11 +361,11 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             if copying && self.now_epoch() == epoch {
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                let (parsed_val, idx) = self.get_from_chunk(chunk, hash, key, fkey);
-                let fval = parsed_val.raw;
-                if fval != SENTINEL_VALUE && fval != EMPTY_VALUE && fval != TOMBSTONE_VALUE {
-                    if let Some(new_val) = func(fval) {
-                        let val = chunk.attachment.get(idx).1;
+                let (old_parsed_val, old_index) = self.get_from_chunk(chunk, hash, key, fkey);
+                let old_fval = old_parsed_val.raw;
+                if old_fval != SENTINEL_VALUE && old_fval != EMPTY_VALUE && old_fval != TOMBSTONE_VALUE {
+                    if let Some(new_val) = func(old_fval) {
+                        let val = chunk.attachment.get(old_index).1;
                         match self.modify_entry(
                             new_chunk,
                             hash,
@@ -374,17 +374,26 @@ impl<
                             ModOp::AttemptInsert(new_val, &val),
                             guard,
                         ) {
-                            ModResult::Replaced(_, _, index) | ModResult::Done(_, _, index) => {
-                                return SwapResult::Succeed(
-                                    fval & VAL_BIT_MASK,
-                                    index,
-                                    new_chunk_ptr,
-                                )
-                            }
+                            ModResult::Done(_, _, new_index) | ModResult::Replaced(_, _, new_index) => {
+                                let old_addr = chunk.base + old_index * ENTRY_SIZE;
+                                if self.cas_sentinel(old_addr, old_fval) {
+                                    // Put a sentinel in the old chunk
+                                    return SwapResult::Succeed(
+                                        old_fval & VAL_BIT_MASK,
+                                        new_index,
+                                        new_chunk_ptr,
+                                    )
+                                } else {
+                                    // If fail, we may have some problem here
+                                    // The best strategy can be CAS a tombstone to the new index and try everything again
+                                    // Note that we use attempt insert, it will be safe to just `remove` it
+                                    let new_addr = new_chunk.base + new_index * ENTRY_SIZE;
+                                    self.cas_tombstone(new_addr, new_val);
+                                    continue;
+                                }
+                            },
                             _ => {}
                         }
-                    } else {
-                        return SwapResult::Aborted;
                     }
                 }
             }
@@ -2397,8 +2406,12 @@ mod tests {
             threads.push(thread::spawn(move || {
                 for j in 5..test_load {
                     let key = i * 10000000 + j;
-                    let value = i * j;
+                    let value_prefix = i * j * 100;
                     for k in 1..repeat_load {
+                        let value = value_prefix + k;
+                        if k != 1 {
+                            assert_eq!(map.get(&key), Some(value - 1));
+                        }
                         let pre_insert_epoch = map.table.now_epoch();
                         map.insert(&key, value);
                         let post_insert_epoch = map.table.now_epoch();
@@ -2439,6 +2452,7 @@ mod tests {
                             );
                             assert_eq!(map.get(&key), None, "Remove recursion");
                             assert!(map.lock(key).is_none(), "Remove recursion with lock");
+                            map.insert(&key, value);
                         }
                         if j % 3 == 0 {
                             let new_value = value + 7;
@@ -2451,6 +2465,7 @@ mod tests {
                                 "Checking immediate update, key {}, epoch {} to {}",
                                 key, pre_insert_epoch, post_insert_epoch
                             );
+                            map.insert(&key, value);
                         }
                     }
                 }
@@ -2467,39 +2482,17 @@ mod tests {
             .for_each(|i| {
                 for j in 5..test_load {
                     let k = i * 10000000 + j;
-                    let value = i * j;
+                    let value = i * j * 100 + repeat_load - 1;
                     let get_res = map.get(&k);
-                    if j % 3 == 0 {
-                        assert_eq!(
-                            get_res,
-                            Some(value + 7),
-                            "Mod k :{}, i {}, j {}, epoch {}",
-                            k,
-                            i,
-                            j,
-                            map.table.now_epoch()
-                        );
-                    } else if j % 7 == 0 {
-                        assert_eq!(
-                            get_res,
-                            None,
-                            "Remove k {}, i {}, j {}, epoch {}",
-                            k,
-                            i,
-                            j,
-                            map.table.now_epoch()
-                        );
-                    } else {
-                        assert_eq!(
-                            get_res,
-                            Some(value),
-                            "New k {}, i {}, j {}, epoch {}",
-                            k,
-                            i,
-                            j,
-                            map.table.now_epoch()
-                        );
-                    }
+                    assert_eq!(
+                        get_res,
+                        Some(value),
+                        "New k {}, i {}, j {}, epoch {}",
+                        k,
+                        i,
+                        j,
+                        map.table.now_epoch()
+                    );
                 }
             });
     }
@@ -2565,7 +2558,7 @@ mod tests {
         let mut threads = vec![];
         let num_threads = num_cpus::get();
         let test_load = 4096;
-        let update_load = 128;
+        let update_load = 256;
         for thread_id in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
