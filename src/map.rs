@@ -363,7 +363,10 @@ impl<
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
                 let (old_parsed_val, old_index) = self.get_from_chunk(chunk, hash, key, fkey);
                 let old_fval = old_parsed_val.raw;
-                if old_fval != SENTINEL_VALUE && old_fval != EMPTY_VALUE && old_fval != TOMBSTONE_VALUE {
+                if old_fval != SENTINEL_VALUE
+                    && old_fval != EMPTY_VALUE
+                    && old_fval != TOMBSTONE_VALUE
+                {
                     if let Some(new_val) = func(old_fval) {
                         let val = chunk.attachment.get(old_index).1;
                         match self.modify_entry(
@@ -374,7 +377,8 @@ impl<
                             ModOp::AttemptInsert(new_val, &val),
                             guard,
                         ) {
-                            ModResult::Done(_, _, new_index) | ModResult::Replaced(_, _, new_index) => {
+                            ModResult::Done(_, _, new_index)
+                            | ModResult::Replaced(_, _, new_index) => {
                                 let old_addr = chunk.base + old_index * ENTRY_SIZE;
                                 if self.cas_sentinel(old_addr, old_fval) {
                                     // Put a sentinel in the old chunk
@@ -382,7 +386,7 @@ impl<
                                         old_fval & VAL_BIT_MASK,
                                         new_index,
                                         new_chunk_ptr,
-                                    )
+                                    );
                                 } else {
                                     // If fail, we may have some problem here
                                     // The best strategy can be CAS a tombstone to the new index and try everything again
@@ -391,7 +395,7 @@ impl<
                                     self.cas_tombstone(new_addr, new_val);
                                     continue;
                                 }
-                            },
+                            }
                             _ => {}
                         }
                     }
@@ -1716,7 +1720,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
                 Some(Self { table, key, value })
-            },
+            }
             _ => {
                 trace!("Cannot create locked key {} ", key);
                 None
