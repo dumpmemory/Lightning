@@ -2558,7 +2558,7 @@ mod tests {
         let mut threads = vec![];
         let num_threads = num_cpus::get();
         let test_load = 4096;
-        let update_load = 256;
+        let update_load = 128;
         for thread_id in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
@@ -2592,18 +2592,18 @@ mod tests {
                             key,
                             map.table.now_epoch()
                         );
-                        // if j % 7 == 0 {
-                        //     {
-                        //         let mutex = map.lock(key).expect(&format!(
-                        //             "Remove locking key {}, copying {}",
-                        //             key,
-                        //             map.table.now_epoch()
-                        //         ));
-                        //         mutex.remove();
-                        //     }
-                        //     assert!(map.lock(key).is_none());
-                        //     *map.try_insert_locked(key).unwrap() = val;
-                        // }
+                        if j % 7 == 0 {
+                            {
+                                let mutex = map.lock(key).expect(&format!(
+                                    "Remove locking key {}, copying {}",
+                                    key,
+                                    map.table.now_epoch()
+                                ));
+                                mutex.remove();
+                            }
+                            assert!(map.lock(key).is_none());
+                            *map.try_insert_locked(key).unwrap() = val;
+                        }
                     }
                     assert_eq!(*map.lock(key).unwrap(), update_load);
                 }
