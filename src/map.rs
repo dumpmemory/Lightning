@@ -291,7 +291,7 @@ impl<
                     continue;
                 }
                 ModResult::TableFull => {
-                    warn!(
+                    trace!(
                         "Insertion is too fast, copying {}, cap {}, count {}, old {:?}, new {:?}.",
                         copying,
                         modify_chunk.capacity,
