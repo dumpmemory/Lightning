@@ -915,7 +915,11 @@ impl<
         }
         dfence();
         if self.chunk.load(Acquire, guard) != old_chunk_ptr {
-            warn!("Give up on resize due to old chunk changed after lock obtained, epoch {} to {}", epoch, self.now_epoch());
+            warn!(
+                "Give up on resize due to old chunk changed after lock obtained, epoch {} to {}",
+                epoch,
+                self.now_epoch()
+            );
             self.new_chunk.store(Shared::null(), Release);
             dfence();
             debug_assert_eq!(self.now_epoch() % 2, 0);
