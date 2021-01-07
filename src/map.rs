@@ -33,7 +33,7 @@ struct Value {
 }
 
 enum ParsedValue {
-    Val(Option<usize>), // None for tombstone
+    Val(usize), // None for tombstone
     Prime(usize),
     Sentinel,
     Empty,
@@ -152,7 +152,8 @@ impl<
                 let chunk = unsafe { chunk_ptr.deref() };
                 let (val, idx) = self.get_from_chunk(&*chunk, hash, key, fkey);
                 match val.parsed {
-                    ParsedValue::Prime(val) | ParsedValue::Val(Some(val)) => FromChunkRes::Value(
+                    ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
+                    ParsedValue::Prime(val) | ParsedValue::Val(val) => FromChunkRes::Value(
                         val,
                         if read_attachment {
                             Some(chunk.attachment.get(idx).1)
@@ -160,7 +161,6 @@ impl<
                             None
                         },
                     ),
-                    ParsedValue::Empty | ParsedValue::Val(None) => FromChunkRes::None,
                     ParsedValue::Sentinel => FromChunkRes::Sentinel,
                 }
             };
@@ -585,17 +585,17 @@ impl<
                                 if self.cas_sentinel(addr, val.raw) {
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
-                                    if let Some(v) = v {
-                                        return ModResult::Done(*v, Some(value), idx);
-                                    } else {
+                                    if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
+                                    } else {
+                                        return ModResult::Done(*v, Some(value), idx);
                                     }
                                 } else {
                                     return ModResult::Fail;
                                 }
                             }
                             &ModOp::Tombstone => {
-                                if v.is_none() {
+                                if *v == 0 {
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
@@ -609,16 +609,16 @@ impl<
                                     let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
                                     chunk.empty_entries.fetch_add(1, Relaxed);
-                                    return ModResult::Replaced(v.unwrap(), value, idx);
+                                    return ModResult::Replaced(*v, value, idx);
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
                                 if self.cas_value(addr, val.raw, *fv).1 {
                                     let (_, value) = chunk.attachment.get(idx);
-                                    if let Some(v) = v {
-                                        return ModResult::Replaced(*v, value, idx);
-                                    } else {
+                                    if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
+                                    } else {
+                                        return ModResult::Replaced(*v, value, idx);
                                     }
                                 } else {
                                     trace!("Cannot upsert fast value in place for {}", fkey);
@@ -626,16 +626,7 @@ impl<
                                 }
                             }
                             &ModOp::AttemptInsert(fval, oval) => {
-                                if v.is_some() {
-                                    trace!(
-                                        "Attempting insert existed entry {}, {}, have key {:?}, skip",
-                                        k,
-                                        fval,
-                                        v
-                                    );
-                                    let (_, value) = chunk.attachment.get(idx);
-                                    return ModResult::Existed(v.unwrap(), value);
-                                } else {
+                                if *v == 0 {
                                     let primed_fval = fval | INV_VAL_BIT_MASK;
                                     let (act_val, replaced) =
                                         self.cas_value(addr, val.raw, primed_fval);
@@ -650,6 +641,15 @@ impl<
                                         let (_, value) = chunk.attachment.get(idx);
                                         return ModResult::Existed(act_val, value);
                                     }
+                                } else {
+                                    trace!(
+                                        "Attempting insert existed entry {}, {}, have key {:?}, skip",
+                                        k,
+                                        fval,
+                                        v
+                                    );
+                                    let (_, value) = chunk.attachment.get(idx);
+                                    return ModResult::Existed(*v, value);
                                 }
                             }
                             &ModOp::SwapFastVal(ref swap) => {
@@ -660,10 +660,10 @@ impl<
                                 );
                                 match &val.parsed {
                                     ParsedValue::Val(pval) => {
-                                        if pval.is_none() {
+                                        let pval = *pval;
+                                        if pval == 0 {
                                             return ModResult::NotFound;
                                         }
-                                        let pval = pval.unwrap();
                                         let aval = chunk.attachment.get(idx).1;
                                         if let Some(v) = swap(pval) {
                                             if self.cas_value(addr, pval, v).1 {
@@ -788,7 +788,8 @@ impl<
             if k != EMPTY_KEY {
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
-                    ParsedValue::Val(Some(v)) | ParsedValue::Prime(v) => {
+                    ParsedValue::Val(0) => {}
+                    ParsedValue::Val(v) | ParsedValue::Prime(v) => {
                         let (key, value) = chunk.attachment.get(idx);
                         res.push((k, v, key, value))
                     }
@@ -914,7 +915,7 @@ impl<
         }
         dfence();
         if self.chunk.load(Acquire, guard) != old_chunk_ptr {
-            warn!("Give up on resize due to old chunk changed after lock obtained");
+            warn!("Give up on resize due to old chunk changed after lock obtained, epoch {} to {}", epoch, self.now_epoch());
             self.new_chunk.store(Shared::null(), Release);
             dfence();
             debug_assert_eq!(self.now_epoch() % 2, 0);
@@ -971,7 +972,14 @@ impl<
             let fkey = self.get_fast_key(old_address);
             // Reasoning value states
             match &fvalue.parsed {
-                ParsedValue::Val(Some(v)) => {
+                ParsedValue::Empty | ParsedValue::Val(0) => {
+                    if !self.cas_sentinel(old_address, fvalue.raw) {
+                        warn!("Filling empty with sentinel for old table should succeed but not, retry");
+                        backoff.spin();
+                        continue;
+                    }
+                }
+                ParsedValue::Val(v) => {
                     if fkey == EMPTY_KEY {
                         // Value have no key, insertion in progress
                         backoff.spin();
@@ -1052,13 +1060,6 @@ impl<
                     // Sentinel in old chunk implies its new value have already in the new chunk
                     trace!("Skip copy sentinel");
                 }
-                ParsedValue::Empty | ParsedValue::Val(None) => {
-                    if !self.cas_sentinel(old_address, fvalue.raw) {
-                        warn!("Filling empty with sentinel for old table should succeed but not, retry");
-                        backoff.spin();
-                        continue;
-                    }
-                }
             }
             old_address += ENTRY_SIZE;
             idx += 1;
@@ -1080,8 +1081,10 @@ impl Value {
         val: usize,
     ) -> Self {
         let res = {
-            if val == 0 {
+            if val == EMPTY_VALUE {
                 ParsedValue::Empty
+            } else if val == TOMBSTONE_VALUE {
+                ParsedValue::Val(0)
             } else {
                 let actual_val = val & VAL_BIT_MASK;
                 let flag = val & INV_VAL_BIT_MASK;
@@ -1090,9 +1093,9 @@ impl Value {
                 } else if actual_val == SENTINEL_VALUE {
                     ParsedValue::Sentinel
                 } else if actual_val == TOMBSTONE_VALUE {
-                    ParsedValue::Val(None)
+                    unreachable!("");
                 } else {
-                    ParsedValue::Val(Some(actual_val))
+                    ParsedValue::Val(actual_val)
                 }
             }
         };
