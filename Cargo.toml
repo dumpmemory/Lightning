@@ -11,10 +11,10 @@ categories = ["data-structures", "lock-free", "wait-free"]
 
 [dependencies]
 log = "0.4.8"
-seahash = "*"
+seahash = "4"
 smallvec = "1"
-crossbeam-utils = "*"
-crossbeam-epoch = "*"
+crossbeam-utils = "0.8"
+crossbeam-epoch = "0.9"
 num_cpus = "1"
 libc = "0.2.69" 
 
