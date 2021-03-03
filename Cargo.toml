@@ -1,11 +1,13 @@
 [package]
-name = "lightning"
+name = "lightning-containers"
 version = "0.2.0"
 authors = ["Hao Shi <shisoftgenius@gmail.com>"]
 edition = "2018"
 license-file = "LICENSE"
 description = "A set of lock-free data structures"
-
+repository = "https://github.com/ShisoftResearch/Lightning"
+homepage = "https://github.com/ShisoftResearch/Lightning"
+categories = ["data-structures", "lock-free", "wait-free"]
 
 [dependencies]
 log = "0.4.8"
@@ -14,8 +16,7 @@ smallvec = "1"
 crossbeam-utils = "*"
 crossbeam-epoch = "*"
 num_cpus = "1"
-libc = "0.2.69"
-parking_lot = "*"
+libc = "0.2.69" 
 
 [dev-dependencies]
 chashmap = "2.2.2"
