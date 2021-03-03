@@ -23,8 +23,8 @@ chashmap = "2.2.2"
 bustle = "0.4.1"
 tracing-subscriber = "0.2"
 page_size = "0.4.2"
-env_logger = "*"
-rayon = "*"
+env_logger = "0.8"
+rayon = "1"
 
 [[test]]
 name = "lightning-bench"
