@@ -2332,8 +2332,9 @@ fn timestamp() -> u64 {
 mod tests {
     use crate::map::*;
     use alloc::sync::Arc;
+    use chashmap::CHashMap;
     use rayon::prelude::*;
-    use std::alloc::System;
+    use std::{alloc::System, sync::{Mutex, RwLock}};
     use std::collections::HashMap;
     use std::thread;
     use test::Bencher;
@@ -2887,6 +2888,39 @@ mod tests {
             map.insert(i, i);
             i += 1;
         });
+    }
+
+    #[bench]
+    fn mutex_hashmap(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Mutex::new(HashMap::new());
+        let mut i = 5;
+        b.iter(|| {
+            map.lock().unwrap().insert(i, i);
+            i += 1;
+        });  
+    }
+
+    #[bench]
+    fn rwlock_hashmap(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = RwLock::new(HashMap::new());
+        let mut i = 5;
+        b.iter(|| {
+            map.write().unwrap().insert(i, i);
+            i += 1;
+        });  
+    }
+
+    #[bench]
+    fn chashmap(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = CHashMap::new();
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });  
     }
 
     #[bench]
