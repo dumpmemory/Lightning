@@ -5,6 +5,7 @@ mod arc_rwlock_std;
 mod chashmap;
 mod lfmap;
 
+#[test]
 fn main() {
     tracing_subscriber::fmt::init();
     // Workload::new(8, Mix::insert_heavy()).run::<lfmap::TestTable>();
