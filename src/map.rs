@@ -2871,7 +2871,7 @@ mod tests {
     #[bench]
     fn lfmap(b: &mut Bencher) {
         let _ = env_logger::try_init();
-        let map = WordMap::<System, DefaultHasher>::with_capacity(1024);
+        let map = WordMap::<System, DefaultHasher>::with_capacity(8);
         let mut i = 5;
         b.iter(|| {
             map.insert(&i, i);
