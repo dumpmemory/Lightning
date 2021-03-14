@@ -2,6 +2,7 @@ use bustle::*;
 use chashmap::CHashMap;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Table<K>(std::sync::Arc<CHashMap<K, ()>>);

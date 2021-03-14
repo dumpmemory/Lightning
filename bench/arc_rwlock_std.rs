@@ -1,6 +1,7 @@
 use bustle::*;
 use std::collections::HashMap;
 use std::sync::RwLock;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Table<K>(std::sync::Arc<RwLock<HashMap<K, ()>>>);
