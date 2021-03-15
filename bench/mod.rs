@@ -80,7 +80,8 @@ fn run_and_measure<T: Collection>(threads: usize, mix: Mix) -> Measurement
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
-    let workload = Workload::new(threads, mix);
+    let mut workload = Workload::new(threads, mix);
+    workload.operations(1.5);
     workload.run_silently::<T>()
 }
 
