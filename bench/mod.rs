@@ -1,5 +1,5 @@
-use bustle::{Mix, Workload};
-
+use bustle::*;
+use std::fmt::Debug;
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
@@ -18,65 +18,54 @@ fn main() {
 }
 
 fn test_lfmap() {
-    println!("Testing lock-free map");
-    println!("Insert heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::insert_heavy()).run::<lfmap::TestTable>();
-    }
-    println!("Read heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::read_heavy()).run::<lfmap::TestTable>();
-    }
-    println!("Uniform");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::uniform()).run::<lfmap::TestTable>();
-    }
+    run_and_record::<lfmap::TestTable>("lock-free map");
 }
 
 fn test_rwlock_std() {
-    println!("Testing rwlock std map");
-    println!("Insert heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::insert_heavy()).run::<arc_rwlock_std::Table<u64>>();
-    }
-    println!("Read heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::read_heavy()).run::<arc_rwlock_std::Table<u64>>();
-    }
-    println!("Uniform");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::uniform()).run::<arc_rwlock_std::Table<u64>>();
-    }
+    run_and_record::<arc_rwlock_std::Table<u64>>("rwlock std map");
 }
 
 fn test_mutex_std() {
-    println!("Testing mutex std map");
-    println!("Insert heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::insert_heavy()).run::<arc_mutex_std::Table<u64>>();
-    }
-    println!("Read heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::read_heavy()).run::<arc_mutex_std::Table<u64>>();
-    }
-    println!("Uniform");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::uniform()).run::<arc_mutex_std::Table<u64>>();
-    }
+    run_and_record::<arc_mutex_std::Table<u64>>("mutex std map");
 }
 
 fn test_chashmap() {
-    println!("Testing CHashmap");
+    run_and_record::<chashmap::Table<u64>>("CHashmap");
+}
+
+fn run_and_record<'a, T: Collection>(name: &'a str)
+where
+    <T::Handle as CollectionHandle>::Key: Send + Debug,
+{
+    println!("Testing {}", name);
     println!("Insert heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::insert_heavy()).run::<chashmap::Table<u64>>();
-    }
+    let insert_measure = run_and_measure_mix::<T>(Mix::insert_heavy());
     println!("Read heavy");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::read_heavy()).run::<chashmap::Table<u64>>();
-    }
+    let read_measure = run_and_measure_mix::<T>(Mix::read_heavy());
     println!("Uniform");
-    for n in 1..=num_cpus::get() {
-        Workload::new(n, Mix::uniform()).run::<chashmap::Table<u64>>();
-    }
+    let uniform_measure = run_and_measure_mix::<T>(Mix::uniform());
+}
+
+fn run_and_measure_mix<T: Collection>(mix: Mix) -> Vec<Measurement>
+where
+    <T::Handle as CollectionHandle>::Key: Send + Debug,
+{
+    (1..=num_cpus::get())
+        .map(|n| {
+            let m = run_and_measure::<T>(n, mix);
+            println!(
+                "Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
+                n, m.total_ops, m.spent, m.throughput, m.latency
+            );
+            m
+        })
+        .collect()
+}
+
+fn run_and_measure<T: Collection>(threads: usize, mix: Mix) -> Measurement
+where
+    <T::Handle as CollectionHandle>::Key: Send + Debug,
+{
+    let workload = Workload::new(threads, mix);
+    workload.run_silently::<T>()
 }
