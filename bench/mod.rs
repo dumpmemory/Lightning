@@ -85,7 +85,8 @@ where
 }
 
 fn write_measures<'a>(name: &'a str, measures: &[Measurement]) {
-    let file = File::create(name).unwrap();
+    let current_dir = env::current_dir().unwrap();
+    let file = File::create(current_dir.join(name)).unwrap();
     let mut file = LineWriter::new(file);
     for (n, m) in measures.iter().enumerate() {
         let spent = m.spent.as_nanos();
