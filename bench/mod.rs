@@ -81,7 +81,7 @@ where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     let mut workload = Workload::new(threads, mix);
-    workload.operations(1.5);
+    workload.operations(3.0);
     workload.run_silently::<T>()
 }
 
