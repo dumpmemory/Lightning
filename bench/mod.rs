@@ -26,17 +26,17 @@ fn get_task_name() -> String {
 
 fn test_lfmap() {
     let args: Vec<String> = env::args().collect();
-    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free map");
+    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map");
 }
 
 fn test_rwlock_std() {
     let args: Vec<String> = env::args().collect();
-    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock std map");
+    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map");
 }
 
 fn test_mutex_std() {
     let args: Vec<String> = env::args().collect();
-    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex std map");
+    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map");
 }
 
 fn test_chashmap() {
@@ -49,14 +49,14 @@ where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     println!("Testing {}", name);
-    println!("Insert heavy");
-    let insert_measure = run_and_measure_mix::<T>(Mix::insert_heavy());
     println!("Read heavy");
     let read_measure = run_and_measure_mix::<T>(Mix::read_heavy());
+    write_measures(&format!("{}_{}_read.csv", task, name), &read_measure);
+    println!("Insert heavy");
+    let insert_measure = run_and_measure_mix::<T>(Mix::insert_heavy());
+    write_measures(&format!("{}_{}_insertion.csv", task, name), &insert_measure);
     println!("Uniform");
     let uniform_measure = run_and_measure_mix::<T>(Mix::uniform());
-    write_measures(&format!("{}_{}_insertion.csv", task, name), &insert_measure);
-    write_measures(&format!("{}_{}_read.csv", task, name), &read_measure);
     write_measures(&format!("{}_{}_uniform.csv", task, name), &uniform_measure);
 }
 
@@ -88,13 +88,19 @@ fn write_measures<'a>(name: &'a str, measures: &[Measurement]) {
     let file = File::create(name).unwrap();
     let mut file = LineWriter::new(file);
     for (n, m) in measures.iter().enumerate() {
+        let spent = m.spent.as_nanos();
+        let total_ops = m.total_ops;
+        let real_latency = (spent as f64) / (total_ops as f64);
         file.write_all(format!(
-            "{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
             n,
-            m.total_ops,
-            m.spent.as_nanos(),
+            total_ops,
+            spent,
             m.throughput,
+            real_latency,
             m.latency.as_nanos()
         ).as_bytes());
     }
+    file.flush().unwrap();
+    println!("Measurements logged at {}", name);
 }
