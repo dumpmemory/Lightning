@@ -147,47 +147,42 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk = unsafe { new_chunk_ptr.deref() };  
+            let new_chunk = unsafe { new_chunk_ptr.deref() };
             let copying = Self::is_copying(epoch);
             debug_assert!(!chunk_ptr.is_null());
-            let get_from = |chunk: &Chunk<K, V, A, ALLOC>| {
-                let (val, idx, addr) =
-                    self.get_from_chunk(&*chunk, hash, key, fkey);
-                match val.parsed {
-                    ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
-                    ParsedValue::Prime(v) | ParsedValue::Val(v) => FromChunkRes::Value(
-                        v,
-                        val,
-                        if read_attachment {
-                            Some(chunk.attachment.get(idx).1)
-                        } else {
-                            None
-                        },
-                        idx,
-                        addr
-                    ),
-                    ParsedValue::Sentinel => FromChunkRes::Sentinel,
-                }
-            };
-            return match get_from(&chunk) {
+            let get_from =
+                |chunk: &Chunk<K, V, A, ALLOC>,
+                 migrating: bool,
+                 new_chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
+                    let (val, idx, addr) =
+                        self.get_from_chunk(&*chunk, hash, key, fkey, migrating, new_chunk_ptr);
+                    match val.parsed {
+                        ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
+                        ParsedValue::Prime(v) | ParsedValue::Val(v) => FromChunkRes::Value(
+                            v,
+                            val,
+                            if read_attachment {
+                                Some(chunk.attachment.get(idx).1)
+                            } else {
+                                None
+                            },
+                            idx,
+                            addr,
+                        ),
+                        ParsedValue::Sentinel => FromChunkRes::Sentinel,
+                    }
+                };
+            return match get_from(&chunk, copying, &new_chunk_ptr) {
                 FromChunkRes::Value(fval, val, attach_val, idx, addr) => {
                     if copying {
-                        self.migrate_entry(
-                            fkey,
-                            idx,
-                            val,
-                            chunk,
-                            new_chunk,
-                            addr,
-                            &mut 0,
-                        );
+                        self.migrate_entry(fkey, idx, val, chunk, new_chunk, addr, &mut 0);
                     }
                     Some((fval, attach_val))
-                },
+                }
                 FromChunkRes::Sentinel => {
                     if copying && self.now_epoch() == epoch {
                         dfence();
-                        match get_from(&new_chunk) {
+                        match get_from(&new_chunk, false, &new_chunk_ptr) {
                             FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
                                 // Sentinel in new chunk, should retry
@@ -221,7 +216,7 @@ impl<
                         if new_chunk_ptr.is_null() {
                             continue;
                         }
-                        match get_from(&new_chunk) {
+                        match get_from(&new_chunk, false, &new_chunk_ptr) {
                             FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
                                 // Sentinel in new chunk, should retry
@@ -379,7 +374,8 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             if copying && self.now_epoch() == epoch {
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                let (old_parsed_val, old_index, _) = self.get_from_chunk(chunk, hash, key, fkey);
+                let (old_parsed_val, old_index, _) =
+                    self.get_from_chunk(chunk, hash, key, fkey, copying, &new_chunk_ptr);
                 let old_fval = old_parsed_val.raw;
                 if old_fval != SENTINEL_VALUE
                     && old_fval != EMPTY_VALUE
@@ -528,6 +524,8 @@ impl<
         hash: usize,
         key: &K,
         fkey: usize,
+        migrating: bool,
+        new_chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>,
     ) -> (Value, usize, usize) {
         assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
@@ -545,9 +543,14 @@ impl<
                     ParsedValue::Empty => {}
                     _ => return (val_res, idx, addr),
                 }
-            }
-            if k == EMPTY_KEY {
+            } else if k == EMPTY_KEY {
                 return (Value::new::<K, V, A, ALLOC, H>(0), 0, addr);
+            } else if migrating {
+                let val_res = self.get_fast_value(addr);
+                if let &ParsedValue::Val(_) = &val_res.parsed {
+                    let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
+                    self.migrate_entry(k, idx, val_res, chunk, new_chunk_ins, addr, &mut 0);
+                }
             }
             idx += 1; // reprobe
             counter += 1;
@@ -2474,7 +2477,7 @@ mod tests {
                             let post_fail_get_epoch = map.table.now_epoch();
                             let right = Some(value);
                             if left != right {
-                                for m in 1..256 {
+                                for m in 1..1024 {
                                     let left = map.get(&key);
                                     let right = Some(value);
                                     if left == right {
