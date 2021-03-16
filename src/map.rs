@@ -282,7 +282,7 @@ impl<
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
             };
             let value_insertion =
-                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
+                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, None, &guard);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _, _) => {
@@ -339,7 +339,15 @@ impl<
                     fkey,
                     fvalue
                 );
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
+                self.modify_entry(
+                    chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Sentinel,
+                    Some(&new_chunk_ptr),
+                    &guard,
+                );
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
@@ -389,6 +397,7 @@ impl<
                             key,
                             fkey,
                             ModOp::AttemptInsert(new_val, &val),
+                            None,
                             guard,
                         ) {
                             ModResult::Done(_, _, new_index)
@@ -424,12 +433,21 @@ impl<
                 key,
                 fkey,
                 ModOp::SwapFastVal(Box::new(func)),
+                None,
                 guard,
             );
             if copying && self.now_epoch() == epoch {
                 assert_ne!(chunk_ptr, new_chunk_ptr);
                 assert_ne!(new_chunk_ptr, Shared::null());
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
+                self.modify_entry(
+                    chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Sentinel,
+                    Some(&new_chunk_ptr),
+                    &guard,
+                );
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
@@ -474,8 +492,15 @@ impl<
                 // If not migration might put the old value back
                 trace!("Put sentinel in old chunk for removal");
                 assert_ne!(new_chunk_ptr, Shared::null());
-                let remove_from_old =
-                    self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, &guard);
+                let remove_from_old = self.modify_entry(
+                    &*old_chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Sentinel,
+                    Some(&new_chunk_ptr),
+                    &guard,
+                );
                 match remove_from_old {
                     ModResult::Done(fvalue, Some(value), _)
                     | ModResult::Replaced(fvalue, value, _) => {
@@ -489,7 +514,15 @@ impl<
                 }
             }
             let modify_chunk = if copying { &new_chunk } else { &old_chunk };
-            let res = self.modify_entry(&*modify_chunk, hash, key, fkey, ModOp::Tombstone, &guard);
+            let res = self.modify_entry(
+                &*modify_chunk,
+                hash,
+                key,
+                fkey,
+                ModOp::Tombstone,
+                None,
+                &guard,
+            );
             match res {
                 ModResult::Replaced(fvalue, value, _) => {
                     retr = Some((fvalue, value));
@@ -568,6 +601,7 @@ impl<
         key: &K,
         fkey: usize,
         op: ModOp<V>,
+        migration_chunk: Option<&Shared<ChunkPtr<K, V, A, ALLOC>>>,
         _guard: &'a Guard,
     ) -> ModResult<V> {
         let cap = chunk.capacity;
@@ -784,6 +818,11 @@ impl<
                     ModOp::Tombstone => return ModResult::Fail,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
+            } else if let (Some(migration_chunk), &ParsedValue::Val(_)) =
+                (migration_chunk, &v.parsed)
+            {
+                let new_chunk_ins = unsafe { migration_chunk.deref() };
+                self.migrate_entry(k, idx, v, chunk, new_chunk_ins, addr, &mut 0);
             }
             idx += 1; // reprobe
             count += 1;
