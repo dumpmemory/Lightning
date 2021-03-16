@@ -1010,6 +1010,7 @@ impl<
         dfence();
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
+            guard.flush();
         }
         self.new_chunk.store(Shared::null(), Release);
         debug!(
@@ -1297,6 +1298,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             if new_chunk_ptr != Shared::null() {
                 guard.defer_destroy(new_chunk_ptr);
             }
+            guard.flush();
         }
     }
 }
