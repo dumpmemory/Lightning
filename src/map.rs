@@ -135,10 +135,10 @@ impl<
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         enum FromChunkRes<V> {
-            Value(usize, Option<V>),
+            Value(usize, Value, Option<V>, usize, usize), // Last one is idx
             None,
             Sentinel,
-        };
+        }
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = hash::<H>(fkey);
@@ -146,31 +146,49 @@ impl<
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
+            let chunk = unsafe { chunk_ptr.deref() };
+            let new_chunk = unsafe { new_chunk_ptr.deref() };  
             let copying = Self::is_copying(epoch);
             debug_assert!(!chunk_ptr.is_null());
-            let get_from = |chunk_ptr: &Shared<ChunkPtr<K, V, A, ALLOC>>| {
-                let chunk = unsafe { chunk_ptr.deref() };
-                let (val, idx) = self.get_from_chunk(&*chunk, hash, key, fkey);
+            let get_from = |chunk: &Chunk<K, V, A, ALLOC>| {
+                let (val, idx, addr) =
+                    self.get_from_chunk(&*chunk, hash, key, fkey);
                 match val.parsed {
                     ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
-                    ParsedValue::Prime(val) | ParsedValue::Val(val) => FromChunkRes::Value(
+                    ParsedValue::Prime(v) | ParsedValue::Val(v) => FromChunkRes::Value(
+                        v,
                         val,
                         if read_attachment {
                             Some(chunk.attachment.get(idx).1)
                         } else {
                             None
                         },
+                        idx,
+                        addr
                     ),
                     ParsedValue::Sentinel => FromChunkRes::Sentinel,
                 }
             };
-            return match get_from(&chunk_ptr) {
-                FromChunkRes::Value(fval, val) => Some((fval, val)),
+            return match get_from(&chunk) {
+                FromChunkRes::Value(fval, val, attach_val, idx, addr) => {
+                    if copying {
+                        self.migrate_entry(
+                            fkey,
+                            idx,
+                            val,
+                            chunk,
+                            new_chunk,
+                            addr,
+                            &mut 0,
+                        );
+                    }
+                    Some((fval, attach_val))
+                },
                 FromChunkRes::Sentinel => {
                     if copying && self.now_epoch() == epoch {
                         dfence();
-                        match get_from(&new_chunk_ptr) {
-                            FromChunkRes::Value(fval, val) => Some((fval, val)),
+                        match get_from(&new_chunk) {
+                            FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
                                 // Sentinel in new chunk, should retry
                                 backoff.spin();
@@ -203,8 +221,8 @@ impl<
                         if new_chunk_ptr.is_null() {
                             continue;
                         }
-                        match get_from(&new_chunk_ptr) {
-                            FromChunkRes::Value(fval, val) => Some((fval, val)),
+                        match get_from(&new_chunk) {
+                            FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
                                 // Sentinel in new chunk, should retry
                                 backoff.spin();
@@ -361,7 +379,7 @@ impl<
             let new_chunk = unsafe { new_chunk_ptr.deref() };
             if copying && self.now_epoch() == epoch {
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                let (old_parsed_val, old_index) = self.get_from_chunk(chunk, hash, key, fkey);
+                let (old_parsed_val, old_index, _) = self.get_from_chunk(chunk, hash, key, fkey);
                 let old_fval = old_parsed_val.raw;
                 if old_fval != SENTINEL_VALUE
                     && old_fval != EMPTY_VALUE
@@ -510,7 +528,7 @@ impl<
         hash: usize,
         key: &K,
         fkey: usize,
-    ) -> (Value, usize) {
+    ) -> (Value, usize, usize) {
         assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -525,18 +543,18 @@ impl<
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
                     ParsedValue::Empty => {}
-                    _ => return (val_res, idx),
+                    _ => return (val_res, idx, addr),
                 }
             }
             if k == EMPTY_KEY {
-                return (Value::new::<K, V, A, ALLOC, H>(0), 0);
+                return (Value::new::<K, V, A, ALLOC, H>(0), 0, addr);
             }
             idx += 1; // reprobe
             counter += 1;
         }
 
         // not found
-        return (Value::new::<K, V, A, ALLOC, H>(0), 0);
+        return (Value::new::<K, V, A, ALLOC, H>(0), 0, 0);
     }
 
     #[inline(always)]
@@ -983,77 +1001,17 @@ impl<
                         continue;
                     }
                 }
-                ParsedValue::Val(v) => {
-                    if fkey == EMPTY_KEY {
-                        // Value have no key, insertion in progress
-                        backoff.spin();
+                ParsedValue::Val(_) => {
+                    if !self.migrate_entry(
+                        fkey,
+                        idx,
+                        fvalue,
+                        old_chunk_ins,
+                        new_chunk_ins,
+                        old_address,
+                        &mut effective_copy,
+                    ) {
                         continue;
-                    }
-
-                    // Insert entry into new chunk, in case of failure, skip this entry
-                    // Value should be primed
-                    trace!("Moving key: {}, value: {}", fkey, v);
-                    assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
-                    let primed_fval = fvalue.raw | INV_VAL_BIT_MASK;
-                    let (key, value) = old_chunk_ins.attachment.get(idx);
-                    let inserted_addr = {
-                        // Make insertion for migration inlined, hopefully the ordering will be right
-                        let cap = new_chunk_ins.capacity;
-                        let base = new_chunk_ins.base;
-                        let mut idx = hash::<H>(fkey);
-                        let cap_mask = new_chunk_ins.cap_mask();
-                        let mut count = 0;
-                        let mut res = None;
-                        while count < cap {
-                            idx &= cap_mask;
-                            let addr = base + idx * ENTRY_SIZE;
-                            let k = self.get_fast_key(addr);
-                            if k == fkey && new_chunk_ins.attachment.probe(idx, &key) {
-                                // New value existed, skip with None result
-                                break;
-                            } else if k == EMPTY_KEY {
-                                // Try insert to this slot
-                                let (val, done) = self.cas_value(addr, EMPTY_VALUE, fvalue.raw);
-                                debug_assert_ne!(val & VAL_BIT_MASK, SENTINEL_VALUE);
-                                if done {
-                                    new_chunk_ins.attachment.set(idx, key, value);
-                                    unsafe {
-                                        intrinsics::atomic_store_rel(addr as *mut usize, fkey)
-                                    }
-                                    res = Some(addr);
-                                    break;
-                                }
-                            }
-                            idx += 1; // reprobe
-                            count += 1;
-                        }
-                        res
-                    };
-                    // CAS to ensure sentinel into old chunk (spec)
-                    // Use CAS for old threads may working on this one
-                    dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
-                    trace!("Copied key {} to new chunk", fkey);
-                    if self.cas_sentinel(old_address, fvalue.raw) {
-                        dfence();
-                        if let Some(new_entry_addr) = inserted_addr {
-                            // strip prime
-                            let stripped = primed_fval & VAL_BIT_MASK;
-                            debug_assert_ne!(stripped, SENTINEL_VALUE);
-                            if self.cas_value(new_entry_addr, primed_fval, stripped).1 {
-                                trace!(
-                                    "Effective copy key: {}, value {}, addr: {}",
-                                    fkey,
-                                    stripped,
-                                    new_entry_addr
-                                );
-                                effective_copy += 1;
-                            } else {
-                                trace!("Value changed before strip prime for key {}", fkey);
-                            }
-                            old_chunk_ins.attachment.erase(idx);
-                        }
-                    } else {
-                        panic!("Sentinel CAS should always succeed but failed {}", fkey);
                     }
                 }
                 ParsedValue::Prime(_) => {
@@ -1062,6 +1020,7 @@ impl<
                 ParsedValue::Sentinel => {
                     // Sentinel, skip
                     // Sentinel in old chunk implies its new value have already in the new chunk
+                    // It can also be other thread have moved this key-value pair to the new chunk
                     trace!("Skip copy sentinel");
                 }
             }
@@ -1073,6 +1032,85 @@ impl<
         debug!("Migrated {} entries to new chunk", effective_copy);
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
         return effective_copy;
+    }
+
+    #[inline(always)]
+    fn migrate_entry(
+        &self,
+        fkey: usize,
+        old_idx: usize,
+        fvalue: Value,
+        old_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        new_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        old_address: usize,
+        effective_copy: &mut usize,
+    ) -> bool {
+        if fkey == EMPTY_KEY {
+            // Value have no key, insertion in progress
+            return false;
+        }
+        // Insert entry into new chunk, in case of failure, skip this entry
+        // Value should be primed
+        assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
+        let primed_fval = fvalue.raw | INV_VAL_BIT_MASK;
+        let (key, value) = old_chunk_ins.attachment.get(old_idx);
+        let inserted_addr = {
+            // Make insertion for migration inlined, hopefully the ordering will be right
+            let cap = new_chunk_ins.capacity;
+            let base = new_chunk_ins.base;
+            let mut idx = hash::<H>(fkey);
+            let cap_mask = new_chunk_ins.cap_mask();
+            let mut count = 0;
+            let mut res = None;
+            while count < cap {
+                idx &= cap_mask;
+                let addr = base + idx * ENTRY_SIZE;
+                let k = self.get_fast_key(addr);
+                if k == fkey && new_chunk_ins.attachment.probe(idx, &key) {
+                    // New value existed, skip with None result
+                    break;
+                } else if k == EMPTY_KEY {
+                    // Try insert to this slot
+                    let (val, done) = self.cas_value(addr, EMPTY_VALUE, fvalue.raw);
+                    debug_assert_ne!(val & VAL_BIT_MASK, SENTINEL_VALUE);
+                    if done {
+                        new_chunk_ins.attachment.set(idx, key, value);
+                        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+                        res = Some(addr);
+                        break;
+                    }
+                }
+                idx += 1; // reprobe
+                count += 1;
+            }
+            res
+        };
+        // CAS to ensure sentinel into old chunk (spec)
+        // Use CAS for old threads may working on this one
+        dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
+        trace!("Copied key {} to new chunk", fkey);
+        if self.cas_sentinel(old_address, fvalue.raw) {
+            dfence();
+            if let Some(new_entry_addr) = inserted_addr {
+                // strip prime
+                let stripped = primed_fval & VAL_BIT_MASK;
+                debug_assert_ne!(stripped, SENTINEL_VALUE);
+                if self.cas_value(new_entry_addr, primed_fval, stripped).1 {
+                    trace!(
+                        "Effective copy key: {}, value {}, addr: {}",
+                        fkey,
+                        stripped,
+                        new_entry_addr
+                    );
+                    *effective_copy += 1;
+                } else {
+                    trace!("Value changed before strip prime for key {}", fkey);
+                }
+                old_chunk_ins.attachment.erase(old_idx);
+                return true;
+            }
+        }
+        false
     }
 
     pub fn map_is_copying(&self) -> bool {
@@ -2334,9 +2372,12 @@ mod tests {
     use alloc::sync::Arc;
     use chashmap::CHashMap;
     use rayon::prelude::*;
-    use std::{alloc::System, sync::{Mutex, RwLock}};
     use std::collections::HashMap;
     use std::thread;
+    use std::{
+        alloc::System,
+        sync::{Mutex, RwLock},
+    };
     use test::Bencher;
 
     #[test]
@@ -2898,7 +2939,7 @@ mod tests {
         b.iter(|| {
             map.lock().unwrap().insert(i, i);
             i += 1;
-        });  
+        });
     }
 
     #[bench]
@@ -2909,7 +2950,7 @@ mod tests {
         b.iter(|| {
             map.write().unwrap().insert(i, i);
             i += 1;
-        });  
+        });
     }
 
     #[bench]
@@ -2920,7 +2961,7 @@ mod tests {
         b.iter(|| {
             map.insert(i, i);
             i += 1;
-        });  
+        });
     }
 
     #[bench]
