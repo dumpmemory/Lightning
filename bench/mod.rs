@@ -21,7 +21,8 @@ fn main() {
 }
 
 fn get_task_name() -> String {
-    env::args().next().unwrap()
+    let args: Vec<String> = env::args().collect();
+    args[1].clone()
 }
 
 fn test_lfmap() {
