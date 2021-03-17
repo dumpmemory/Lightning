@@ -52,36 +52,36 @@ where
     println!("Testing {}", name);
     println!("Read heavy");
 
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 25);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
-    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 21.0);
+    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 20);
     write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 25);
     write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
 
-    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5);
+    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 24);
     write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 25);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
-    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6);
+    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 22);
     write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
-fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64) -> Vec<Measurement>
+fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8) -> Vec<Measurement>
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     (1..=num_cpus::get())
         .map(|n| {
-            let m = run_and_measure::<T>(n, mix, fill);
+            let m = run_and_measure::<T>(n, mix, fill, cap);
             println!(
                 "Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
                 n, m.total_ops, m.spent, m.throughput, m.latency
@@ -91,12 +91,13 @@ where
         .collect()
 }
 
-fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64) -> Measurement
+fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64, cap: u8) -> Measurement
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     let mut workload = Workload::new(threads, mix);
     workload.operations(fill);
+    workload.initial_capacity_log2(cap);
     workload.run_silently::<T>()
 }
 
