@@ -55,7 +55,7 @@ where
     let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
-    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 1.5);
+    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 21.0);
     write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
 
@@ -71,7 +71,7 @@ where
     let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
-    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 1.5);
+    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6);
     write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
