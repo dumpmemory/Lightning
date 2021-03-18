@@ -87,7 +87,7 @@ where
             let local: DateTime<Local> = Local::now();
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
             println!(
-                "[{:?}] Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
+                "[{}] Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
                 time, n, m.total_ops, m.spent, m.throughput, m.latency
             );
             m

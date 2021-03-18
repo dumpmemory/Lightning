@@ -1088,6 +1088,7 @@ impl<
         old_address: usize,
         effective_copy: &mut usize,
     ) -> bool {
+        debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
         if fkey == EMPTY_KEY {
             // Value have no key, insertion in progress
             return false;
