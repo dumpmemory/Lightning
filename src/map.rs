@@ -174,7 +174,7 @@ impl<
                 };
             return match get_from(&chunk, copying, &new_chunk_ptr) {
                 FromChunkRes::Value(fval, val, attach_val, idx, addr) => {
-                    if copying {
+                    if copying && self.now_epoch() == epoch {
                         self.migrate_entry(fkey, idx, val, chunk, new_chunk, addr, &mut 0);
                     }
                     Some((fval, attach_val))
