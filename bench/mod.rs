@@ -3,6 +3,7 @@ use std::env;
 use std::fmt::Debug;
 use std::io::*;
 use std::fs::File;
+use std::time::SystemTime;
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
@@ -83,8 +84,8 @@ where
         .map(|n| {
             let m = run_and_measure::<T>(n, mix, fill, cap);
             println!(
-                "Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
-                n, m.total_ops, m.spent, m.throughput, m.latency
+                "[{:?}] Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
+                SystemTime::now(), n, m.total_ops, m.spent, m.throughput, m.latency
             );
             m
         })
