@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::io::*;
 use std::fs::File;
 use std::time::SystemTime;
+use chrono::prelude::*;
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
@@ -83,9 +84,11 @@ where
     (1..=num_cpus::get())
         .map(|n| {
             let m = run_and_measure::<T>(n, mix, fill, cap);
+            let local: DateTime<Local> = Local::now();
+            let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
             println!(
                 "[{:?}] Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
-                SystemTime::now(), n, m.total_ops, m.spent, m.throughput, m.latency
+                time, n, m.total_ops, m.spent, m.throughput, m.latency
             );
             m
         })
@@ -112,7 +115,7 @@ fn write_measures<'a>(name: &'a str, measures: &[Measurement]) {
         let real_latency = (spent as f64) / (total_ops as f64);
         file.write_all(format!(
             "{}\t{}\t{}\t{}\t{}\t{}\n",
-            n,
+            n + 1,
             total_ops,
             spent,
             m.throughput,
