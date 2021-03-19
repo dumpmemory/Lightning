@@ -582,7 +582,9 @@ impl<
                 let val_res = self.get_fast_value(addr);
                 if let &ParsedValue::Val(_) = &val_res.parsed {
                     let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-                    self.migrate_entry(k, idx, val_res, chunk, new_chunk_ins, addr, &mut 0);
+                    if new_chunk_ins.base != chunk.base {
+                        self.migrate_entry(k, idx, val_res, chunk, new_chunk_ins, addr, &mut 0);
+                    }
                 }
             }
             idx += 1; // reprobe
@@ -610,6 +612,18 @@ impl<
         let mut count = 0;
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
+        let migration_chunk = migration_chunk.and_then(|ptr| {
+            if ptr.is_null() {
+                None
+            } else {
+                let chunk_ins = unsafe { ptr.deref() };
+                if chunk_ins.base == chunk.base {
+                    None
+                } else {
+                    Some(chunk_ins)
+                }
+            }
+        });
         while count <= cap {
             idx &= cap_mask;
             let addr = base + idx * ENTRY_SIZE;
@@ -821,8 +835,7 @@ impl<
             } else if let (Some(migration_chunk), &ParsedValue::Val(_)) =
                 (migration_chunk, &v.parsed)
             {
-                let new_chunk_ins = unsafe { migration_chunk.deref() };
-                self.migrate_entry(k, idx, v, chunk, new_chunk_ins, addr, &mut 0);
+                self.migrate_entry(k, idx, v, chunk, migration_chunk, addr, &mut 0);
             }
             idx += 1; // reprobe
             count += 1;
