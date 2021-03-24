@@ -578,7 +578,7 @@ impl<
                 }
             } else if k == EMPTY_KEY {
                 return (Value::new::<K, V, A, ALLOC, H>(0), 0, addr);
-            } else if migrating {
+            } else if migrating && (!new_chunk_ptr.is_null()) {
                 let val_res = self.get_fast_value(addr);
                 if let &ParsedValue::Val(_) = &val_res.parsed {
                     let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
