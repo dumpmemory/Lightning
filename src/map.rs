@@ -136,6 +136,7 @@ impl<
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         enum FromChunkRes<V> {
             Value(usize, Value, Option<V>, usize, usize), // Last one is idx
+            Prime,
             None,
             Sentinel,
         }
@@ -158,10 +159,10 @@ impl<
                         self.get_from_chunk(&*chunk, hash, key, fkey, migrating, new_chunk_ptr);
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
-                        ParsedValue::Prime(v) | ParsedValue::Val(v) => FromChunkRes::Value(
+                        ParsedValue::Val(v) => FromChunkRes::Value(
                             v,
                             val,
-                            if read_attachment {
+                            if Self::can_attach() && read_attachment {
                                 Some(chunk.attachment.get(idx).1)
                             } else {
                                 None
@@ -169,6 +170,7 @@ impl<
                             idx,
                             addr,
                         ),
+                        ParsedValue::Prime(_) => FromChunkRes::Prime,
                         ParsedValue::Sentinel => FromChunkRes::Sentinel,
                     }
                 };
@@ -196,6 +198,10 @@ impl<
                                     epoch
                                 );
                                 None
+                            }
+                            FromChunkRes::Prime => {
+                                backoff.spin();
+                                continue;
                             }
                         }
                     } else {
@@ -231,10 +237,18 @@ impl<
                                 );
                                 None
                             }
+                            FromChunkRes::Prime => {
+                                backoff.spin();
+                                continue;
+                            }
                         }
                     } else {
                         None
                     }
+                }
+                FromChunkRes::Prime => {
+                    backoff.spin();
+                    continue;
                 }
             };
         }
@@ -696,15 +710,21 @@ impl<
                             }
                             &ModOp::AttemptInsert(fval, oval) => {
                                 if *v == 0 {
-                                    let primed_fval = fval | INV_VAL_BIT_MASK;
+                                    let primed_fval = if Self::can_attach() {
+                                        fval | INV_VAL_BIT_MASK
+                                    } else {
+                                        fval
+                                    };
                                     let (act_val, replaced) =
                                         self.cas_value(addr, val.raw, primed_fval);
                                     if replaced {
                                         let (_, prev_val) = chunk.attachment.get(idx);
-                                        chunk.attachment.set(idx, key.clone(), (*oval).clone());
-                                        let stripped_prime =
-                                            self.cas_value(addr, primed_fval, fval).1;
-                                        debug_assert!(stripped_prime);
+                                        if Self::can_attach() {
+                                            chunk.attachment.set(idx, key.clone(), (*oval).clone());
+                                            let stripped_prime =
+                                                self.cas_value(addr, primed_fval, fval).1;
+                                            debug_assert!(stripped_prime);
+                                        }
                                         return ModResult::Replaced(val.raw, prev_val, idx);
                                     } else {
                                         let (_, value) = chunk.attachment.get(idx);
@@ -754,12 +774,18 @@ impl<
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
                                 debug!("Inserting in place for {}", fkey);
-                                let primed_fval = fval | INV_VAL_BIT_MASK;
+                                let primed_fval = if Self::can_attach() {
+                                    fval | INV_VAL_BIT_MASK
+                                } else {
+                                    fval
+                                };
                                 if self.cas_value(addr, val.raw, primed_fval).1 {
                                     let (_, prev_val) = chunk.attachment.get(idx);
-                                    chunk.attachment.set(idx, key.clone(), (*v).clone());
-                                    let stripped_prime = self.cas_value(addr, primed_fval, fval).1;
-                                    debug_assert!(stripped_prime);
+                                    if Self::can_attach() {
+                                        chunk.attachment.set(idx, key.clone(), (*v).clone());
+                                        let stripped_prime = self.cas_value(addr, primed_fval, fval).1;
+                                        debug_assert!(stripped_prime);
+                                    }
                                     return ModResult::Replaced(val.raw, prev_val, idx);
                                 } else {
                                     trace!("Cannot insert in place for {}", fkey);
@@ -862,9 +888,12 @@ impl<
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
                     ParsedValue::Val(0) => {}
-                    ParsedValue::Val(v) | ParsedValue::Prime(v) => {
+                    ParsedValue::Val(v) => {
                         let (key, value) = chunk.attachment.get(idx);
                         res.push((k, v, key, value))
+                    }
+                    ParsedValue::Prime(_) => {
+                        continue;
                     }
                     _ => {}
                 }
@@ -1109,7 +1138,6 @@ impl<
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be primed
         assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
-        let primed_fval = fvalue.raw | INV_VAL_BIT_MASK;
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
         let inserted_addr = {
             // Make insertion for migration inlined, hopefully the ordering will be right
@@ -1148,22 +1176,9 @@ impl<
         trace!("Copied key {} to new chunk", fkey);
         if self.cas_sentinel(old_address, fvalue.raw) {
             dfence();
-            if let Some(new_entry_addr) = inserted_addr {
-                // strip prime
-                let stripped = primed_fval & VAL_BIT_MASK;
-                debug_assert_ne!(stripped, SENTINEL_VALUE);
-                if self.cas_value(new_entry_addr, primed_fval, stripped).1 {
-                    trace!(
-                        "Effective copy key: {}, value {}, addr: {}",
-                        fkey,
-                        stripped,
-                        new_entry_addr
-                    );
-                    *effective_copy += 1;
-                } else {
-                    trace!("Value changed before strip prime for key {}", fkey);
-                }
+            if let Some(_new_entry_addr) = inserted_addr {
                 old_chunk_ins.attachment.erase(old_idx);
+                *effective_copy += 1;
                 return true;
             }
         }
@@ -1172,6 +1187,11 @@ impl<
 
     pub fn map_is_copying(&self) -> bool {
         Self::is_copying(self.now_epoch())
+    }
+
+    #[inline(always)]
+    fn can_attach() -> bool {
+        can_attach::<K, V, A>()
     }
 }
 
@@ -1385,6 +1405,10 @@ pub fn hash_key<K: Hash, H: Hasher + Default>(key: &K) -> usize {
 fn dfence() {
     compiler_fence(SeqCst);
     fence(SeqCst);
+}
+
+const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
+    mem::size_of::<(K, V)>() != 0
 }
 
 pub trait Attachment<K, V> {
