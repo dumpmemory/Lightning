@@ -63,7 +63,7 @@ where
 
     
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 25);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
     let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25);
