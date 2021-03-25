@@ -52,28 +52,28 @@ where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     println!("Testing {}", name);
-    println!("Read heavy");
-
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 24);
-    write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
-
-    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 24);
-    write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 24);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 25);
     write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
 
-    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 24);
+    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 25);
     write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
+    
+    println!("Read heavy");
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 25);
+    write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
+
+    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25);
+    write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 24);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 25);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
-    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 24);
+    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 25);
     write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
