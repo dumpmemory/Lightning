@@ -1367,6 +1367,7 @@ fn occupation_limit(cap: usize) -> usize {
     (cap as f64 * 0.75f64) as usize
 }
 
+
 #[inline(always)]
 fn chunk_size_of(cap: usize) -> usize {
     cap * ENTRY_SIZE

@@ -101,6 +101,7 @@ where
 {
     let mut workload = Workload::new(threads, mix);
     workload.operations(fill);
+    workload.
     workload.initial_capacity_log2(cap);
     workload.run_silently::<T>()
 }
