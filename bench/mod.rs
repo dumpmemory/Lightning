@@ -28,26 +28,34 @@ fn get_task_name() -> String {
 }
 
 fn test_lfmap() {
-    let args: Vec<String> = env::args().collect();
-    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map");
+    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.001);
+    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 4.0);
+    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 1.0);
+    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 2.0);
 }
 
 fn test_rwlock_std() {
-    let args: Vec<String> = env::args().collect();
-    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map");
+    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map", 0.001);
+    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 4.0);
+    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 1.0);
+    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 2.0);
 }
 
 fn test_mutex_std() {
-    let args: Vec<String> = env::args().collect();
-    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map");
+    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map", 0.001);
+    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 4.0);
+    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 1.0);
+    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 2.0);
 }
 
 fn test_chashmap() {
-    let args: Vec<String> = env::args().collect();
-    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap");
+    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap", 0.001);
+    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 4.0);
+    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 1.0);
+    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 2.0);
 }
 
-fn run_and_record<'a, 'b, T: Collection>(task: &'b str, name: &'a str)
+fn run_and_record<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64)
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
@@ -55,62 +63,64 @@ where
 
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 25);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 25, cont);
     write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
 
-    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 25);
+    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 25, cont);
     write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
     
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26, cont);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
-    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25);
+    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
     write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 25);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 25, cont);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
-    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 25);
+    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 25, cont);
     write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
-fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8) -> Vec<Measurement>
+fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -> Vec<(usize, Measurement)>
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     (1..=num_cpus::get())
+        .step_by(8)
         .map(|n| {
-            let m = run_and_measure::<T>(n, mix, fill, cap);
+            let m = run_and_measure::<T>(n, mix, fill, cap, cont);
             let local: DateTime<Local> = Local::now();
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
             println!(
-                "[{}] Completed with threads {}, ops {}, spent {:?}, throughput {}, latency {:?}",
-                time, n, m.total_ops, m.spent, m.throughput, m.latency
+                "[{}] Completed with threads {}, contention {}, ops {}, spent {:?}, throughput {}, latency {:?}",
+                time, n, cont, m.total_ops, m.spent, m.throughput, m.latency
             );
-            m
+            (n, m)
         })
         .collect()
 }
 
-fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64, cap: u8) -> Measurement
+fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64, cap: u8, cont: f64) -> Measurement
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     let mut workload = Workload::new(threads, mix);
-    workload.operations(fill);
-    workload.
-    workload.initial_capacity_log2(cap);
-    workload.run_silently::<T>()
+    workload
+        .operations(fill)
+        .contention(cont)
+        .initial_capacity_log2(cap)
+        .run_silently::<T>()
 }
 
-fn write_measures<'a>(name: &'a str, measures: &[Measurement]) {
+fn write_measures<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
     let current_dir = env::current_dir().unwrap();
     let file = File::create(current_dir.join(name)).unwrap();
     let mut file = LineWriter::new(file);
-    for (n, m) in measures.iter().enumerate() {
+    for (n, m) in measures.iter() {
         let spent = m.spent.as_nanos();
         let total_ops = m.total_ops;
         let real_latency = (spent as f64) / (total_ops as f64);
