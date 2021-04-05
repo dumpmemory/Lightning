@@ -90,7 +90,7 @@ where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
     let steps = 4;
-    let mut threads = (steps..=num_cpus::get()).step_by(8).collect::<Vec<_>>();
+    let mut threads = (steps..=num_cpus::get()).step_by(steps).collect::<Vec<_>>();
     threads.insert(0, 1);
     threads
         .into_iter()
