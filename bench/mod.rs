@@ -28,34 +28,34 @@ fn get_task_name() -> String {
 }
 
 fn test_lfmap() {
-    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.001);
-    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 4.0);
-    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 1.0);
-    run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 2.0);
+    //run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 4.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 1.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 2.0);
 }
 
 fn test_rwlock_std() {
-    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map", 0.001);
-    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 4.0);
-    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 1.0);
-    run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 2.0);
+    //run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map", 0.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 4.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 1.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 2.0);
 }
 
 fn test_mutex_std() {
-    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map", 0.001);
-    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 4.0);
-    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 1.0);
-    run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 2.0);
+    //run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map", 0.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 4.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 1.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 2.0);
 }
 
 fn test_chashmap() {
-    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap", 0.001);
-    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 4.0);
-    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 1.0);
-    run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 2.0);
+    //run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap", 0.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 4.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 1.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 2.0);
 }
 
-fn run_and_record<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64)
+fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64)
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
@@ -63,34 +63,37 @@ where
 
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 25, cont);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 30, cont);
     write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
 
-    let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 25, cont);
-    write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
+    // let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 28, cont);
+    // write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
     
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26, cont);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 30, cont);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
-    let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
-    write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
+    // let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
+    // write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 25, cont);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 30, cont);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
-    let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 25, cont);
-    write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
+    // let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 28, cont);
+    // write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
 fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -> Vec<(usize, Measurement)>
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
-    (1..=num_cpus::get())
-        .step_by(8)
+    let steps = 8;
+    let mut threads = (steps..=num_cpus::get()).step_by(8).collect::<Vec<_>>();
+    threads.insert(0, 1);
+    threads
+        .into_iter()
         .map(|n| {
             let m = run_and_measure::<T>(n, mix, fill, cap, cont);
             let local: DateTime<Local> = Local::now();
@@ -126,7 +129,7 @@ fn write_measures<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
         let real_latency = (spent as f64) / (total_ops as f64);
         file.write_all(format!(
             "{}\t{}\t{}\t{}\t{}\t{}\n",
-            n + 1,
+            n,
             total_ops,
             spent,
             m.throughput,
