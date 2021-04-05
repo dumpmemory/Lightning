@@ -89,7 +89,7 @@ fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -
 where
     <T::Handle as CollectionHandle>::Key: Send + Debug,
 {
-    let steps = 8;
+    let steps = 4;
     let mut threads = (steps..=num_cpus::get()).step_by(8).collect::<Vec<_>>();
     threads.insert(0, 1);
     threads
