@@ -29,30 +29,34 @@ fn get_task_name() -> String {
 
 fn test_lfmap() {
     //run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 4.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 1.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 2.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-full", 256.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 32.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 2.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 16.0);
 }
 
 fn test_rwlock_std() {
     //run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map", 0.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 4.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 1.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 2.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-full", 256.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 32.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 2.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 16.0);
 }
 
 fn test_mutex_std() {
     //run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map", 0.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 4.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 1.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 2.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-full", 256.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 32.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 2.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 16.0);
 }
 
 fn test_chashmap() {
     //run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap", 0.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 4.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 1.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 2.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-full", 256.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 32.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 2.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 16.0);
 }
 
 fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64)
@@ -63,7 +67,7 @@ where
 
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 30, cont);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 28, cont);
     write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
 
     // let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 28, cont);
@@ -71,14 +75,14 @@ where
 
     
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 30, cont);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 28, cont);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
     // let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
     // write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 30, cont);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 28, cont);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
     // let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 28, cont);
