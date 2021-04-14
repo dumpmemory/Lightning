@@ -27,9 +27,10 @@ impl CollectionHandle for TestTable {
         self.0.get(&k).is_some()
     }
 
-    fn insert(&mut self, key: &Self::Key) -> bool {
+    fn insert(&mut self, key: &Self::Key, value: &Self::Key) -> bool {
         let k = *key as usize;
-        self.0.insert(&k, k).is_none()
+        let v = *value as usize;
+        self.0.insert(&k, v).is_none()
     }
 
     fn remove(&mut self, key: &Self::Key) -> bool {
@@ -37,14 +38,9 @@ impl CollectionHandle for TestTable {
         self.0.remove(&k).is_some()
     }
 
-    fn update(&mut self, key: &Self::Key) -> bool {
+    fn update(&mut self, key: &Self::Key, value: &Self::Key) -> bool {
         let k = *key as usize;
-        let map = &mut self.0;
-        if map.contains_key(&k) {
-            map.insert(&k, k);
-            true
-        } else {
-            false
-        }
+        let v = *value as usize;
+        self.0.insert(&k, v).is_none()
     }
 }
