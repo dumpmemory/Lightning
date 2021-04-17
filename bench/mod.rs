@@ -29,34 +29,34 @@ fn get_task_name() -> String {
 
 fn test_lfmap() {
     //run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-full", 256.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 32.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 2.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 16.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-full", 1.0);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 0.8);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 0.5);
+    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 0.2);
 }
 
 fn test_rwlock_std() {
     //run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map", 0.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-full", 256.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 32.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 2.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 16.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-full", 1.0);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 0.8);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 0.5);
+    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 0.2);
 }
 
 fn test_mutex_std() {
     //run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map", 0.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-full", 256.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 32.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 2.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 16.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-full", 1.0);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 0.8);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 0.5);
+    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 0.2);
 }
 
 fn test_chashmap() {
     //run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap", 0.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-full", 256.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 32.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 2.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 16.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-full", 1.0);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 0.8);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 0.5);
+    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 0.2);
 }
 
 fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64)
@@ -103,8 +103,8 @@ where
             let local: DateTime<Local> = Local::now();
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
             println!(
-                "[{}] Completed with threads {}, contention {}, ops {}, spent {:?}, throughput {}, latency {:?}",
-                time, n, cont, m.total_ops, m.spent, m.throughput, m.latency
+                "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}",
+                time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency
             );
             (n, m)
         })
