@@ -16,3 +16,4 @@ callgrind.*
 *.log
 *.out.*
 *.csv
+*.zip

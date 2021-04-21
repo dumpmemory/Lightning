@@ -67,7 +67,7 @@ where
 
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 28, cont);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 26, cont);
     write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
 
     // let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 28, cont);
@@ -75,14 +75,14 @@ where
 
     
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 28, cont);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26, cont);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
     // let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
     // write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 28, cont);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 26, cont);
     write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
 
     // let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 28, cont);
