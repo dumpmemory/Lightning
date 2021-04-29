@@ -16,6 +16,32 @@ fn main() {
     // Workload::new(16, Mix::uniform()).run::<lfmap::TestTable>();
     // Workload::new(126, Mix::read_heavy()).run::<lfmap::TestTable>();
     // Workload::new(1, Mix::uniform()).run::<lfmap::TestTable>();
+    // perf_test()
+    cache_behavior()
+}
+
+fn cache_behavior() {
+    let args: Vec<String> = env::args().collect();
+    let ds_arg = &args[1];
+    let n = num_cpus::get();
+    let mix = Mix::uniform();
+    let fill = 0.75;
+    let cap = 32;
+    let cont = 0.1;
+    if ds_arg == "l" {
+        run_and_measure::<lfmap::TestTable>(n, mix, fill, cap, cont);
+    } else if ds_arg == "c" {
+        run_and_measure::<chashmap::Table<u64>>(n, mix, fill, cap, cont);
+    } else if ds_arg == "m" {
+        run_and_measure::<arc_mutex_std::Table<u64>>(n, mix, fill, cap, cont);
+    } else if ds_arg == "rw" {
+        run_and_measure::<arc_rwlock_std::Table<u64>>(n, mix, fill, cap, cont);
+    } else {
+        panic!()
+    }
+}
+
+fn perf_test() {
     test_lfmap();
     test_chashmap();
     test_rwlock_std();
