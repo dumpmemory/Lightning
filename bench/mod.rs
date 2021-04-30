@@ -31,11 +31,11 @@ fn cache_behavior() {
     if ds_arg == "l" {
         run_and_measure::<lfmap::TestTable>(n, mix, fill, cap, cont);
     } else if ds_arg == "c" {
-        run_and_measure::<chashmap::Table<u64>>(n, mix, fill, cap, cont);
+        run_and_measure::<chashmap::Table>(n, mix, fill, cap, cont);
     } else if ds_arg == "m" {
-        run_and_measure::<arc_mutex_std::Table<u64>>(n, mix, fill, cap, cont);
+        run_and_measure::<arc_mutex_std::Table>(n, mix, fill, cap, cont);
     } else if ds_arg == "rw" {
-        run_and_measure::<arc_rwlock_std::Table<u64>>(n, mix, fill, cap, cont);
+        run_and_measure::<arc_rwlock_std::Table>(n, mix, fill, cap, cont);
     } else {
         panic!()
     }
@@ -62,33 +62,30 @@ fn test_lfmap() {
 }
 
 fn test_rwlock_std() {
-    //run_and_record::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map", 0.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-full", 1.0);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-hi", 0.8);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-mi", 0.5);
-    run_and_record_contention::<arc_rwlock_std::Table<u64>>(&get_task_name(), "rwlock-std-map-lo", 0.2);
+    //run_and_record::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map", 0.0);
+    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-full", 1.0);
+    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-hi", 0.8);
+    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-mi", 0.5);
+    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-lo", 0.2);
 }
 
 fn test_mutex_std() {
-    //run_and_record::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map", 0.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-full", 1.0);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-hi", 0.8);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-mi", 0.5);
-    run_and_record_contention::<arc_mutex_std::Table<u64>>(&get_task_name(), "mutex-std-map-lo", 0.2);
+    //run_and_record::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map", 0.0);
+    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-full", 1.0);
+    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-hi", 0.8);
+    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-mi", 0.5);
+    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-lo", 0.2);
 }
 
 fn test_chashmap() {
-    //run_and_record::<chashmap::Table<u64>>(&get_task_name(), "CHashmap", 0.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-full", 1.0);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-hi", 0.8);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-mi", 0.5);
-    run_and_record_contention::<chashmap::Table<u64>>(&get_task_name(), "CHashmap-lo", 0.2);
+    //run_and_record::<chashmap::Table>(&get_task_name(), "CHashmap", 0.0);
+    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-full", 1.0);
+    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-hi", 0.8);
+    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-mi", 0.5);
+    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-lo", 0.2);
 }
 
-fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64)
-where
-    <T::Handle as CollectionHandle>::Key: Send + Debug,
-{
+fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64) {
     println!("Testing {}", name);
 
 
@@ -115,10 +112,7 @@ where
     // write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
-fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -> Vec<(usize, Measurement)>
-where
-    <T::Handle as CollectionHandle>::Key: Send + Debug,
-{
+fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -> Vec<(usize, Measurement)> {
     let steps = 4;
     let mut threads = (steps..=num_cpus::get()).step_by(steps).collect::<Vec<_>>();
     threads.insert(0, 1);
@@ -137,10 +131,7 @@ where
         .collect()
 }
 
-fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64, cap: u8, cont: f64) -> Measurement
-where
-    <T::Handle as CollectionHandle>::Key: Send + Debug,
-{
+fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64, cap: u8, cont: f64) -> Measurement {
     let mut workload = Workload::new(threads, mix);
     workload
         .operations(fill)

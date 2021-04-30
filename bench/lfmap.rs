@@ -1,8 +1,7 @@
 use bustle::*;
-use lightning::map::{Map, ObjectMap, WordMap};
+use lightning::map::{Map, WordMap};
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::Hash;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -20,25 +19,23 @@ impl Collection for TestTable {
 }
 
 impl CollectionHandle for TestTable {
-    type Key = u64;
-
-    fn get(&mut self, key: &Self::Key) -> bool {
+    fn get(&mut self, key: &usize) -> bool {
         let k = *key as usize;
         self.0.get(&k).is_some()
     }
 
-    fn insert(&mut self, key: &Self::Key, value: &Self::Key) -> bool {
+    fn insert(&mut self, key: &usize, value: &usize) -> bool {
         let k = *key as usize;
         let v = *value as usize;
         self.0.insert(&k, v).is_none()
     }
 
-    fn remove(&mut self, key: &Self::Key) -> bool {
+    fn remove(&mut self, key: &usize) -> bool {
         let k = *key as usize;
         self.0.remove(&k).is_some()
     }
 
-    fn update(&mut self, key: &Self::Key, value: &Self::Key) -> bool {
+    fn update(&mut self, key: &usize, value: &usize) -> bool {
         let k = *key as usize;
         let v = *value as usize;
         self.0.insert(&k, v).is_none()

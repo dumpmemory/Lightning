@@ -3,12 +3,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[derive(Clone)]
-pub struct Table<K>(std::sync::Arc<Mutex<HashMap<K, K>>>);
+pub struct Table(std::sync::Arc<Mutex<HashMap<usize, usize>>>);
 
-impl<K> Collection for Table<K>
-where
-    K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
-{
+impl Collection for Table {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
         Self(std::sync::Arc::new(Mutex::new(HashMap::with_capacity(
@@ -21,25 +18,20 @@ where
     }
 }
 
-impl<K> CollectionHandle for Table<K>
-where
-    K: Send + From<u64> + Copy + 'static + std::hash::Hash + Eq,
-{
-    type Key = K;
-
-    fn get(&mut self, key: &Self::Key) -> bool {
+impl CollectionHandle for Table {
+    fn get(&mut self, key: &usize) -> bool {
         self.0.lock().unwrap().get(key).is_some()
     }
 
-    fn insert(&mut self, key: &Self::Key, value: &Self::Key) -> bool {
+    fn insert(&mut self, key: &usize, value: &usize) -> bool {
         self.0.lock().unwrap().insert(*key, *value).is_none()
     }
 
-    fn remove(&mut self, key: &Self::Key) -> bool {
+    fn remove(&mut self, key: &usize) -> bool {
         self.0.lock().unwrap().remove(key).is_some()
     }
 
-    fn update(&mut self, key: &Self::Key, value: &Self::Key) -> bool {
+    fn update(&mut self, key: &usize, value: &usize) -> bool {
         use std::collections::hash_map::Entry;
         let mut map = self.0.lock().unwrap();
         if let Entry::Occupied(mut e) = map.entry(*key) {
