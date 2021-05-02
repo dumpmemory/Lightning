@@ -27,7 +27,7 @@ fn cache_behavior() {
     let ds_arg = &args[1];
     let n = 128;
     let mix = Mix::uniform();
-    let fill = 0.75;
+    let fill = 0.3;
     let cap = 30;
     let cont = 0.1;
     let mut workload = Workload::new(n, mix);
@@ -39,28 +39,29 @@ fn cache_behavior() {
 
     if ds_arg == "l" {
         let prefilled = workload.prefill::<lfmap::TestTable>(&data);
-        run_cache_bench(workload, data, prefilled);
+        run_cache_bench(workload, data, prefilled, "lock-free-cache.csv");
     } else if ds_arg == "c" {
         let prefilled = workload.prefill::<chashmap::Table>(&data);
-        run_cache_bench(workload, data, prefilled);
+        run_cache_bench(workload, data, prefilled, "chashmap-cache.csv");
     } else if ds_arg == "m" {
         let prefilled = workload.prefill::<arc_mutex_std::Table>(&data);
-        run_cache_bench(workload, data, prefilled);
+        run_cache_bench(workload, data, prefilled, "mutex-cache.csv");
     } else if ds_arg == "rw" {
         let prefilled = workload.prefill::<arc_rwlock_std::Table>(&data);
-        run_cache_bench(workload, data, prefilled);
+        run_cache_bench(workload, data, prefilled, "rw-lock-cache.csv");
     } else {
         panic!();
     }
 }
 
-fn run_cache_bench<T: Collection>(
+fn run_cache_bench<'a, T: Collection>(
     workload: Workload,
     data: WorkloadData,
     prefilled: PrefilledData<T>,
+    report: &'a str,
 ) {
-    PerfCounters::for_this_process()
-        .with_all_mem_cache_events()
+    let mut pc = PerfCounters::for_this_process();
+    pc.with_all_mem_cache_events()
         .with_all_branch_prediction_events()
         .with_all_tlb_cache_events()
         .with_hardware_events(vec![
@@ -83,10 +84,9 @@ fn run_cache_bench<T: Collection>(
             Software::CpuMigrations,
             Software::PageFaultsMin,
             Software::PageFaultsMaj,
-        ])
-        .bench(move || {
-            workload.run_against(data, prefilled)
-        });
+        ]);
+    pc.bench(move || workload.run_against(data, prefilled));
+    pc.save_result(report).unwrap();
 }
 
 fn perf_test() {
