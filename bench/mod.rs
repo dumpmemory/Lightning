@@ -1,12 +1,12 @@
 use bustle::*;
 use chrono::prelude::*;
+use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
 use std::env;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::*;
 use std::time::SystemTime;
-use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
@@ -36,6 +36,29 @@ fn cache_behavior() {
         .contention(cont)
         .initial_capacity_log2(cap)
         .gen_data();
+
+    if ds_arg == "l" {
+        let prefilled = workload.prefill::<lfmap::TestTable>(&data);
+        run_cache_bench(workload, data, prefilled);
+    } else if ds_arg == "c" {
+        let prefilled = workload.prefill::<chashmap::Table>(&data);
+        run_cache_bench(workload, data, prefilled);
+    } else if ds_arg == "m" {
+        let prefilled = workload.prefill::<arc_mutex_std::Table>(&data);
+        run_cache_bench(workload, data, prefilled);
+    } else if ds_arg == "rw" {
+        let prefilled = workload.prefill::<arc_rwlock_std::Table>(&data);
+        run_cache_bench(workload, data, prefilled);
+    } else {
+        panic!();
+    }
+}
+
+fn run_cache_bench<T: Collection>(
+    workload: Workload,
+    data: WorkloadData,
+    prefilled: PrefilledData<T>,
+) {
     PerfCounters::for_this_process()
         .with_all_mem_cache_events()
         .with_all_branch_prediction_events()
@@ -50,7 +73,7 @@ fn cache_behavior() {
             Hardware::BusCycles,
             Hardware::StalledCyclesFrontend,
             Hardware::StalledCyclesBackend,
-            Hardware::RefCPUCycles
+            Hardware::RefCPUCycles,
         ])
         .with_software_events(vec![
             Software::CpuClock,
@@ -59,20 +82,10 @@ fn cache_behavior() {
             Software::ContextSwitches,
             Software::CpuMigrations,
             Software::PageFaultsMin,
-            Software::PageFaultsMaj
+            Software::PageFaultsMaj,
         ])
         .bench(move || {
-            if ds_arg == "l" {
-                workload.run_against::<lfmap::TestTable>(data);
-            } else if ds_arg == "c" {
-                workload.run_against::<chashmap::Table>(data);
-            } else if ds_arg == "m" {
-                workload.run_against::<arc_mutex_std::Table>(data);
-            } else if ds_arg == "rw" {
-                workload.run_against::<arc_rwlock_std::Table>(data);
-            } else {
-                panic!()
-            }
+            workload.run_against(data, prefilled)
         });
 }
 
