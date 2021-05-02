@@ -16,6 +16,8 @@ bustle = {path = "../../bustle" }
 num_cpus = "1"
 chashmap = "2.2.2"
 chrono = "0.4"
+perfcnt_bench = { git = "https://github.com/shisoft/perfcnt-bench.git" }
+perfcnt = "0.7"
 
 [[bin]]
 name = "lightning-bench"

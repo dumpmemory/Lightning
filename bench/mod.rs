@@ -1,10 +1,12 @@
 use bustle::*;
+use chrono::prelude::*;
+use perfcnt_bench::PerfCounters;
 use std::env;
 use std::fmt::Debug;
-use std::io::*;
 use std::fs::File;
+use std::io::*;
 use std::time::SystemTime;
-use chrono::prelude::*;
+use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
@@ -23,22 +25,55 @@ fn main() {
 fn cache_behavior() {
     let args: Vec<String> = env::args().collect();
     let ds_arg = &args[1];
-    let n = num_cpus::get();
+    let n = 128;
     let mix = Mix::uniform();
     let fill = 0.75;
-    let cap = 32;
+    let cap = 30;
     let cont = 0.1;
-    if ds_arg == "l" {
-        run_and_measure::<lfmap::TestTable>(n, mix, fill, cap, cont);
-    } else if ds_arg == "c" {
-        run_and_measure::<chashmap::Table>(n, mix, fill, cap, cont);
-    } else if ds_arg == "m" {
-        run_and_measure::<arc_mutex_std::Table>(n, mix, fill, cap, cont);
-    } else if ds_arg == "rw" {
-        run_and_measure::<arc_rwlock_std::Table>(n, mix, fill, cap, cont);
-    } else {
-        panic!()
-    }
+    let mut workload = Workload::new(n, mix);
+    let data = workload
+        .operations(fill)
+        .contention(cont)
+        .initial_capacity_log2(cap)
+        .gen_data();
+    PerfCounters::for_this_process()
+        .with_all_mem_cache_events()
+        .with_all_branch_prediction_events()
+        .with_all_tlb_cache_events()
+        .with_hardware_events(vec![
+            Hardware::CPUCycles,
+            Hardware::Instructions,
+            Hardware::CacheReferences,
+            Hardware::CacheMisses,
+            Hardware::BranchInstructions,
+            Hardware::BranchMisses,
+            Hardware::BusCycles,
+            Hardware::StalledCyclesFrontend,
+            Hardware::StalledCyclesBackend,
+            Hardware::RefCPUCycles
+        ])
+        .with_software_events(vec![
+            Software::CpuClock,
+            Software::TaskClock,
+            Software::PageFaults,
+            Software::ContextSwitches,
+            Software::CpuMigrations,
+            Software::PageFaultsMin,
+            Software::PageFaultsMaj
+        ])
+        .bench(move || {
+            if ds_arg == "l" {
+                workload.run_against::<lfmap::TestTable>(data);
+            } else if ds_arg == "c" {
+                workload.run_against::<chashmap::Table>(data);
+            } else if ds_arg == "m" {
+                workload.run_against::<arc_mutex_std::Table>(data);
+            } else if ds_arg == "rw" {
+                workload.run_against::<arc_rwlock_std::Table>(data);
+            } else {
+                panic!()
+            }
+        });
 }
 
 fn perf_test() {
@@ -63,7 +98,11 @@ fn test_lfmap() {
 
 fn test_rwlock_std() {
     //run_and_record::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map", 0.0);
-    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-full", 1.0);
+    run_and_record_contention::<arc_rwlock_std::Table>(
+        &get_task_name(),
+        "rwlock-std-map-full",
+        1.0,
+    );
     run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-hi", 0.8);
     run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-mi", 0.5);
     run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-lo", 0.2);
@@ -88,15 +127,16 @@ fn test_chashmap() {
 fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64) {
     println!("Testing {}", name);
 
-
     println!("Insert heavy");
     let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 26, cont);
-    write_measures(&format!("{}_{}_75_insertion.csv", task, name), &insert_measure_75);
+    write_measures(
+        &format!("{}_{}_75_insertion.csv", task, name),
+        &insert_measure_75,
+    );
 
     // let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 28, cont);
     // write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
-    
     println!("Read heavy");
     let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26, cont);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
@@ -106,13 +146,21 @@ fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str
 
     println!("Uniform");
     let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 26, cont);
-    write_measures(&format!("{}_{}_75_uniform.csv", task, name), &uniform_measure_75);
+    write_measures(
+        &format!("{}_{}_75_uniform.csv", task, name),
+        &uniform_measure_75,
+    );
 
     // let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 28, cont);
     // write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
 }
 
-fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -> Vec<(usize, Measurement)> {
+fn run_and_measure_mix<T: Collection>(
+    mix: Mix,
+    fill: f64,
+    cap: u8,
+    cont: f64,
+) -> Vec<(usize, Measurement)> {
     let steps = 4;
     let mut threads = (steps..=num_cpus::get()).step_by(steps).collect::<Vec<_>>();
     threads.insert(0, 1);
@@ -131,7 +179,13 @@ fn run_and_measure_mix<T: Collection>(mix: Mix, fill: f64, cap: u8, cont: f64) -
         .collect()
 }
 
-fn run_and_measure<T: Collection>(threads: usize, mix: Mix, fill: f64, cap: u8, cont: f64) -> Measurement {
+fn run_and_measure<T: Collection>(
+    threads: usize,
+    mix: Mix,
+    fill: f64,
+    cap: u8,
+    cont: f64,
+) -> Measurement {
     let mut workload = Workload::new(threads, mix);
     workload
         .operations(fill)
@@ -148,15 +202,18 @@ fn write_measures<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
         let spent = m.spent.as_nanos();
         let total_ops = m.total_ops;
         let real_latency = (spent as f64) / (total_ops as f64);
-        file.write_all(format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
-            n,
-            total_ops,
-            spent,
-            m.throughput,
-            real_latency,
-            m.latency.as_nanos()
-        ).as_bytes());
+        file.write_all(
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\n",
+                n,
+                total_ops,
+                spent,
+                m.throughput,
+                real_latency,
+                m.latency.as_nanos()
+            )
+            .as_bytes(),
+        );
     }
     file.flush().unwrap();
     println!("Measurements logged at {}", name);
