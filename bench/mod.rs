@@ -28,7 +28,7 @@ fn cache_behavior() {
     let n = 128;
     let mix = Mix::uniform();
     let fill = 0.3;
-    let cap = 30;
+    let cap = 29;
     let cont = 0.1;
     let mut workload = Workload::new(n, mix);
     let data = workload
