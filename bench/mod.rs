@@ -11,6 +11,7 @@ mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
 mod lfmap;
+mod cht;
 
 fn main() {
     tracing_subscriber::fmt::init();
