@@ -266,7 +266,7 @@ impl<T> Deref for Node<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::thread;
+    use std::{collections::HashSet, thread};
 
     #[test]
     pub fn linked_map_serial() {
@@ -283,12 +283,13 @@ mod test {
     pub fn linked_map_insertions() {
         let _ = env_logger::try_init();
         let linked_map = Arc::new(LinkedObjectMap::with_capacity(16));
-        let num_threads = 16;
+        let num_threads = num_cpus::get();
         let mut threads = vec![];
+        let num_data = 999;
         for i in 0..num_threads {
             let map = linked_map.clone();
             threads.push(thread::spawn(move || {
-                for j in 0..999 {
+                for j in 0..num_data {
                     let num = i * 1000 + j;
                     debug!("Insert {}", num);
                     if j % 2 == 1 {
@@ -296,15 +297,22 @@ mod test {
                     } else {
                         map.insert_front(&num, num);
                     }
-                    map.all_keys();
-                    map.all_values();
-                    map.all_pairs();
                 }
+                map.all_keys();
+                map.all_values();
+                map.all_pairs();
             }));
         }
         info!("Waiting for threads to finish");
         for t in threads {
             t.join().unwrap();
         }
+        let mut num_set = HashSet::new();
+        for (key, node) in linked_map.all_pairs() {
+            let value = **node;
+            assert_eq!(key, value);
+            num_set.insert(key);
+        }
+        assert_eq!(num_set.len(), num_threads * num_data);
     }
 }

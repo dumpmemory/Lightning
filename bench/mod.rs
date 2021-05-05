@@ -92,6 +92,7 @@ fn run_cache_bench<'a, T: Collection>(
 
 fn perf_test() {
     test_lfmap();
+    test_cht();
     test_chashmap();
     test_rwlock_std();
     test_mutex_std();
@@ -108,6 +109,14 @@ fn test_lfmap() {
     run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 0.8);
     run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 0.5);
     run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 0.2);
+}
+
+fn test_cht() {
+    //run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.0);
+    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-full", 1.0);
+    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-hi", 0.8);
+    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-mi", 0.5);
+    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-lo", 0.2);
 }
 
 fn test_rwlock_std() {

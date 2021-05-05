@@ -4,7 +4,7 @@ use bustle::*;
 use cht::HashMap;
 
 #[derive(Clone)]
-struct Table(std::sync::Arc<HashMap<usize, usize, RandomState>>);
+pub struct Table(std::sync::Arc<HashMap<usize, usize, RandomState>>);
 
 impl Collection for Table {
     type Handle = Self;
