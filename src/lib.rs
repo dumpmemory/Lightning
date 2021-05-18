@@ -1,6 +1,6 @@
 #![feature(core_intrinsics)]
 #![feature(allocator_api)]
-#![feature(const_fn)]
+#![feature(const_fn_trait_bound)]
 #![feature(test)]
 #[macro_use]
 extern crate log;

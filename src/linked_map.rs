@@ -226,6 +226,17 @@ impl<T> LinkedObjectMap<T> {
         }
         res
     }
+
+    pub fn iter(&self) -> LinkedMapIter<T> {
+        loop {
+            
+        }
+    }
+}
+
+pub struct LinkedMapIter<'a, T> {
+    node: Arc<Node<T>>,
+    map: &'a LinkedObjectMap<T>
 }
 
 impl<T> Node<T> {
