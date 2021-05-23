@@ -19,6 +19,7 @@ chrono = "0.4"
 perfcnt_bench = { git = "https://github.com/shisoft/perfcnt-bench.git" }
 perfcnt = "0.7"
 cht = "0.4.1"
+clap = "3.0.0-beta.2"
 
 [[bin]]
 name = "lightning-bench"
