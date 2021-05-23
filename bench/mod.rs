@@ -1,31 +1,89 @@
 use bustle::*;
 use chrono::prelude::*;
+use clap::{App, Arg};
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
 use std::env;
-use std::fmt::Debug;
 use std::fs::File;
 use std::io::*;
-use std::time::SystemTime;
+
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
-mod lfmap;
 mod cht;
+mod lfmap;
 
 fn main() {
+    const RUNTIME: &'static str = "runtime";
+    const CONTENTION: &'static str = "CONTENTION";
+    const STRIDE: &'static str = "STRIDE";
+    const LOAD: &'static str = "LOAD";
+    const DATA_STRUCTURE: &'static str = "DATA_STRUCTURE";
+    const FILE: &'static str = "FILE";
     tracing_subscriber::fmt::init();
-    // Workload::new(8, Mix::insert_heavy()).run::<lfmap::TestTable>();
-    // Workload::new(16, Mix::uniform()).run::<lfmap::TestTable>();
-    // Workload::new(126, Mix::read_heavy()).run::<lfmap::TestTable>();
-    // Workload::new(1, Mix::uniform()).run::<lfmap::TestTable>();
-    // perf_test()
-    cache_behavior()
+    let matches = App::new("Lightning benches")
+        .version("0.1")
+        .author("Hao Shi <haoshi@umass.edu>")
+        .subcommand(
+            App::new("runtime")
+                .about("Measure runtime of the data structures")
+                .arg(
+                    Arg::new(CONTENTION)
+                        .short('c')
+                        .long("contention")
+                        .about("Sets whether to run benchmarks under different contentions")
+                )
+                .arg(
+                    Arg::new(LOAD)
+                        .short('l')
+                        .long("long")
+                        .value_name(LOAD)
+                        .about("Sets the load factor of the benchamrk, default 28")
+                        .default_value("25"),
+                )
+                .arg(
+                    Arg::new(STRIDE)
+                        .short('s')
+                        .long("stride")
+                        .value_name(STRIDE)
+                        .about("Sets the stride of the benchamrk, default 4")
+                        .default_value("4"),
+                ),
+        )
+        .subcommand(
+            App::new("perfcnt")
+                .about("Run the benchmarks with performance counters")
+                .arg(
+                    Arg::new(DATA_STRUCTURE)
+                        .short('d')
+                        .long("data-structure")
+                        .value_name(DATA_STRUCTURE)
+                        .about("Define the data structure want to observe")
+                        .required(true),
+                ),
+        )
+        .arg(
+            Arg::new(FILE)
+                .short('f')
+                .long("file")
+                .value_name(FILE)
+                .about("Sets the output file name for reports")
+                .required(true),
+        )
+        .get_matches();
+    let file_name = matches.value_of(FILE).unwrap().to_string();
+    if let Some(cache_settings) = matches.subcommand_matches("perfcnt") {
+        let ds = cache_settings.value_of(DATA_STRUCTURE).unwrap().to_string();
+        cache_behavior(&file_name, &ds);
+    } else if let Some(rt_settings) = matches.subcommand_matches("runtime") {
+        let contention = rt_settings.is_present(CONTENTION);
+        let load = rt_settings.value_of(LOAD).unwrap().parse().unwrap();
+        let stride = rt_settings.value_of(STRIDE).unwrap().parse().unwrap();
+        perf_test(&file_name, load, contention, stride);
+    }
 }
 
-fn cache_behavior() {
-    let args: Vec<String> = env::args().collect();
-    let ds_arg = &args[1];
+fn cache_behavior<'a>(file_name: &'a str, ds_arg: &'a str) {
     let n = 128;
     let mix = Mix::uniform();
     let fill = 0.75;
@@ -40,16 +98,36 @@ fn cache_behavior() {
 
     if ds_arg == "l" {
         let prefilled = workload.prefill::<lfmap::TestTable>(&data);
-        run_cache_bench(workload, data, prefilled, "lock-free-cache.csv");
+        run_cache_bench(
+            workload,
+            data,
+            prefilled,
+            &format!("{}_lock-free-cache.csv", file_name),
+        );
     } else if ds_arg == "c" {
         let prefilled = workload.prefill::<chashmap::Table>(&data);
-        run_cache_bench(workload, data, prefilled, "chashmap-cache.csv");
+        run_cache_bench(
+            workload,
+            data,
+            prefilled,
+            &format!("{}_chashmap-cache.csv", file_name),
+        );
     } else if ds_arg == "m" {
         let prefilled = workload.prefill::<arc_mutex_std::Table>(&data);
-        run_cache_bench(workload, data, prefilled, "mutex-cache.csv");
+        run_cache_bench(
+            workload,
+            data,
+            prefilled,
+            &format!("{}_mutex-cache.csv", file_name),
+        );
     } else if ds_arg == "rw" {
         let prefilled = workload.prefill::<arc_rwlock_std::Table>(&data);
-        run_cache_bench(workload, data, prefilled, "rw-lock-cache.csv");
+        run_cache_bench(
+            workload,
+            data,
+            prefilled,
+            &format!("{}_rw-lock-cache.csv", file_name),
+        );
     } else {
         panic!();
     }
@@ -61,6 +139,7 @@ fn run_cache_bench<'a, T: Collection>(
     prefilled: PrefilledData<T>,
     report: &'a str,
 ) {
+    println!("Running benchamrk for cache behaviors");
     let mut pc = PerfCounters::for_this_process();
     pc.with_all_mem_cache_events()
         .with_all_branch_prediction_events()
@@ -90,68 +169,72 @@ fn run_cache_bench<'a, T: Collection>(
     pc.save_result(report).unwrap();
 }
 
-fn perf_test() {
-    test_lfmap();
-    test_cht();
-    test_chashmap();
-    test_rwlock_std();
-    test_mutex_std();
+fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
+    run_perf_test_set::<lfmap::TestTable>(file_name, "lf-map", load, contention, stride);
+    run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride);
+    run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride);
+    run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride);
 }
 
-fn get_task_name() -> String {
-    let args: Vec<String> = env::args().collect();
-    args[1].clone()
+fn run_perf_test_set<'a, T: Collection>(
+    file_name: &'a str,
+    ds_name: &'static str,
+    load: u8,
+    contention: bool,
+    stride: usize,
+) {
+    println!("Testing perf with contention {}", contention);
+    if contention {
+        run_and_record_contention::<lfmap::TestTable>(
+            file_name,
+            &format!("{}_{}_full", file_name, ds_name),
+            load,
+            1.0,
+            stride,
+        );
+        run_and_record_contention::<lfmap::TestTable>(
+            file_name,
+            &format!("{}_{}_hi", file_name, ds_name),
+            load,
+            0.8,
+            stride,
+        );
+        run_and_record_contention::<lfmap::TestTable>(
+            file_name,
+            &format!("{}_{}_mi", file_name, ds_name),
+            load,
+            0.5,
+            stride,
+        );
+        run_and_record_contention::<lfmap::TestTable>(
+            file_name,
+            &format!("{}_{}_lo", file_name, ds_name),
+            load,
+            0.2,
+            stride,
+        );
+    } else {
+        run_and_record_contention::<lfmap::TestTable>(
+            file_name,
+            &format!("{}_{}", file_name, ds_name),
+            load,
+            0.001,
+            stride,
+        );
+    }
 }
 
-fn test_lfmap() {
-    //run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-full", 1.0);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-hi", 0.8);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-mi", 0.5);
-    run_and_record_contention::<lfmap::TestTable>(&get_task_name(), "lock-free-map-lo", 0.2);
-}
-
-fn test_cht() {
-    //run_and_record::<lfmap::TestTable>(&get_task_name(), "lock-free-map", 0.0);
-    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-full", 1.0);
-    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-hi", 0.8);
-    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-mi", 0.5);
-    run_and_record_contention::<cht::Table>(&get_task_name(), "cht-lo", 0.2);
-}
-
-fn test_rwlock_std() {
-    //run_and_record::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map", 0.0);
-    run_and_record_contention::<arc_rwlock_std::Table>(
-        &get_task_name(),
-        "rwlock-std-map-full",
-        1.0,
-    );
-    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-hi", 0.8);
-    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-mi", 0.5);
-    run_and_record_contention::<arc_rwlock_std::Table>(&get_task_name(), "rwlock-std-map-lo", 0.2);
-}
-
-fn test_mutex_std() {
-    //run_and_record::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map", 0.0);
-    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-full", 1.0);
-    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-hi", 0.8);
-    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-mi", 0.5);
-    run_and_record_contention::<arc_mutex_std::Table>(&get_task_name(), "mutex-std-map-lo", 0.2);
-}
-
-fn test_chashmap() {
-    //run_and_record::<chashmap::Table>(&get_task_name(), "CHashmap", 0.0);
-    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-full", 1.0);
-    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-hi", 0.8);
-    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-mi", 0.5);
-    run_and_record_contention::<chashmap::Table>(&get_task_name(), "CHashmap-lo", 0.2);
-}
-
-fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str, cont: f64) {
+fn run_and_record_contention<'a, 'b, T: Collection>(
+    task: &'b str,
+    name: &'a str,
+    load: u8,
+    cont: f64,
+    stride: usize,
+) {
     println!("Testing {}", name);
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, 26, cont);
+    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
     write_measures(
         &format!("{}_{}_75_insertion.csv", task, name),
         &insert_measure_75,
@@ -161,14 +244,14 @@ fn run_and_record_contention<'a, 'b, T: Collection>(task: &'b str, name: &'a str
     // write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, 26, cont);
+    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
     write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
 
     // let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
     // write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, 26, cont);
+    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
     write_measures(
         &format!("{}_{}_75_uniform.csv", task, name),
         &uniform_measure_75,
@@ -183,9 +266,12 @@ fn run_and_measure_mix<T: Collection>(
     fill: f64,
     cap: u8,
     cont: f64,
+    stride: usize,
 ) -> Vec<(usize, Measurement)> {
     let steps = 4;
-    let mut threads = (steps..=num_cpus::get()).step_by(steps).collect::<Vec<_>>();
+    let mut threads = (steps..=num_cpus::get())
+        .step_by(stride)
+        .collect::<Vec<_>>();
     threads.insert(0, 1);
     threads
         .into_iter()
@@ -236,7 +322,8 @@ fn write_measures<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
                 m.latency.as_nanos()
             )
             .as_bytes(),
-        );
+        )
+        .unwrap();
     }
     file.flush().unwrap();
     println!("Measurements logged at {}", name);
