@@ -13,6 +13,8 @@ mod chashmap;
 mod cht;
 mod lfmap;
 
+mod plot;
+
 fn main() {
     const RUNTIME: &'static str = "runtime";
     const CONTENTION: &'static str = "CONTENTION";
@@ -31,7 +33,7 @@ fn main() {
                     Arg::new(CONTENTION)
                         .short('c')
                         .long("contention")
-                        .about("Sets whether to run benchmarks under different contentions")
+                        .about("Sets whether to run benchmarks under different contentions"),
                 )
                 .arg(
                     Arg::new(LOAD)
@@ -169,11 +171,18 @@ fn run_cache_bench<'a, T: Collection>(
     pc.save_result(report).unwrap();
 }
 
+pub type PerfPlotData = Vec<(
+    &'static str,
+    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Measurement)>)>)>,
+)>;
+
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
-    run_perf_test_set::<lfmap::TestTable>(file_name, "lf-map", load, contention, stride);
-    run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride);
-    run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride);
-    run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride);
+    let data = vec![
+        run_perf_test_set::<lfmap::TestTable>(file_name, "lf-map", load, contention, stride),
+        run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride),
+        run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
+        run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
+    ];
 }
 
 fn run_perf_test_set<'a, T: Collection>(
@@ -182,45 +191,53 @@ fn run_perf_test_set<'a, T: Collection>(
     load: u8,
     contention: bool,
     stride: usize,
+) -> (
+    &'static str,
+    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Measurement)>)>)>,
 ) {
     println!("Testing perf with contention {}", contention);
     if contention {
-        run_and_record_contention::<lfmap::TestTable>(
+        let full = run_and_record_contention::<lfmap::TestTable>(
             file_name,
             &format!("{}_{}_full", file_name, ds_name),
             load,
             1.0,
             stride,
         );
-        run_and_record_contention::<lfmap::TestTable>(
+        let hi = run_and_record_contention::<lfmap::TestTable>(
             file_name,
             &format!("{}_{}_hi", file_name, ds_name),
             load,
             0.8,
             stride,
         );
-        run_and_record_contention::<lfmap::TestTable>(
+        let mi = run_and_record_contention::<lfmap::TestTable>(
             file_name,
             &format!("{}_{}_mi", file_name, ds_name),
             load,
             0.5,
             stride,
         );
-        run_and_record_contention::<lfmap::TestTable>(
+        let lo = run_and_record_contention::<lfmap::TestTable>(
             file_name,
             &format!("{}_{}_lo", file_name, ds_name),
             load,
             0.2,
             stride,
         );
+        (
+            ds_name,
+            vec![("full", full), ("hi", hi), ("mi", mi), ("lo", lo)],
+        )
     } else {
-        run_and_record_contention::<lfmap::TestTable>(
+        let data = run_and_record_contention::<lfmap::TestTable>(
             file_name,
             &format!("{}_{}", file_name, ds_name),
             load,
             0.001,
             stride,
         );
+        (ds_name, vec![("-", data)])
     }
 }
 
@@ -230,35 +247,32 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     load: u8,
     cont: f64,
     stride: usize,
-) {
+) -> Vec<(&'static str, Vec<(usize, Measurement)>)> {
     println!("Testing {}", name);
 
     println!("Insert heavy");
-    let insert_measure_75 = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
-    write_measures(
+    let insert_measurement =
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
+    write_measurements(
         &format!("{}_{}_75_insertion.csv", task, name),
-        &insert_measure_75,
+        &insert_measurement,
     );
-
-    // let insert_measure_150 = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, 28, cont);
-    // write_measures(&format!("{}_{}_150_insertion.csv", task, name), &insert_measure_150);
 
     println!("Read heavy");
-    let read_measure_75 = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
-    write_measures(&format!("{}_{}_75_read.csv", task, name), &read_measure_75);
-
-    // let read_measure_150 = run_and_measure_mix::<T>(Mix::read_heavy(), 55.0, 25, cont);
-    // write_measures(&format!("{}_{}_150_read.csv", task, name), &read_measure_150);
+    let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
+    write_measurements(&format!("{}_{}_75_read.csv", task, name), &read_measurement);
 
     println!("Uniform");
-    let uniform_measure_75 = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
-    write_measures(
+    let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
+    write_measurements(
         &format!("{}_{}_75_uniform.csv", task, name),
-        &uniform_measure_75,
+        &uniform_measurement,
     );
-
-    // let uniform_measure_150 = run_and_measure_mix::<T>(Mix::uniform(), 6.0, 28, cont);
-    // write_measures(&format!("{}_{}_150_uniform.csv", task, name), &uniform_measure_150);
+    vec![
+        ("insert", insert_measurement),
+        ("read", read_measurement),
+        ("uniform", uniform_measurement),
+    ]
 }
 
 fn run_and_measure_mix<T: Collection>(
@@ -303,7 +317,7 @@ fn run_and_measure<T: Collection>(
         .run_silently::<T>()
 }
 
-fn write_measures<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
+fn write_measurements<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
     let current_dir = env::current_dir().unwrap();
     let file = File::create(current_dir.join(name)).unwrap();
     let mut file = LineWriter::new(file);
