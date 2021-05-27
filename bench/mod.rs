@@ -7,6 +7,8 @@ use std::env;
 use std::fs::File;
 use std::io::*;
 
+use crate::plot::draw_perf_plots;
+
 mod arc_mutex_std;
 mod arc_rwlock_std;
 mod chashmap;
@@ -183,6 +185,7 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
         run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
     ];
+    draw_perf_plots(data);
 }
 
 fn run_perf_test_set<'a, T: Collection>(
