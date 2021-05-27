@@ -240,7 +240,7 @@ fn run_perf_test_set<'a, T: Collection>(
             0.001,
             stride,
         );
-        (ds_name, vec![("-", data)])
+        (ds_name, vec![("*", data)])
     }
 }
 

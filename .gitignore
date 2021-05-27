@@ -17,3 +17,5 @@ callgrind.*
 *.out.*
 *.csv
 *.zip
+*.png
+*.svg
