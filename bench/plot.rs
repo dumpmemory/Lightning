@@ -17,14 +17,18 @@ pub fn draw_perf_plots(data: PerfPlotData) {
                     .or_insert(vec![])
                     .push((*cnt, work_load_data));
                 data_sets
-                    .entry((cnt, work_load))
+                    .entry((work_load, cnt))
                     .or_insert(vec![])
                     .push((*ds, work_load_data));
             }
         }
     }
     for ((s1, s2), data) in data_sets {
-        let title = format!("{} - {}", s1, s2);
+        let title = if s2 == "*" {
+            s1.to_string()
+        } else {
+            format!("{} - {}", s1, s2)
+        };
         plot_perf(&title, data).unwrap();
     }
 }
@@ -78,7 +82,7 @@ pub fn plot_perf(
         .configure_series_labels()
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK)
-		.position(SeriesLabelPosition::MiddleRight)
+        .position(SeriesLabelPosition::MiddleRight)
         .draw()?;
     Ok(())
 }
