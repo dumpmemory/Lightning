@@ -40,10 +40,10 @@ fn main() {
                 .arg(
                     Arg::new(LOAD)
                         .short('l')
-                        .long("long")
+                        .long("load")
                         .value_name(LOAD)
-                        .about("Sets the load factor of the benchamrk, default 28")
-                        .default_value("25"),
+                        .about("Sets the load factor of the benchamrk, default 26")
+                        .default_value("26"),
                 )
                 .arg(
                     Arg::new(STRIDE)
@@ -200,28 +200,28 @@ fn run_perf_test_set<'a, T: Collection>(
 ) {
     println!("Testing perf with contention {}", contention);
     if contention {
-        let full = run_and_record_contention::<lfmap::TestTable>(
+        let full = run_and_record_contention::<T>(
             file_name,
             &format!("{}_{}_full", file_name, ds_name),
             load,
             1.0,
             stride,
         );
-        let hi = run_and_record_contention::<lfmap::TestTable>(
+        let hi = run_and_record_contention::<T>(
             file_name,
             &format!("{}_{}_hi", file_name, ds_name),
             load,
             0.8,
             stride,
         );
-        let mi = run_and_record_contention::<lfmap::TestTable>(
+        let mi = run_and_record_contention::<T>(
             file_name,
             &format!("{}_{}_mi", file_name, ds_name),
             load,
             0.5,
             stride,
         );
-        let lo = run_and_record_contention::<lfmap::TestTable>(
+        let lo = run_and_record_contention::<T>(
             file_name,
             &format!("{}_{}_lo", file_name, ds_name),
             load,
@@ -233,7 +233,7 @@ fn run_perf_test_set<'a, T: Collection>(
             vec![("full", full), ("hi", hi), ("mi", mi), ("lo", lo)],
         )
     } else {
-        let data = run_and_record_contention::<lfmap::TestTable>(
+        let data = run_and_record_contention::<T>(
             file_name,
             &format!("{}_{}", file_name, ds_name),
             load,

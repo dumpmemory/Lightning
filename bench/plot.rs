@@ -24,7 +24,7 @@ pub fn draw_perf_plots(data: PerfPlotData) {
         }
     }
     for ((s1, s2), data) in data_sets {
-        let title = if s2 == "*" {
+        let title = if *s2 == "*" {
             s1.to_string()
         } else {
             format!("{} - {}", s1, s2)
