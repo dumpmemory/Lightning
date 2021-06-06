@@ -54,7 +54,7 @@ pub fn plot_perf(
         .max()
         .unwrap() as f64;
     let file_name = &format!("{}.png", title);
-    let root_area = BitMapBackend::new(file_name, (640, 480)).into_drawing_area();
+    let root_area = BitMapBackend::new(file_name, (1024, 768)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root_area)
         .margin(20)

@@ -221,28 +221,28 @@ fn run_perf_test_set<'a, T: Collection>(
     if contention {
         let full = run_and_record_contention::<T>(
             file_name,
-            &format!("{}_{}_full", file_name, ds_name),
+            &format!("{}_full", ds_name),
             load,
             1.0,
             stride,
         );
         let hi = run_and_record_contention::<T>(
             file_name,
-            &format!("{}_{}_hi", file_name, ds_name),
+            &format!("{}_hi", ds_name),
             load,
             0.8,
             stride,
         );
         let mi = run_and_record_contention::<T>(
             file_name,
-            &format!("{}_{}_mi", file_name, ds_name),
+            &format!("{}_mi", ds_name),
             load,
             0.5,
             stride,
         );
         let lo = run_and_record_contention::<T>(
             file_name,
-            &format!("{}_{}_lo", file_name, ds_name),
+            &format!("{}_lo", ds_name),
             load,
             0.2,
             stride,
@@ -276,24 +276,30 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     let insert_measurement =
         run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
     write_measurements(
-        &format!("{}_{}_75_insertion.csv", task, name),
+        &format!("{}_{}_insertion.csv", task, name),
         &insert_measurement,
     );
 
     println!("Read heavy");
     let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
-    write_measurements(&format!("{}_{}_75_read.csv", task, name), &read_measurement);
+    write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
 
     println!("Uniform");
     let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
     write_measurements(
-        &format!("{}_{}_75_uniform.csv", task, name),
+        &format!("{}_{}_uniform.csv", task, name),
+        &uniform_measurement,
+    );
+    let oversize_measurement = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, cont, stride);
+    write_measurements(
+        &format!("{}_{}_oversize.csv", task, name),
         &uniform_measurement,
     );
     vec![
         ("insert", insert_measurement),
         ("read", read_measurement),
         ("uniform", uniform_measurement),
+        ("oversize", oversize_measurement)
     ]
 }
 
