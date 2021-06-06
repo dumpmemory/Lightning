@@ -24,6 +24,8 @@ plotters = "^0.3.1"
 contrie = "0.1"
 dashmap = "4"
 flurry = "0.3"
+lockfree = "0.5"
+scc = "0.4"
 
 [[bin]]
 name = "lightning-bench"
