@@ -14,9 +14,9 @@ mod arc_rwlock_std;
 mod chashmap;
 mod cht;
 mod contrie;
-mod lfmap;
 mod dashmap;
 mod flurry;
+mod lfmap;
 mod lockfree;
 mod scc;
 
@@ -290,7 +290,8 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
         &format!("{}_{}_uniform.csv", task, name),
         &uniform_measurement,
     );
-    let oversize_measurement = run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, cont, stride);
+    let oversize_measurement =
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, cont, stride);
     write_measurements(
         &format!("{}_{}_oversize.csv", task, name),
         &uniform_measurement,
@@ -299,7 +300,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
         ("insert", insert_measurement),
         ("read", read_measurement),
         ("uniform", uniform_measurement),
-        ("oversize", oversize_measurement)
+        ("oversize", oversize_measurement),
     ]
 }
 

@@ -7,9 +7,7 @@ pub struct Table(std::sync::Arc<HashMap<usize, usize>>);
 impl Collection for Table {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
-        Self(std::sync::Arc::new(HashMap::with_capacity(
-            capacity,
-        )))
+        Self(std::sync::Arc::new(HashMap::with_capacity(capacity)))
     }
 
     fn pin(&self) -> Self::Handle {
@@ -35,6 +33,7 @@ impl CollectionHandle for Table {
 
     fn update(&mut self, key: &usize, value: &usize) -> bool {
         let mref = self.0.pin();
-        mref.compute_if_present(key, |_k, _v| Some(*value)).is_some()
+        mref.compute_if_present(key, |_k, _v| Some(*value))
+            .is_some()
     }
 }

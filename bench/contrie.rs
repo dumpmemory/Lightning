@@ -9,9 +9,7 @@ pub struct Table(Arc<ConMap<usize, usize>>);
 impl Collection for Table {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
-        Self(Arc::new(ConMap::with_hasher(
-            RandomState::default(),
-        )))
+        Self(Arc::new(ConMap::with_hasher(RandomState::default())))
     }
 
     fn pin(&self) -> Self::Handle {
@@ -20,7 +18,6 @@ impl Collection for Table {
 }
 
 impl CollectionHandle for Table {
-
     fn get(&mut self, key: &usize) -> bool {
         self.0.get(key).is_some()
     }

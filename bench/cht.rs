@@ -21,7 +21,6 @@ impl Collection for Table {
 }
 
 impl CollectionHandle for Table {
-
     fn get(&mut self, key: &usize) -> bool {
         self.0.get(key).is_some()
     }

@@ -1,7 +1,7 @@
 use bustle::*;
 use scc::HashMap;
-use std::sync::Arc;
 use std::collections::hash_map::RandomState;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Table(Arc<HashMap<usize, usize>>);
