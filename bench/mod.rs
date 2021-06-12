@@ -197,7 +197,7 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride),
         run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
         run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
-        // run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride), // Too slow!
+        run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride), // Too slow!
         run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
         run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
         run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride),
@@ -291,7 +291,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
         &uniform_measurement,
     );
     let oversize_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, cont, stride);
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, 0.0, stride);
     write_measurements(
         &format!("{}_{}_oversize.csv", task, name),
         &uniform_measurement,
