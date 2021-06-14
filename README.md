@@ -34,7 +34,7 @@ Some use cases may require to take lock on an entry in the hash map. Lightning p
 All of the locks provided by lightning are spin-locks. They are designed for low key contentions scenarios. If the use case expects high contentions on specific keys, consider using more complex locks wrapped by `Arc` instead for thread reschduling. 
 
 ### Easy of Use and Simplified Memory Management
-The memory management approach on lightning hash map is simple, yet efficient. Epoch-based memory reclamation are performed on buffer basics upon resizing. For the key-value pair, because they implement `Clone`, it is up for the pair types itself to ensure no memory leaks. A typical use case for `HashMap` type is to use a key with low clone cost and wrap value inside atomic reference counting container `Arc` for safety.  
+The memory management approach on lightning hash map is simple, yet efficient. Epoch-based memory reclamation are performed on buffer basics upon resizing. For the key-value pair, because they implement `Clone`, it is up for the pair types itself to ensure no memory leaks. A typical use case for `HashMap` type is to use a key with low clone cost and wrap value inside atomic reference counting container `Arc` for safety. There is no need to `pin` for guards before accessing the hash map.
 
 ### Performance
 Benchmarks are besed on the throughput in terms of thread count. The test platform has following hardware
