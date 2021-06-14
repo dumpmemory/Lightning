@@ -193,7 +193,7 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
-        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load + 2, contention, stride),
+        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load + 3, contention, stride),
         run_perf_test_set::<cht::Table>(file_name, "cht", load + 2, contention, stride),
         run_perf_test_set::<contrie::Table>(file_name, "contrie", load + 2, contention, stride),
         run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
