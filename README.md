@@ -25,7 +25,7 @@ To maximizing the throughtput and avoid unnecessary instructions, lightning prov
 
 Since atomic operations only works on `usize`, supporting generic key and value types needs considerable extra works that does not need for `WordMap` scenarios. Generic hash map has attachment buffer alone with key-value pair buffer, to be used as the container for generic typed key and values. When attachment buffers are used, original key-value buffers are used for hash value and markers and keys in attachment buffers will be checked against the lookup key in case of `K` to `V` mapping. Both of the `K` and `V` types must implement `Clone` trait, because the key and values will be simply to be cloned into or out of the attachment buffer.
 
-### Entry-wise Mutes and Read-write Locks
+### Entry-wise Mutex and Read-write Locks
 Some use cases may require to take lock on an entry in the hash map. Lightning provides this a litte additional features by using the under utilizerd spece in its entry buffers. Typically, locking on individual entries in the hash map requires put the lock itself and the value protected by the lock wrapped by `Arc` on the heap. This is wasteful when lightning is able to achieve the same without allocating additional space for the locks itself, but using its internal data structures only. The hash maps provides following types of locks.
 *  **HashMap** provides read-write lock
 *  **ObjectMap** provides read-write lock
