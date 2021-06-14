@@ -19,3 +19,4 @@ callgrind.*
 *.zip
 *.png
 *.svg 
+!doc/*

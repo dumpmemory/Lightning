@@ -296,7 +296,7 @@ impl<
             match value_insertion {
                 ModResult::Done(_, _, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
-                    self.count.fetch_add(1, AcqRel);
+                    self.count.fetch_add(1, Relaxed);
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail => {
@@ -540,7 +540,7 @@ impl<
             match res {
                 ModResult::Replaced(fvalue, value, _) => {
                     retr = Some((fvalue, value));
-                    self.count.fetch_sub(1, AcqRel);
+                    self.count.fetch_sub(1, Relaxed);
                 }
                 ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
                 ModResult::NotFound => {}
@@ -561,7 +561,7 @@ impl<
     }
 
     pub fn len(&self) -> usize {
-        self.count.load(Acquire)
+        self.count.load(Relaxed)
     }
 
     fn get_from_chunk(
