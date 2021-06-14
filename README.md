@@ -7,7 +7,7 @@ Set of lock-free data structures
 * Buffer linked list 
 
 The intention of this project is to provide variety of commonly seen shared data structures for
-performance senstive applications. All of the data structures in the list are lock-free and almost wait-free. The hash map is lightning fast and possibly the fastest according to my benchmark.
+performance senstive applications. Almost all of the data structures in the list are lock-free. The hash map is lightning fast and possibly the fastest according to my benchmark.
 
 ## Hash Map
 The design of the hash map is derived from Cliff Click's talk on Stanford University. It is linear scalable on concurrent workloads even under very high contentions. All operations, including insert, read, update and remove are lock-free, including case of internal buffer resize. The data structure composites of a few atomic variables and one or two large buffer on the heap. The atomic variables are used for statistics purposes and pointers for the buffers contains data. Each key-value entry is a double word pair in the buffer and the data structure act on it by issuing seperate atomic operations. The hash map scans key-value entry by stride 1 atomic load, which implicits ideal cache locality and have the potential to be optimized further by prefetching. 
