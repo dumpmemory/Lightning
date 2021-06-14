@@ -335,12 +335,12 @@ impl<
             }
             if new_chunk.is_some() {
                 dfence();
-                assert_ne!(
+                debug_assert_ne!(
                     chunk_ptr, new_chunk_ptr,
                     "at epoch {}, inserting k:{}, v:{}",
                     epoch, fkey, fvalue
                 );
-                assert_ne!(
+                debug_assert_ne!(
                     new_chunk_ptr,
                     Shared::null(),
                     "at epoch {}, inserting k:{}, v:{}",
@@ -446,8 +446,8 @@ impl<
                 guard,
             );
             if new_chunk.is_some() {
-                assert_ne!(chunk_ptr, new_chunk_ptr);
-                assert_ne!(new_chunk_ptr, Shared::null());
+                debug_assert_ne!(chunk_ptr, new_chunk_ptr);
+                debug_assert_ne!(new_chunk_ptr, Shared::null());
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, new_chunk, &guard);
             }
             return match mod_res {
@@ -505,7 +505,7 @@ impl<
                 // Put sentinel to the old before putting tombstone to the new
                 // If not migration might put the old value back
                 trace!("Put sentinel in old chunk for removal");
-                assert_ne!(new_chunk_ptr, Shared::null());
+                debug_assert_ne!(new_chunk_ptr, Shared::null());
                 let remove_from_old = self.modify_entry(
                     &*old_chunk,
                     hash,
@@ -572,7 +572,7 @@ impl<
         fkey: usize,
         migrating: Option<&ChunkPtr<K, V, A, ALLOC>>,
     ) -> (Value, usize, usize) {
-        assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
+        debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
         let base = chunk.base;
@@ -930,8 +930,8 @@ impl<
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
-        assert!(entry_addr > 0);
         if cfg!(debug_assert) {
+            assert!(entry_addr > 0);
             let guard = crossbeam_epoch::pin();
             assert!(Self::is_copying(self.epoch.load(Acquire)));
             assert!(!self.new_chunk.load(Acquire, &guard).is_null());
@@ -1016,7 +1016,7 @@ impl<
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        assert_ne!(new_chunk_ptr, old_chunk_ptr);
+        debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
@@ -1122,7 +1122,7 @@ impl<
         }
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be primed
-        assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
+        debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
         let inserted_addr = {
             // Make insertion for migration inlined, hopefully the ordering will be right
