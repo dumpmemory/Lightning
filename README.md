@@ -61,7 +61,7 @@ Test data are synthesized each time before the test according to the workload an
 Results shows that lightning have the best throughput across 1 to 128 threads and almost always scalable, expecially for insertions. A more comprehensive study on other hardwares is still in progress and will be released when it is ready.
 
 # Hash Set
-Sharing identical internal data strucutres, hash set is a `HashMap` with generic keys only in its attachment. It has the same performance characteristics with `HashMap` and function naming changes to be consistent with `std`.
+Sharing identical internal data structures, hash set is a `HashMap` with generic keys only in its attachment. It has the same performance characteristics with `HashMap` and function naming changes to be consistent with `std`.
 
 # Linked Hash Map
 Built based on top of the `ObjectMap<T>`, the `LinkedObjectMap<T>` preserves insertion ordering for each of the entries, and more efficient to iterate over the entries without the need to scane the entry buffer in the hash map. Internally, it use a doubly linked list and the hash map values are the each of the nodes in the linked list. This data structure is not yet optimized and the linked list part is still considered as lock-based. 
