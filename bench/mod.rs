@@ -28,6 +28,8 @@ fn main() {
     const STRIDE: &'static str = "STRIDE";
     const LOAD: &'static str = "LOAD";
     const DATA_STRUCTURE: &'static str = "DATA_STRUCTURE";
+    const THREADS: &'static str = "THREADS";
+    const WORKLOAD: &'static str = "WORKLOAD";
     const FILE: &'static str = "FILE";
     tracing_subscriber::fmt::init();
     let matches = App::new("Lightning benches")
@@ -71,6 +73,50 @@ fn main() {
                         .required(true),
                 ),
         )
+        .subcommand(
+            App::new("case") // comparison benchmark
+                .about("Run the benchmark item and record the result to file")
+                .arg(
+                    Arg::new(DATA_STRUCTURE)
+                        .short('d')
+                        .long("data-structure")
+                        .value_name(DATA_STRUCTURE)
+                        .about("Specify the data structure want to test")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new(THREADS)
+                        .short('t')
+                        .long("threads")
+                        .value_name(THREADS)
+                        .about("Specify the threads to run")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new(LOAD)
+                        .short('l')
+                        .long("load")
+                        .value_name(LOAD)
+                        .about("Load factor of the hashmap")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new(CONTENTION)
+                        .short('c')
+                        .long("contention")
+                        .value_name(CONTENTION)
+                        .about("Contention factor of the test")
+                        .required(true)
+                )
+                .arg(
+                    Arg::new(WORKLOAD)
+                        .short('w')
+                        .long("workload")
+                        .value_name(WORKLOAD)
+                        .about("Worload type of the test")
+                        .required(true)
+                )
+        )
         .arg(
             Arg::new(FILE)
                 .short('f')
@@ -89,6 +135,13 @@ fn main() {
         let load = rt_settings.value_of(LOAD).unwrap().parse().unwrap();
         let stride = rt_settings.value_of(STRIDE).unwrap().parse().unwrap();
         perf_test(&file_name, load, contention, stride);
+    } else if let Some(case_settings) = matches.subcommand_matches("case") {
+        let data_structure = case_settings.value_of(DATA_STRUCTURE).unwrap().to_string();
+        let threads = case_settings.value_of(THREADS).unwrap().to_string();
+        let load = case_settings.value_of(LOAD).unwrap().to_string();
+        let contention = case_settings.value_of(CONTENTION).unwrap().to_string();
+        let worload = case_settings.value_of(WORKLOAD).unwrap().to_string();
+        unimplemented!("Not available");
     }
 }
 
@@ -193,10 +246,10 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
-        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load + 3, contention, stride),
-        run_perf_test_set::<cht::Table>(file_name, "cht", load + 2, contention, stride),
+        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load + 2, contention, stride),
+        run_perf_test_set::<cht::Table>(file_name, "cht", load + 1, contention, stride), // Potential OOM
         run_perf_test_set::<contrie::Table>(file_name, "contrie", load + 2, contention, stride),
-        run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
+        run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load + 1, contention, stride),
         // run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride), // Too slow!
         run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
         run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load + 2, contention, stride),
@@ -205,6 +258,7 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
     ];
     draw_perf_plots(data);
+    println!("PERF TEST COMPLETED...");
 }
 
 fn run_perf_test_set<'a, T: Collection>(
@@ -370,4 +424,15 @@ fn write_measurements<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
     }
     file.flush().unwrap();
     println!("Measurements logged at {}", name);
+}
+
+pub unsafe fn fork<F: FnOnce()>(child_func: F) -> libc::pid_t {
+    match libc::fork() {
+        -1 => panic!("Fork failed: {}", Error::last_os_error()),
+        0 => {
+            child_func();
+            libc::exit(0);
+        },
+        pid => pid,
+    }
 }
