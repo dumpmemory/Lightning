@@ -11,8 +11,8 @@ use std::fs::File;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::{env, sync::atomic::AtomicBool};
-use std::{io::*, thread};
+use std::sync::mpsc::channel;
+use std::{env, io::*, thread};
 
 use crate::plot::draw_perf_plots;
 
@@ -386,8 +386,7 @@ fn run_and_measure_mix<T: Collection>(
     threads
         .into_iter()
         .map(|n| {
-            let max_mem = Arc::new(AtomicUsize::new(0));
-            let max_mem_clone = max_mem.clone();
+            let (mem_sender, mem_recv) = channel();
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
             let child_pid = unsafe {
                 fork(|| {
@@ -406,12 +405,12 @@ fn run_and_measure_mix<T: Collection>(
                     }
                     thread::sleep(Duration::from_millis(200));
                 }
-                max_mem_clone.store(max, Ordering::SeqCst);
+                mem_sender.send(max).unwrap();
             });
             let proc_res = unsafe {
                 libc::wait(&mut proc_stat as *mut c_int)
             };
-            let max_mem = max_mem.load(Ordering::SeqCst);
+            let max_mem = mem_recv.recv().unwrap();
             assert_eq!(proc_res, child_pid);
             let local: DateTime<Local> = Local::now();
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
