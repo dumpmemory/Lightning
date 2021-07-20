@@ -29,17 +29,17 @@ pub fn draw_perf_plots(data: PerfPlotData) {
         } else {
             format!("{} - {}", s1, s2)
         };
-        plot_perf(&title, data).unwrap();
+        plot_throughput(&format!("Throughput {}", title), data).unwrap();
     }
 }
 
-pub fn plot_perf(
+pub fn plot_throughput(
     title: &String,
-    data: Vec<(&'static str, &Vec<(usize, Option<Measurement>)>)>,
+    data: Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
-        .map(|(_ser_str, measures)| measures.iter().map(|(threads, _)| threads).max().unwrap())
+        .map(|(_ser_str, measures)| measures.iter().map(|(threads, _, _)| threads).max().unwrap())
         .max()
         .unwrap();
     let y_scale = data
@@ -47,7 +47,7 @@ pub fn plot_perf(
         .map(|(_ser_str, measures)| {
             measures
                 .iter()
-                .filter_map(|(_, m)| m.clone().map(|m| m.throughput as usize + 10))
+                .filter_map(|(_, m, _)| m.clone().map(|m| m.throughput as usize + 10))
                 .max()
                 .unwrap()
         })
@@ -73,7 +73,62 @@ pub fn plot_perf(
         chart
             .draw_series(LineSeries::new(
                 data.iter()
-                    .filter_map(|(t, m)| m.clone().map(|m| (*t, m.throughput))),
+                    .filter_map(|(t, m, _)| m.clone().map(|m| (*t, m.throughput))),
+                color.stroke_width(2),
+            ))?
+            .label(*title)
+            .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 10, y + 5)], color.filled()));
+    }
+    chart
+        .configure_series_labels()
+        .background_style(&WHITE.mix(0.8))
+        .border_style(&BLACK)
+        .position(SeriesLabelPosition::MiddleRight)
+        .draw()?;
+    Ok(())
+}
+
+pub fn plot_max_mem(
+    title: &String,
+    data: Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let x_scale = data
+        .iter()
+        .map(|(_ser_str, measures)| measures.iter().map(|(threads, _, _)| threads).max().unwrap())
+        .max()
+        .unwrap();
+    let y_scale = data
+        .iter()
+        .map(|(_ser_str, measures)| {
+            measures
+                .iter()
+                .map(|(_, _, mem)| mem + 10)
+                .max()
+                .unwrap()
+        })
+        .max()
+        .unwrap();
+    let file_name = &format!("{}.png", title);
+    let root_area = BitMapBackend::new(file_name, (1024, 768)).into_drawing_area();
+    root_area.fill(&WHITE)?;
+    let mut chart = ChartBuilder::on(&root_area)
+        .margin(20)
+        .caption(title, ("sans-serif", 40).into_font())
+        .x_label_area_size(30)
+        .y_label_area_size(30)
+        .build_cartesian_2d(1..*x_scale, 0..y_scale)?;
+    chart
+        .configure_mesh()
+        .x_desc("Threads")
+        .y_desc("Max Memory")
+        .y_label_formatter(&|y| format!("{:+e}", y))
+        .draw()?;
+    for (i, (title, data)) in data.iter().enumerate() {
+        let color = Palette99::pick(i).mix(0.9);
+        chart
+            .draw_series(LineSeries::new(
+                data.iter()
+                    .map(|(t, _, mem)| (*t, *mem)),
                 color.stroke_width(2),
             ))?
             .label(*title)

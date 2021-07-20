@@ -1,14 +1,18 @@
 use bustle::*;
 use chrono::prelude::*;
 use clap::{App, Arg};
+use humansize::{file_size_opts as options, FileSize};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use libc::c_int;
-use nix::sys::wait::waitpid;
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
-use std::env;
+use procinfo::pid::statm;
 use std::fs::File;
-use std::io::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{env, sync::atomic::AtomicBool};
+use std::{io::*, thread};
 
 use crate::plot::draw_perf_plots;
 
@@ -244,7 +248,10 @@ fn run_cache_bench<'a, T: Collection>(
 
 pub type PerfPlotData = Vec<(
     &'static str,
-    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Option<Measurement>)>)>)>,
+    Vec<(
+        &'static str,
+        Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)>,
+    )>,
 )>;
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
@@ -272,7 +279,10 @@ fn run_perf_test_set<'a, T: Collection>(
     stride: usize,
 ) -> (
     &'static str,
-    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Option<Measurement>)>)>)>,
+    Vec<(
+        &'static str,
+        Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)>,
+    )>,
 ) {
     println!("Testing perf with contention {}", contention);
     if contention {
@@ -326,7 +336,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     load: u8,
     cont: f64,
     stride: usize,
-) -> Vec<(&'static str, Vec<(usize, Option<Measurement>)>)> {
+) -> Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)> {
     println!("Testing {}", name);
 
     println!("Insert heavy");
@@ -367,7 +377,7 @@ fn run_and_measure_mix<T: Collection>(
     cap: u8,
     cont: f64,
     stride: usize,
-) -> Vec<(usize, Option<Measurement>)> {
+) -> Vec<(usize, Option<Measurement>, usize)> {
     let steps = 4;
     let mut threads = (steps..=num_cpus::get())
         .step_by(stride)
@@ -376,33 +386,46 @@ fn run_and_measure_mix<T: Collection>(
     threads
         .into_iter()
         .map(|n| {
-            let (server, server_name) = IpcOneShotServer::new().unwrap();
+            let max_mem = Arc::new(AtomicUsize::new(0));
+            let max_mem_clone = max_mem.clone();
+            let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
             let child_pid = unsafe {
                 fork(|| {
                     let tx = IpcSender::connect(server_name).unwrap();
                     let m = run_and_measure::<T>(n, mix, fill, cap, cont);
-                    let local: DateTime<Local> = Local::now();
-                    let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
-                    println!(
-                        "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}",
-                        time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency
-                    );
                     tx.send(m).unwrap();
                 })
             };
             let mut proc_stat: i32 = 0;
+            thread::spawn(move || {
+                let mut max = 0;
+                while let Ok(memstat) = statm(child_pid) {
+                    let size = memstat.size;
+                    if size > max {
+                        max = size;
+                    }
+                    thread::sleep(Duration::from_millis(200));
+                }
+                max_mem_clone.store(max, Ordering::SeqCst);
+            });
             let proc_res = unsafe {
                 libc::wait(&mut proc_stat as *mut c_int)
             };
+            let max_mem = max_mem.load(Ordering::SeqCst);
             assert_eq!(proc_res, child_pid);
+            let local: DateTime<Local> = Local::now();
+            let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
+            let size = max_mem.file_size(options::CONVENTIONAL).unwrap();
             if proc_stat == 0 {
-                let (_, data) = server.accept().unwrap();
-                (n, Some(data))
+                let (_, m) = server.accept().unwrap();
+                println!(
+                    "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}, mem {}",
+                    time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency, size
+                );
+                (n, Some(m), max_mem)
             } else {
-                let local: DateTime<Local> = Local::now();
-                let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
-                println!("[{}] Failed with threads {}, stat code {}", time, n, proc_stat);
-                (n, None)
+                println!("[{}] Failed with threads {}, stat code {}, mem {}", time, n, proc_stat, size);
+                (n, None, max_mem)
             }
 
         })
@@ -424,31 +447,32 @@ fn run_and_measure<T: Collection>(
         .run_silently::<T>()
 }
 
-fn write_measurements<'a>(name: &'a str, measures: &[(usize, Option<Measurement>)]) {
+fn write_measurements<'a>(name: &'a str, measures: &[(usize, Option<Measurement>, usize)]) {
     let current_dir = env::current_dir().unwrap();
     let file = File::create(current_dir.join(name)).unwrap();
     let mut file = LineWriter::new(file);
-    for (n, m_opt) in measures.iter() {
+    for (n, m_opt, mem) in measures.iter() {
         if let &Some(ref m) = m_opt {
             let spent = m.spent.as_nanos();
             let total_ops = m.total_ops;
             let real_latency = (spent as f64) / (total_ops as f64);
             file.write_all(
                 format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                     n,
                     total_ops,
                     spent,
                     m.throughput,
                     real_latency,
-                    m.latency.as_nanos()
+                    m.latency.as_nanos(),
+                    mem
                 )
                 .as_bytes(),
             )
             .unwrap();
         } else {
             let NA = "NA";
-            file.write_all(format!("{}\tNA\tNA\tNA\tNA\tNA\n", n,).as_bytes())
+            file.write_all(format!("{}\tNA\tNA\tNA\tNA\tNA\t{}\n", n, mem).as_bytes())
                 .unwrap();
         }
     }
