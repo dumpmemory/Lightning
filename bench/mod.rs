@@ -6,10 +6,8 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use libc::c_int;
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
-use procinfo::pid::statm;
+use procinfo::pid::stat;
 use std::fs::File;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 use std::sync::mpsc::channel;
 use std::{env, io::*, thread};
@@ -398,8 +396,8 @@ fn run_and_measure_mix<T: Collection>(
             let mut proc_stat: i32 = 0;
             thread::spawn(move || {
                 let mut max = 0;
-                while let Ok(memstat) = statm(child_pid) {
-                    let size = memstat.size;
+                while let Ok(memstat) = stat(child_pid) {
+                    let size = memstat.vsize;
                     if size > max {
                         max = size;
                     }
