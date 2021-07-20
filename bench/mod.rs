@@ -428,7 +428,7 @@ fn run_and_measure_mix<T: Collection>(
             if proc_stat == 0 {
                 let (_, m) = server.accept().unwrap();
                 println!(
-                    "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}, mem {}",
+                    "[{}] Completed with threads {}, range {:.4}, ops {}, spent {:?}, throughput {}, latency {:?}, mem {}",
                     time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency, size
                 );
                 (n, Some(m), calibrated_size)
