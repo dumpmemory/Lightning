@@ -3,7 +3,7 @@ use chrono::prelude::*;
 use clap::{App, Arg};
 use humansize::{file_size_opts as options, FileSize};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
-use libc::c_int;
+use libc::{c_int, sysconf};
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
 use procinfo::pid::{stat, stat_self};
@@ -376,6 +376,9 @@ fn run_and_measure_mix<T: Collection>(
     cont: f64,
     stride: usize,
 ) -> Vec<(usize, Option<Measurement>, usize)> {
+    let page_size = unsafe {
+        sysconf(libc::_SC_PAGESIZE)
+    } as usize;
     let steps = 4;
     let mut threads = (steps..=num_cpus::get())
         .step_by(stride)
@@ -392,7 +395,7 @@ fn run_and_measure_mix<T: Collection>(
                 .initial_capacity_log2(cap);
             let data = workload.gen_data();
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
-            let self_mem = stat_self().unwrap().vsize;
+            let self_mem = stat_self().unwrap().rss;
             let child_pid = unsafe {
                 fork(|| {
                     let tx = IpcSender::connect(server_name).unwrap();
@@ -405,7 +408,7 @@ fn run_and_measure_mix<T: Collection>(
             thread::spawn(move || {
                 let mut max = 0;
                 while let Ok(memstat) = stat(child_pid) {
-                    let size = memstat.vsize;
+                    let size = memstat.rss;
                     if size > max {
                         max = size;
                     }
@@ -420,7 +423,7 @@ fn run_and_measure_mix<T: Collection>(
             let max_mem = mem_recv.recv().unwrap();
             let local: DateTime<Local> = Local::now();
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
-            let calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem };
+            let calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
             let size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
             if proc_stat == 0 {
                 let (_, m) = server.accept().unwrap();
