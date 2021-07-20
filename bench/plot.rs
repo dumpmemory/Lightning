@@ -35,7 +35,7 @@ pub fn draw_perf_plots(data: PerfPlotData) {
 
 pub fn plot_perf(
     title: &String,
-    data: Vec<(&'static str, &Vec<(usize, Measurement)>)>,
+    data: Vec<(&'static str, &Vec<(usize, Option<Measurement>)>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
@@ -47,7 +47,7 @@ pub fn plot_perf(
         .map(|(_ser_str, measures)| {
             measures
                 .iter()
-                .map(|(_, m)| m.throughput as usize + 10)
+                .filter_map(|(_, m)| m.clone().map(|m| m.throughput as usize + 10))
                 .max()
                 .unwrap()
         })
@@ -72,7 +72,8 @@ pub fn plot_perf(
         let color = Palette99::pick(i).mix(0.9);
         chart
             .draw_series(LineSeries::new(
-                data.iter().map(|(t, m)| (*t, m.throughput)),
+                data.iter()
+                    .filter_map(|(t, m)| m.clone().map(|m| (*t, m.throughput))),
                 color.stroke_width(2),
             ))?
             .label(*title)

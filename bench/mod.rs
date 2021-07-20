@@ -1,6 +1,9 @@
 use bustle::*;
 use chrono::prelude::*;
 use clap::{App, Arg};
+use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
+use libc::c_int;
+use nix::sys::wait::waitpid;
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
 use std::env;
@@ -98,7 +101,7 @@ fn main() {
                         .long("load")
                         .value_name(LOAD)
                         .about("Load factor of the hashmap")
-                        .required(true)
+                        .required(true),
                 )
                 .arg(
                     Arg::new(CONTENTION)
@@ -106,7 +109,7 @@ fn main() {
                         .long("contention")
                         .value_name(CONTENTION)
                         .about("Contention factor of the test")
-                        .required(true)
+                        .required(true),
                 )
                 .arg(
                     Arg::new(WORKLOAD)
@@ -114,8 +117,8 @@ fn main() {
                         .long("workload")
                         .value_name(WORKLOAD)
                         .about("Worload type of the test")
-                        .required(true)
-                )
+                        .required(true),
+                ),
         )
         .arg(
             Arg::new(FILE)
@@ -241,7 +244,7 @@ fn run_cache_bench<'a, T: Collection>(
 
 pub type PerfPlotData = Vec<(
     &'static str,
-    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Measurement)>)>)>,
+    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Option<Measurement>)>)>)>,
 )>;
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
@@ -269,7 +272,7 @@ fn run_perf_test_set<'a, T: Collection>(
     stride: usize,
 ) -> (
     &'static str,
-    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Measurement)>)>)>,
+    Vec<(&'static str, Vec<(&'static str, Vec<(usize, Option<Measurement>)>)>)>,
 ) {
     println!("Testing perf with contention {}", contention);
     if contention {
@@ -323,7 +326,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     load: u8,
     cont: f64,
     stride: usize,
-) -> Vec<(&'static str, Vec<(usize, Measurement)>)> {
+) -> Vec<(&'static str, Vec<(usize, Option<Measurement>)>)> {
     println!("Testing {}", name);
 
     println!("Insert heavy");
@@ -364,7 +367,7 @@ fn run_and_measure_mix<T: Collection>(
     cap: u8,
     cont: f64,
     stride: usize,
-) -> Vec<(usize, Measurement)> {
+) -> Vec<(usize, Option<Measurement>)> {
     let steps = 4;
     let mut threads = (steps..=num_cpus::get())
         .step_by(stride)
@@ -373,14 +376,35 @@ fn run_and_measure_mix<T: Collection>(
     threads
         .into_iter()
         .map(|n| {
-            let m = run_and_measure::<T>(n, mix, fill, cap, cont);
-            let local: DateTime<Local> = Local::now();
-            let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
-            println!(
-                "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}",
-                time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency
-            );
-            (n, m)
+            let (server, server_name) = IpcOneShotServer::new().unwrap();
+            let child_pid = unsafe {
+                fork(|| {
+                    let tx = IpcSender::connect(server_name).unwrap();
+                    let m = run_and_measure::<T>(n, mix, fill, cap, cont);
+                    let local: DateTime<Local> = Local::now();
+                    let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
+                    println!(
+                        "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}",
+                        time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency
+                    );
+                    tx.send(m).unwrap();
+                })
+            };
+            let mut proc_stat: i32 = 0;
+            let proc_res = unsafe {
+                libc::wait(&mut proc_stat as *mut c_int)
+            };
+            assert_eq!(proc_res, child_pid);
+            if proc_stat == 0 {
+                let (_, data) = server.accept().unwrap();
+                (n, Some(data))
+            } else {
+                let local: DateTime<Local> = Local::now();
+                let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
+                println!("[{}] Failed with threads {}, stat code {}", time, n, proc_stat);
+                (n, None)
+            }
+
         })
         .collect()
 }
@@ -400,27 +424,33 @@ fn run_and_measure<T: Collection>(
         .run_silently::<T>()
 }
 
-fn write_measurements<'a>(name: &'a str, measures: &[(usize, Measurement)]) {
+fn write_measurements<'a>(name: &'a str, measures: &[(usize, Option<Measurement>)]) {
     let current_dir = env::current_dir().unwrap();
     let file = File::create(current_dir.join(name)).unwrap();
     let mut file = LineWriter::new(file);
-    for (n, m) in measures.iter() {
-        let spent = m.spent.as_nanos();
-        let total_ops = m.total_ops;
-        let real_latency = (spent as f64) / (total_ops as f64);
-        file.write_all(
-            format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\n",
-                n,
-                total_ops,
-                spent,
-                m.throughput,
-                real_latency,
-                m.latency.as_nanos()
+    for (n, m_opt) in measures.iter() {
+        if let &Some(ref m) = m_opt {
+            let spent = m.spent.as_nanos();
+            let total_ops = m.total_ops;
+            let real_latency = (spent as f64) / (total_ops as f64);
+            file.write_all(
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\n",
+                    n,
+                    total_ops,
+                    spent,
+                    m.throughput,
+                    real_latency,
+                    m.latency.as_nanos()
+                )
+                .as_bytes(),
             )
-            .as_bytes(),
-        )
-        .unwrap();
+            .unwrap();
+        } else {
+            let NA = "NA";
+            file.write_all(format!("{}\tNA\tNA\tNA\tNA\tNA\n", n,).as_bytes())
+                .unwrap();
+        }
     }
     file.flush().unwrap();
     println!("Measurements logged at {}", name);
@@ -432,7 +462,7 @@ pub unsafe fn fork<F: FnOnce()>(child_func: F) -> libc::pid_t {
         0 => {
             child_func();
             libc::exit(0);
-        },
+        }
         pid => pid,
     }
 }

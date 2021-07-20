@@ -28,6 +28,7 @@ lockfree = "0.5"
 scc = "0.4"
 ipc-channel = "0.15.0"
 libc = "*"
+nix = "*"
 
 [[bin]]
 name = "lightning-bench"
