@@ -391,12 +391,12 @@ fn run_and_measure_mix<T: Collection>(
                 .contention(cont)
                 .initial_capacity_log2(cap);
             let data = workload.gen_data();
-            let prefilled = workload.prefill::<T>(&data);
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
             let self_mem = stat_self().unwrap().vsize;
             let child_pid = unsafe {
                 fork(|| {
                     let tx = IpcSender::connect(server_name).unwrap();
+                    let prefilled = workload.prefill::<T>(&data);
                     let m = workload.run_against(data, prefilled);
                     tx.send(m).unwrap();
                 })
