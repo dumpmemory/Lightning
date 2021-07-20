@@ -8,8 +8,8 @@ use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Softwar
 use perfcnt_bench::PerfCounters;
 use procinfo::pid::{stat, stat_self};
 use std::fs::File;
-use std::time::Duration;
 use std::sync::mpsc::channel;
+use std::time::Duration;
 use std::{env, io::*, thread};
 
 use crate::plot::draw_perf_plots;
@@ -385,13 +385,19 @@ fn run_and_measure_mix<T: Collection>(
         .into_iter()
         .map(|n| {
             let (mem_sender, mem_recv) = channel();
-            let workload = Workload::new(n, mix);
+            let mut workload = Workload::new(n, mix);
+            workload
+                .operations(fill)
+                .contention(cont)
+                .initial_capacity_log2(cap);
+            let data = workload.gen_data();
+            let prefilled = workload.prefill::<T>(&data);
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
             let self_mem = stat_self().unwrap().vsize;
             let child_pid = unsafe {
                 fork(|| {
                     let tx = IpcSender::connect(server_name).unwrap();
-                    let m = run_and_measure::<T>(workload, fill, cap, cont);
+                    let m = workload.run_against(data, prefilled);
                     tx.send(m).unwrap();
                 })
             };
@@ -430,19 +436,6 @@ fn run_and_measure_mix<T: Collection>(
 
         })
         .collect()
-}
-
-fn run_and_measure<T: Collection>(
-    mut workload: Workload,
-    fill: f64,
-    cap: u8,
-    cont: f64,
-) -> Measurement {
-    workload
-        .operations(fill)
-        .contention(cont)
-        .initial_capacity_log2(cap)
-        .run_silently::<T>()
 }
 
 fn write_measurements<'a>(name: &'a str, measures: &[(usize, Option<Measurement>, usize)]) {
