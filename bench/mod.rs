@@ -433,7 +433,7 @@ fn run_and_measure_mix<T: Collection>(
 }
 
 fn run_and_measure<T: Collection>(
-    workload: Workload,
+    mut workload: Workload,
     fill: f64,
     cap: u8,
     cont: f64,
