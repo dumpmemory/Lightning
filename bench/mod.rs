@@ -6,7 +6,7 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use libc::c_int;
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
-use procinfo::pid::stat;
+use procinfo::pid::{stat, stat_self};
 use std::fs::File;
 use std::time::Duration;
 use std::sync::mpsc::channel;
@@ -385,11 +385,13 @@ fn run_and_measure_mix<T: Collection>(
         .into_iter()
         .map(|n| {
             let (mem_sender, mem_recv) = channel();
+            let workload = Workload::new(n, mix);
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
+            let self_mem = stat_self().unwrap().vsize;
             let child_pid = unsafe {
                 fork(|| {
                     let tx = IpcSender::connect(server_name).unwrap();
-                    let m = run_and_measure::<T>(n, mix, fill, cap, cont);
+                    let m = run_and_measure::<T>(workload, fill, cap, cont);
                     tx.send(m).unwrap();
                 })
             };
@@ -408,21 +410,22 @@ fn run_and_measure_mix<T: Collection>(
             let proc_res = unsafe {
                 libc::wait(&mut proc_stat as *mut c_int)
             };
-            let max_mem = mem_recv.recv().unwrap();
             assert_eq!(proc_res, child_pid);
+            let max_mem = mem_recv.recv().unwrap();
             let local: DateTime<Local> = Local::now();
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
-            let size = max_mem.file_size(options::CONVENTIONAL).unwrap();
+            let calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem };
+            let size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
             if proc_stat == 0 {
                 let (_, m) = server.accept().unwrap();
                 println!(
                     "[{}] Completed with threads {}, range {}, ops {}, spent {:?}, throughput {}, latency {:?}, mem {}",
                     time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency, size
                 );
-                (n, Some(m), max_mem)
+                (n, Some(m), calibrated_size)
             } else {
                 println!("[{}] Failed with threads {}, stat code {}, mem {}", time, n, proc_stat, size);
-                (n, None, max_mem)
+                (n, None, calibrated_size)
             }
 
         })
@@ -430,13 +433,11 @@ fn run_and_measure_mix<T: Collection>(
 }
 
 fn run_and_measure<T: Collection>(
-    threads: usize,
-    mix: Mix,
+    workload: Workload,
     fill: f64,
     cap: u8,
     cont: f64,
 ) -> Measurement {
-    let mut workload = Workload::new(threads, mix);
     workload
         .operations(fill)
         .contention(cont)
