@@ -29,13 +29,14 @@ pub fn draw_perf_plots(data: PerfPlotData) {
         } else {
             format!("{} - {}", s1, s2)
         };
-        plot_throughput(&format!("Throughput {}", title), data).unwrap();
+        plot_throughput(&format!("Throughput {}", title), &data).unwrap();
+        plot_max_mem(&format!("Max Memory {}", title), &data).unwrap();
     }
 }
 
 pub fn plot_throughput(
     title: &String,
-    data: Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
+    data: &Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
@@ -90,7 +91,7 @@ pub fn plot_throughput(
 
 pub fn plot_max_mem(
     title: &String,
-    data: Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
+    data: &Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
