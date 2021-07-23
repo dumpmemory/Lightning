@@ -1,5 +1,6 @@
 use super::PerfPlotData;
 use bustle::*;
+use humansize::FileSize;
 use plotters::prelude::*;
 use std::collections::HashMap;
 
@@ -40,7 +41,13 @@ pub fn plot_throughput(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
-        .map(|(_ser_str, measures)| measures.iter().map(|(threads, _, _)| threads).max().unwrap())
+        .map(|(_ser_str, measures)| {
+            measures
+                .iter()
+                .map(|(threads, _, _)| threads)
+                .max()
+                .unwrap()
+        })
         .max()
         .unwrap();
     let y_scale = data
@@ -95,18 +102,18 @@ pub fn plot_max_mem(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
-        .map(|(_ser_str, measures)| measures.iter().map(|(threads, _, _)| threads).max().unwrap())
+        .map(|(_ser_str, measures)| {
+            measures
+                .iter()
+                .map(|(threads, _, _)| threads)
+                .max()
+                .unwrap()
+        })
         .max()
         .unwrap();
     let y_scale = data
         .iter()
-        .map(|(_ser_str, measures)| {
-            measures
-                .iter()
-                .map(|(_, _, mem)| mem + 10)
-                .max()
-                .unwrap()
-        })
+        .map(|(_ser_str, measures)| measures.iter().map(|(_, _, mem)| mem + 10).max().unwrap())
         .max()
         .unwrap();
     let file_name = &format!("{}.png", title);
@@ -122,14 +129,13 @@ pub fn plot_max_mem(
         .configure_mesh()
         .x_desc("Threads")
         .y_desc("Max Memory")
-        .y_label_formatter(&|y| format!("{:+e}", y))
+        .y_label_formatter(&|y| y.file_size(options::CONVENTIONAL).unwrap())
         .draw()?;
     for (i, (title, data)) in data.iter().enumerate() {
         let color = Palette99::pick(i).mix(0.9);
         chart
             .draw_series(LineSeries::new(
-                data.iter()
-                    .map(|(t, _, mem)| (*t, *mem)),
+                data.iter().map(|(t, _, mem)| (*t, *mem)),
                 color.stroke_width(2),
             ))?
             .label(*title)
