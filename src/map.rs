@@ -190,7 +190,7 @@ impl<
                             FromChunkRes::None => {
                                 trace!(
                                     "Got non from new chunk for {} at epoch {}",
-                                    fkey - 5,
+                                    fkey - NUM_FIX,
                                     epoch
                                 );
                                 None
@@ -1749,7 +1749,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     fn insert_with_op(&self, op: InsertOp, key: &usize, value: usize) -> Option<usize> {
         self.table
             .insert(op, &(), None, key + NUM_FIX, value + NUM_FIX)
-            .map(|(v, _)| v)
+            .map(|(v, _)| v - NUM_FIX)
     }
 
     pub fn get_from_mutex(&self, key: &usize) -> Option<usize> {
@@ -2974,6 +2974,15 @@ mod tests {
         for writer in writers {
             writer.join().unwrap();
         }
+    }
+
+    #[test]
+    fn insert_with_num_fixes() {
+        let map = WordMap::<System, DefaultHasher>::with_capacity(32);
+        assert_eq!(map.insert(&24, 0), None);   
+        assert_eq!(map.insert(&24, 1), Some(0));   
+        assert_eq!(map.insert(&0, 0), None);
+        assert_eq!(map.insert(&0, 1), Some(0))
     }
 
     #[bench]

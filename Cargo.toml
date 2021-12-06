@@ -23,7 +23,7 @@ libc = "0.2.69"
 [dev-dependencies]
 chashmap = "2.2.2"
 page_size = "0.4.2"
-env_logger = "0.8"
+env_logger = "0.9"
 rayon = "1"
 
 [lib]
