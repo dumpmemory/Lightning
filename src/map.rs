@@ -368,8 +368,8 @@ impl<
             }
             let len = self.len();
             let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(self.init_cap)));
-            self.chunk.store(owned_new.into_shared(&guard), AcqRel);
-            self.new_chunk.store(Shared::null(), AcqRel);
+            self.chunk.store(owned_new.into_shared(&guard), Release);
+            self.new_chunk.store(Shared::null(), Release);
             dfence();
             self.count.fetch_sub(len, AcqRel);
         }
