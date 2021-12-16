@@ -1584,6 +1584,7 @@ pub trait Map<K, V: Clone> {
             }
         }
     }
+    fn clear(&self);
 }
 
 const NUM_FIX: usize = 5;
@@ -1674,6 +1675,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn len(&self) -> usize {
         self.table.len()
     }
+
+    fn clear(&self) {
+        self.table.clear();
+    }
 }
 
 impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
@@ -1758,6 +1763,10 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     fn len(&self) -> usize {
         self.table.len()
     }
+
+    fn clear(&self) {
+        self.table.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -1823,6 +1832,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     #[inline(always)]
     fn len(&self) -> usize {
         self.table.len()
+    }
+    
+    fn clear(&self) {
+        self.table.clear();
     }
 }
 
