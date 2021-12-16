@@ -360,19 +360,17 @@ impl<
     pub fn clear(&self) {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        loop {
-            let epoch = self.now_epoch();
-            if Self::is_copying(epoch) {
-                backoff.spin();
-                continue;
-            }
-            let len = self.len();
-            let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(self.init_cap)));
-            self.chunk.store(owned_new.into_shared(&guard), Release);
-            self.new_chunk.store(Shared::null(), Release);
-            dfence();
-            self.count.fetch_sub(len, AcqRel);
+        let epoch = self.now_epoch();
+        if Self::is_copying(epoch) {
+            backoff.spin();
+            continue;
         }
+        let len = self.len();
+        let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(self.init_cap)));
+        self.chunk.store(owned_new.into_shared(&guard), Release);
+        self.new_chunk.store(Shared::null(), Release);
+        dfence();
+        self.count.fetch_sub(len, AcqRel);
     }
 
     #[inline(always)]
