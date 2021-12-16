@@ -101,6 +101,7 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     count: AtomicUsize,
     epoch: AtomicUsize,
     timestamp: AtomicU64,
+    init_cap: usize,
     mark: PhantomData<H>,
 }
 
@@ -125,6 +126,7 @@ impl<
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
             timestamp: AtomicU64::new(timestamp()),
+            init_cap: cap,
             mark: PhantomData,
         }
     }
@@ -352,6 +354,24 @@ impl<
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
+        }
+    }
+
+    pub fn clear(&self) {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        loop {
+            let epoch = self.now_epoch();
+            if Self::is_copying(epoch) {
+                backoff.spin();
+                continue;
+            }
+            let len = self.len();
+            let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(self.init_cap)));
+            self.chunk.store(owned_new.into_shared(&guard), AcqRel);
+            self.new_chunk.store(Shared::null(), AcqRel);
+            dfence();
+            self.count.fetch_sub(len, AcqRel);
         }
     }
 
