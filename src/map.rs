@@ -1284,6 +1284,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
             timestamp: AtomicU64::new(timestamp()),
+            init_cap: self.init_cap,
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
@@ -1833,7 +1834,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     fn len(&self) -> usize {
         self.table.len()
     }
-    
+
     fn clear(&self) {
         self.table.clear();
     }
