@@ -11,6 +11,7 @@ pub mod linked_map;
 pub mod list;
 pub mod map;
 pub mod spin;
+pub mod ttl_cache;
 
 pub mod rand;
 

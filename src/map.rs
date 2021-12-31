@@ -73,7 +73,7 @@ enum ResizeResult {
     Done,
 }
 
-enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     Succeed(usize, usize, Shared<'a, ChunkPtr<K, V, A, ALLOC>>),
     NotFound,
     Failed,
@@ -365,7 +365,7 @@ impl<
         self.now_epoch() != epoch
     }
 
-    fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
+    pub fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
         &self,
         fkey: usize,
         key: &K,
@@ -1662,7 +1662,7 @@ impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     }
 }
 
-type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
+pub type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
 
 #[derive(Clone)]
 pub struct ObjectMap<
