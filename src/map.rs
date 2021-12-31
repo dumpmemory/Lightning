@@ -101,6 +101,7 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     count: AtomicUsize,
     epoch: AtomicUsize,
     timestamp: AtomicU64,
+    init_cap: usize,
     mark: PhantomData<H>,
 }
 
@@ -125,6 +126,7 @@ impl<
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
             timestamp: AtomicU64::new(timestamp()),
+            init_cap: cap,
             mark: PhantomData,
         }
     }
@@ -352,6 +354,25 @@ impl<
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
+        }
+    }
+
+    pub fn clear(&self) {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        loop {
+            let epoch = self.now_epoch();
+            if Self::is_copying(epoch) {
+                backoff.spin();
+                continue;
+            }
+            let len = self.len();
+            let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(self.init_cap)));
+            self.chunk.store(owned_new.into_shared(&guard), Release);
+            self.new_chunk.store(Shared::null(), Release);
+            dfence();
+            self.count.fetch_sub(len, AcqRel);
+            break;
         }
     }
 
@@ -1264,6 +1285,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
             timestamp: AtomicU64::new(timestamp()),
+            init_cap: self.init_cap,
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();
@@ -1564,6 +1586,7 @@ pub trait Map<K, V: Clone> {
             }
         }
     }
+    fn clear(&self);
 }
 
 const NUM_FIX: usize = 5;
@@ -1654,6 +1677,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn len(&self) -> usize {
         self.table.len()
     }
+
+    fn clear(&self) {
+        self.table.clear();
+    }
 }
 
 impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
@@ -1738,6 +1765,10 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     fn len(&self) -> usize {
         self.table.len()
     }
+
+    fn clear(&self) {
+        self.table.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -1803,6 +1834,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     #[inline(always)]
     fn len(&self) -> usize {
         self.table.len()
+    }
+
+    fn clear(&self) {
+        self.table.clear();
     }
 }
 
