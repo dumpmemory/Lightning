@@ -60,7 +60,10 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
                 &guard,
             ) {
                 crate::map::SwapResult::Succeed(_, _, _) => {}
-                _ => continue,
+                _ => {
+                    backoff.spin();
+                    continue
+                },
             }
             if let Some(comp_v) = fallback(key) {
                 self.table
