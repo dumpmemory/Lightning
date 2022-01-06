@@ -3,7 +3,7 @@
 use crate::map::{Map, ObjectMap};
 use crate::spin::SpinLock;
 use std::ops::Deref;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Release, self};
 use std::sync::atomic::{fence, AtomicUsize};
 use std::sync::Arc;
 
