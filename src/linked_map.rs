@@ -1,5 +1,7 @@
 // A concurrent linked hash map, fast and lock-free on iterate
 
+use crossbeam_epoch::{Atomic, Shared};
+
 use crate::map::{Map, ObjectMap};
 use crate::spin::SpinLock;
 use std::ops::Deref;
