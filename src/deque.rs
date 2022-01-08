@@ -4,6 +4,7 @@
 
 use std::{
     mem,
+    ops::Deref,
     sync::atomic::{fence, AtomicUsize, Ordering::*},
 };
 
@@ -143,10 +144,7 @@ impl<T: Clone> Deque<T> {
                 // Changed the prev pointer of next node to the node_ptr
                 {
                     // II
-                    // TODO: Analyze scenarios when current node is removed
-                    // if node.prev.load(Acquire, guard).tag() == DELETED_TAG {
-                    //     // Current node is removed
-                    // }
+                    break;
                 }
                 backoff.spin();
             }
@@ -197,6 +195,7 @@ impl<T: Clone> Deque<T> {
             let node = unsafe { node_ptr.deref() };
             if node.next.load(Acquire, guard) != next_ptr.with_tag(EXISTED_TAG) {
                 Self::link_prev(&node_ptr, &next_ptr, guard, &backoff);
+                backoff.spin();
                 continue;
             }
             if node_ptr == self.head.load(Relaxed, guard) {
@@ -260,6 +259,7 @@ impl<T: Clone> Deque<T> {
             let prev_next_ptr = prev.next.load(Acquire, guard);
             if prev_next_ptr.tag() == DELETED_TAG {
                 prev_ptr = prev.prev.load(Acquire, guard);
+                backoff.spin();
                 continue;
             }
             if let Err(other_prev_next) = prev.next.compare_exchange(
@@ -270,6 +270,7 @@ impl<T: Clone> Deque<T> {
                 guard,
             ) {
                 prev_ptr = other_prev_next.current;
+                backoff.spin();
                 continue;
             }
             break;
@@ -329,7 +330,7 @@ impl<T: Clone> Deque<T> {
                         next_prev_ptr,
                         prev_ptr.with_tag(EXISTED_TAG),
                         AcqRel,
-                        Release,
+                        Acquire,
                         guard,
                     )
                     .is_ok()
@@ -370,4 +371,36 @@ pub fn decomp_atomic<'a, T: Clone>(
 ) -> (&'a Node<T>, usize) {
     let node_ref = atomic.load(Acquire, guard);
     decomp_ptr(&node_ref)
+}
+
+impl<T> Deref for Node<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    #[test]
+    pub fn single_threaded_push_pop() {
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        deque.insert_front(1, &guard);
+        deque.insert_back(2, &guard);
+        assert_eq!(
+            deque.remove_front(&guard).map(|s| unsafe { **s.deref() }),
+            Some(1)
+        );
+        assert_eq!(
+            deque.remove_back(&guard).map(|s| unsafe { **s.deref() }),
+            Some(2)
+        );
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
+    }
 }
