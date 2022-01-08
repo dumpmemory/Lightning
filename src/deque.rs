@@ -258,7 +258,10 @@ impl<T: Clone> Deque<T> {
             let prev = unsafe { prev_ptr.deref() };
             let prev_next_ptr = prev.next.load(Acquire, guard);
             if prev_next_ptr.tag() == DELETED_TAG {
-                prev_ptr = prev.prev.load(Acquire, guard);
+                let prev_prev = prev.prev.load(Acquire, guard);
+                if !prev_ptr.is_null() {
+                    prev_ptr = prev_prev;
+                }
                 backoff.spin();
                 continue;
             }
@@ -480,7 +483,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_front() {
-        let num = 10240;
+        let num = 1024;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
             .map(|i| {
@@ -512,7 +515,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_back() {
-        let num = 10240;
+        let num = 1024;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
             .map(|i| {
@@ -544,7 +547,7 @@ mod test {
 
     #[test]
     pub fn multithread_pop_front() {
-        let num = 10240;
+        let num = 1024;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
@@ -574,7 +577,7 @@ mod test {
 
     #[test]
     pub fn multithread_pop_back() {
-        let num = 10240;
+        let num = 1024;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
