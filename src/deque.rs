@@ -403,4 +403,76 @@ mod test {
         assert!(deque.remove_front(&guard).is_none());
         assert!(deque.remove_back(&guard).is_none());
     }
+
+    #[test]
+    pub fn push_front_pop_front() {
+        let num = 100;
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        for i in 0..num {
+            deque.insert_front(i, &guard);
+        }
+        for i in (0..num).rev() {
+            assert_eq!(
+                deque.remove_front(&guard).map(|s| unsafe { **s.deref() }),
+                Some(i)
+            ); 
+        }
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
+    }
+
+    #[test]
+    pub fn push_front_pop_back() {
+        let num = 100;
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        for i in 0..num {
+            deque.insert_front(i, &guard);
+        }
+        for i in 0..num {
+            assert_eq!(
+                deque.remove_back(&guard).map(|s| unsafe { **s.deref() }),
+                Some(i)
+            ); 
+        }
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
+    }
+
+    #[test]
+    pub fn push_back_pop_back() {
+        let num = 100;
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        for i in 0..num {
+            deque.insert_back(i, &guard);
+        }
+        for i in (0..num).rev() {
+            assert_eq!(
+                deque.remove_back(&guard).map(|s| unsafe { **s.deref() }),
+                Some(i)
+            ); 
+        }
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
+    }
+
+    #[test]
+    pub fn push_back_pop_front() {
+        let num = 100;
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        for i in 0..num {
+            deque.insert_back(i, &guard);
+        }
+        for i in 0..num {
+            assert_eq!(
+                deque.remove_front(&guard).map(|s| unsafe { **s.deref() }),
+                Some(i)
+            ); 
+        }
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
+    }
 }
