@@ -25,6 +25,7 @@ chashmap = "2.2.2"
 page_size = "0.4.2"
 env_logger = "0.9"
 rayon = "1"
+itertools = "0.10"
 
 [lib]
 name = "lightning"

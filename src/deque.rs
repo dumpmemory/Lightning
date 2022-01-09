@@ -387,9 +387,9 @@ impl<T> Deref for Node<T> {
 #[cfg(test)]
 mod test {
 
-    use std::{collections::HashSet, sync::Arc, thread};
-
     use super::*;
+    use itertools::Itertools;
+    use std::{collections::HashSet, sync::Arc, thread};
 
     #[test]
     pub fn single_threaded_push_pop() {
@@ -483,14 +483,19 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_single_thread_pop_front() {
-        let num = 1024;
+        let num = 40960;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .map(|i| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    deque.insert_front(i, &guard);
+                    for i in nums {
+                        let guard = crossbeam_epoch::pin();
+                        deque.insert_front(i, &guard);
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -515,14 +520,19 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_single_thread_pop_back() {
-        let num = 1024;
+        let num = 40960;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .map(|i| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    deque.insert_front(i, &guard);
+                    for i in nums {
+                        let guard = crossbeam_epoch::pin();
+                        deque.insert_front(i, &guard);
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -547,14 +557,19 @@ mod test {
 
     #[test]
     pub fn multithread_push_back_single_thread_pop_front() {
-        let num = 1024;
+        let num = 40960;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .map(|i| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    deque.insert_back(i, &guard);
+                    for i in nums {
+                        let guard = crossbeam_epoch::pin();
+                        deque.insert_back(i, &guard);
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -579,14 +594,19 @@ mod test {
 
     #[test]
     pub fn multithread_push_back_single_thread_pop_back() {
-        let num = 1024;
+        let num = 40960;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .map(|i| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    deque.insert_back(i, &guard);
+                    for i in nums {
+                        let guard = crossbeam_epoch::pin();
+                        deque.insert_back(i, &guard);
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -611,25 +631,35 @@ mod test {
 
     #[test]
     pub fn multithread_pop_front() {
-        let num = 1024;
+        let num = 40960;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .map(|_| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
                 let deque = deque.clone();
+                let nums = nums.collect_vec();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    unsafe { **deque.remove_front(&guard).unwrap().deref() }
+                    nums.into_iter()
+                        .map(|_| {
+                            let guard = crossbeam_epoch::pin();
+                            unsafe { **deque.remove_front(&guard).unwrap().deref() }
+                        })
+                        .collect_vec()
                 })
             })
             .collect::<Vec<_>>();
         let mut all_nums = HashSet::new();
-        ths.into_iter().map(|t| t.join().unwrap()).for_each(|n| {
-            all_nums.insert(n);
-        });
+        ths.into_iter()
+            .map(|t| t.join().unwrap().into_iter())
+            .flatten()
+            .for_each(|n| {
+                all_nums.insert(n);
+            });
         assert!(deque.remove_front(&guard).is_none());
         assert!(deque.remove_back(&guard).is_none());
         assert_eq!(all_nums.len(), num);
@@ -640,25 +670,35 @@ mod test {
 
     #[test]
     pub fn multithread_pop_back() {
-        let num = 1024;
+        let num = 40960;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .map(|_| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
                 let deque = deque.clone();
+                let nums = nums.collect_vec();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    unsafe { **deque.remove_back(&guard).unwrap().deref() }
+                    nums.into_iter()
+                        .map(|_| {
+                            let guard = crossbeam_epoch::pin();
+                            unsafe { **deque.remove_back(&guard).unwrap().deref() }
+                        })
+                        .collect_vec()
                 })
             })
             .collect::<Vec<_>>();
         let mut all_nums = HashSet::new();
-        ths.into_iter().map(|t| t.join().unwrap()).for_each(|n| {
-            all_nums.insert(n);
-        });
+        ths.into_iter()
+            .map(|t| t.join().unwrap().into_iter())
+            .flatten()
+            .for_each(|n| {
+                all_nums.insert(n);
+            });
         assert!(deque.remove_front(&guard).is_none());
         assert!(deque.remove_back(&guard).is_none());
         assert_eq!(all_nums.len(), num);
@@ -669,18 +709,23 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_and_back_single_thread_pop_front() {
-        let num = 1024;
+        let num = 40960;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .map(|i| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
                     let guard = crossbeam_epoch::pin();
-                    if i % 2 == 0 {
-                        deque.insert_front(i, &guard);
-                    } else {
-                        deque.insert_back(i, &guard);
-                    }
+                    nums.into_iter().for_each(|i| {
+                        if i % 2 == 0 {
+                            deque.insert_front(i, &guard);
+                        } else {
+                            deque.insert_back(i, &guard);
+                        }
+                    });
                 })
             })
             .collect::<Vec<_>>();
@@ -705,18 +750,23 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_and_back_single_thread_pop_back() {
-        let num = 1024;
+        let num = 40960;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .map(|i| {
+            .chunks(128)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
                     let guard = crossbeam_epoch::pin();
-                    if i % 2 == 0 {
-                        deque.insert_front(i, &guard);
-                    } else {
-                        deque.insert_back(i, &guard);
-                    }
+                    nums.into_iter().for_each(|i| {
+                        if i % 2 == 0 {
+                            deque.insert_front(i, &guard);
+                        } else {
+                            deque.insert_back(i, &guard);
+                        }
+                    });
                 })
             })
             .collect::<Vec<_>>();
@@ -741,31 +791,41 @@ mod test {
 
     #[test]
     pub fn multithread_pop_back_front() {
-        let num = 1024;
+        let num = 40960;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .map(|i| {
+            .chunks(32)
+            .into_iter()
+            .map(|nums| {
                 let deque = deque.clone();
+                let nums = nums.collect_vec();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    unsafe {
-                        if i % 2 == 0 {
-                            **deque.remove_front(&guard).unwrap().deref()
-                        } else {
-                            **deque.remove_back(&guard).unwrap().deref()
-                        }
-                    }
+                    nums.into_iter()
+                        .map(|i| {
+                            let guard = crossbeam_epoch::pin();
+                            unsafe {
+                                if i % 2 == 0 {
+                                    **deque.remove_front(&guard).unwrap().deref()
+                                } else {
+                                    **deque.remove_back(&guard).unwrap().deref()
+                                }
+                            }
+                        })
+                        .collect_vec()
                 })
             })
             .collect::<Vec<_>>();
         let mut all_nums = HashSet::new();
-        ths.into_iter().map(|t| t.join().unwrap()).for_each(|n| {
-            all_nums.insert(n);
-        });
+        ths.into_iter()
+            .map(|t| t.join().unwrap().into_iter())
+            .flatten()
+            .for_each(|n| {
+                all_nums.insert(n);
+            });
         assert!(deque.remove_front(&guard).is_none());
         assert!(deque.remove_back(&guard).is_none());
         assert_eq!(all_nums.len(), num);
@@ -776,7 +836,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_pop_front() {
-        let num = 2048;
+        let num = 40960;
         let threshold = (num as f64 * 0.5) as usize;
         let deque = Arc::new(Deque::new());
         let guard = crossbeam_epoch::pin();
@@ -784,23 +844,31 @@ mod test {
             deque.insert_front(i, &guard);
         }
         let ths = (threshold..num)
-            .map(|i| {
+            .chunks(32)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    if i % 2 == 0 {
-                        deque.insert_front(i, &guard);
-                        None
-                    } else {
-                        Some(unsafe { **deque.remove_front(&guard).unwrap().deref() })
-                    }
+                    nums.into_iter()
+                        .map(|i| {
+                            let guard = crossbeam_epoch::pin();
+                            if i % 2 == 0 {
+                                deque.insert_front(i, &guard);
+                                None
+                            } else {
+                                Some(unsafe { **deque.remove_front(&guard).unwrap().deref() })
+                            }
+                        })
+                        .collect_vec()
                 })
             })
             .collect::<Vec<_>>();
         let results = ths
             .into_iter()
-            .map(|j| j.join())
-            .filter_map(|n| n.unwrap())
+            .map(|j| j.join().unwrap().into_iter())
+            .flatten()
+            .filter_map(|n| n)
             .collect::<Vec<_>>();
         let results_len = results.len();
         assert_eq!(results_len, (num - threshold) / 2);
@@ -810,7 +878,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_pop_back() {
-        let num = 2048;
+        let num = 40960;
         let threshold = (num as f64 * 0.5) as usize;
         let deque = Arc::new(Deque::new());
         let guard = crossbeam_epoch::pin();
@@ -818,23 +886,31 @@ mod test {
             deque.insert_back(i, &guard);
         }
         let ths = (threshold..num)
-            .map(|i| {
+            .chunks(64)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
                 let deque = deque.clone();
                 thread::spawn(move || {
-                    let guard = crossbeam_epoch::pin();
-                    if i % 2 == 0 {
-                        deque.insert_back(i, &guard);
-                        None
-                    } else {
-                        Some(unsafe { **deque.remove_back(&guard).unwrap().deref() })
-                    }
+                    nums.into_iter()
+                        .map(|i| {
+                            let guard = crossbeam_epoch::pin();
+                            if i % 2 == 0 {
+                                deque.insert_back(i, &guard);
+                                None
+                            } else {
+                                Some(unsafe { **deque.remove_back(&guard).unwrap().deref() })
+                            }
+                        })
+                        .collect_vec()
                 })
             })
             .collect::<Vec<_>>();
         let results = ths
             .into_iter()
-            .map(|j| j.join())
-            .filter_map(|n| n.unwrap())
+            .map(|j| j.join().unwrap().into_iter())
+            .flatten()
+            .filter_map(|n| n)
             .collect::<Vec<_>>();
         let results_len = results.len();
         assert_eq!(results_len, (num - threshold) / 2);
