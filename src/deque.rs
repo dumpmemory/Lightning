@@ -740,4 +740,39 @@ mod test {
             assert!(all_nums.contains(&i));
         }
     }
+
+    #[test]
+    pub fn multithread_pop_back_front() {
+        let num = 1024;
+        let guard = crossbeam_epoch::pin();
+        let deque = Arc::new(Deque::new());
+        for i in 0..num {
+            deque.insert_front(i, &guard);
+        }
+        let ths = (0..num).map(|i| {
+            let deque = deque.clone();
+            thread::spawn(move || {
+                let guard = crossbeam_epoch::pin();
+                unsafe {
+                    if i % 2 == 0 {
+                        **deque.remove_front(&guard).unwrap().deref()
+                    } else {
+                        **deque.remove_back(&guard).unwrap().deref()
+                    }
+                }
+                
+            })
+        })
+        .collect::<Vec<_>>();
+        let mut all_nums = HashSet::new();
+        ths.into_iter().map(|t| t.join().unwrap()).for_each(|n| {
+            all_nums.insert(n);
+        });
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
+        assert_eq!(all_nums.len(), num);
+        for i in 0..num {
+            assert!(all_nums.contains(&i));
+        }
+    }
 }
