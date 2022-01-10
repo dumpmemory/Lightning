@@ -33,6 +33,7 @@ impl<T: Clone> Deque<T> {
         let tail = Atomic::new(Node::null());
         let head_ptr = head.load(Relaxed, &guard);
         let tail_ptr = tail.load(Relaxed, &guard);
+        debug!("Initialized deque with head: {:?} and tail: {:?}", head, tail);
         unsafe {
             let head_node = head_ptr.deref();
             let tail_node = tail_ptr.deref();
@@ -157,6 +158,7 @@ impl<T: Clone> Deque<T> {
         let prev_node = unsafe { prev.deref() };
         loop {
             let curr = prev_node.next.load(Acquire, guard);
+            debug_assert_ne!(prev, curr, "head node is linking it self");
             if curr == self.tail.load(Relaxed, guard) {
                 // End of list
                 return None;
@@ -169,6 +171,7 @@ impl<T: Clone> Deque<T> {
                 backoff.spin();
                 continue;
             }
+            debug_assert_ne!(curr_next, prev);
             if curr_node
                 .next
                 .compare_exchange(
@@ -230,19 +233,24 @@ impl<T: Clone> Deque<T> {
             let node = node_ptr.deref();
             let mut prev_ptr = node.prev.load(Acquire, guard);
             let mut next_ptr = node.next.load(Acquire, guard);
+            let mut round = 0;
+            debug_assert_ne!(prev_ptr, next_ptr, "node on {:?}", node_ptr);
             loop {
+                round += 1;
                 let prev = prev_ptr.deref();
                 let next = next_ptr.deref();
                 let next_prev_ptr = next.prev.load(Acquire, guard);
                 let next_next_ptr = next.next.load(Acquire, guard);
+                debug_assert_ne!(next_prev_ptr, next_next_ptr, "on {:?}", next_ptr);
                 if next_next_ptr.tag() == DELETED_TAG {
                     // the next node we are going to work on is also deleted
                     // move on to the next of the next node
                     trace!(
-                        "Unlink move next from {:?} to {:?} for node {:?}",
+                        "Unlink move next from {:?} to {:?} for node {:?} at round {}",
                         next_ptr,
                         next_next_ptr,
-                        node_ptr
+                        node_ptr,
+                        round
                     );
                     next_ptr = next_next_ptr;
                     backoff.spin();
@@ -251,18 +259,22 @@ impl<T: Clone> Deque<T> {
                 debug_assert_eq!(next_prev_ptr.tag(), EXISTED_TAG);
                 let prev_prev_ptr = prev.prev.load(Acquire, guard);
                 let prev_next_ptr = prev.next.load(Acquire, guard);
+                debug_assert_ne!(prev_prev_ptr, prev_next_ptr, "on {:?}", prev_ptr);
                 if prev_next_ptr.tag() == DELETED_TAG {
+                    debug_assert_ne!(prev_ptr, prev_prev_ptr);
                     trace!(
-                        "Unlink move prev from {:?} to {:?} for node {:?}",
+                        "Unlink move prev from {:?} to {:?} for node {:?} at round {}",
                         prev_ptr,
                         prev_prev_ptr,
-                        node_ptr
+                        node_ptr,
+                        round
                     );
                     prev_ptr = prev_prev_ptr;
                     backoff.spin();
                     continue;
                 }
                 debug_assert_eq!(prev_prev_ptr.tag(), EXISTED_TAG);
+                debug_assert_ne!(prev_ptr, next_ptr, "self linking at round {}", round);
                 if let Err(new_prev_next) = prev.next.compare_exchange(
                     prev_next_ptr,
                     next_ptr.with_tag(EXISTED_TAG),
@@ -272,16 +284,18 @@ impl<T: Clone> Deque<T> {
                 ) {
                     let new_prev = new_prev_next.current;
                     debug!(
-                        "Unlink swap prev next failed, move from {:?} to new prev {:?} for node {:?}",
+                        "Unlink swap prev next failed, move from {:?} to new prev {:?} for node {:?} at round {}",
                         prev_ptr,
                         new_prev,
-                        node_ptr
+                        node_ptr,
+                        round
                     );
                     prev_ptr = new_prev;
                     backoff.spin();
                     continue;
                 } // III
                 fence(SeqCst);
+                debug_assert_ne!(next_ptr, prev_ptr, "self linking at round {}", round);
                 if let Err(new_next_prev) = next.prev.compare_exchange(
                     next_prev_ptr,
                     prev_ptr.with_tag(EXISTED_TAG),
@@ -291,10 +305,11 @@ impl<T: Clone> Deque<T> {
                 ) {
                     let new_next = new_next_prev.current;
                     debug!(
-                        "Unlink swap next prev failed, move from {:?} to new next {:?} for node {:?}",
+                        "Unlink swap next prev failed, move from {:?} to new next {:?} for node {:?} at round {}",
                         next_ptr,
                         new_next,
-                        node_ptr
+                        node_ptr,
+                        round
                     );
                     next_ptr = new_next;
                     backoff.spin();
@@ -314,6 +329,7 @@ impl<T: Clone> Deque<T> {
             let node = node_ptr.deref();
             loop {
                 let node_prev_ptr = node.prev.load(Acquire, guard);
+                debug_assert_ne!(node_ptr, &node_prev_ptr, "self linking");
                 if node_prev_ptr.tag() == DELETED_TAG
                     || node
                         .prev
@@ -662,7 +678,7 @@ mod test {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .chunks(128)
+            .chunks(256)
             .into_iter()
             .map(|nums| {
                 let deque = deque.clone();
