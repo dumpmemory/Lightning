@@ -33,6 +33,7 @@ impl<T: Clone> Deque<T> {
         let tail = Atomic::new(Node::null());
         let head_ptr = head.load(Relaxed, &guard);
         let tail_ptr = tail.load(Relaxed, &guard);
+        debug!("Initialized deque with head: {:?} and tail: {:?}", head, tail);
         unsafe {
             let head_node = head_ptr.deref();
             let tail_node = tail_ptr.deref();
@@ -166,6 +167,7 @@ impl<T: Clone> Deque<T> {
         let prev_node = unsafe { prev.deref() };
         loop {
             let curr = prev_node.next.load(Acquire, guard);
+            debug_assert_ne!(prev, curr, "head node is linking it self");
             if curr == self.tail.load(Relaxed, guard) {
                 // End of list
                 return None;
@@ -626,7 +628,7 @@ mod test {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .chunks(128)
+            .chunks(256)
             .into_iter()
             .map(|nums| {
                 let deque = deque.clone();
