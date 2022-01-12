@@ -171,18 +171,18 @@ impl<T: Clone> Deque<T> {
                 return None;
             }
             let curr_node = unsafe { curr.deref() };
-            let curr_next = curr_node.next.load(Acquire, guard);
-            if curr_next.tag() == TRANS_TAG {
+            let curr_prev = curr_node.next.load(Acquire, guard);
+            if curr_prev.tag() == TRANS_TAG {
                 // TODO: Make sure current node is properly removed
                 trace!("Current node is removed at {:?}, retry", curr);
                 backoff.spin();
                 continue;
             }
             if curr_node
-                .next
+                .prev
                 .compare_exchange(
-                    curr_next,
-                    curr_next.with_tag(TRANS_TAG),
+                    curr_prev, // Stable tag ensured
+                    curr_prev.with_tag(TRANS_TAG),
                     AcqRel,
                     Acquire,
                     guard,
@@ -205,19 +205,19 @@ impl<T: Clone> Deque<T> {
         loop {
             let node_ptr = next.prev.load(Acquire, guard);
             let node = unsafe { node_ptr.deref() };
-            if node.next.load(Acquire, guard) != next_ptr.with_tag(STABLE_TAG) {
-                Self::link_prev(&node_ptr, &next_ptr, guard, &backoff);
+            if node.prev.load(Acquire, guard).tag() == TRANS_TAG {
                 backoff.spin();
                 continue;
             }
             if node_ptr == self.head.load(Relaxed, guard) {
                 return None;
             }
+            let node_prev_ptr = node.prev.load(Acquire, guard);
             if node
-                .next
+                .prev
                 .compare_exchange(
-                    next_ptr.with_tag(STABLE_TAG),
-                    next_ptr.with_tag(TRANS_TAG),
+                    node_prev_ptr.with_tag(STABLE_TAG),
+                    node_prev_ptr.with_tag(TRANS_TAG),
                     AcqRel,
                     Acquire,
                     guard,
@@ -233,102 +233,91 @@ impl<T: Clone> Deque<T> {
 
     fn unlink_node<'a>(node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
         fence(SeqCst);
-        Self::mark_prev_deleted(node_ptr, guard, backoff); // II
-        fence(SeqCst);
         unsafe {
             let node = node_ptr.deref();
             let mut prev_ptr = node.prev.load(Acquire, guard);
             let mut next_ptr = node.next.load(Acquire, guard);
+            let mut marked_prev = false;
             loop {
-                let prev = prev_ptr.deref();
-                let next = next_ptr.deref();
-                let next_prev_ptr = next.prev.load(Acquire, guard);
-                let next_next_ptr = next.next.load(Acquire, guard);
-                if next_next_ptr.tag() == TRANS_TAG {
-                    // the next node we are going to work on is also deleted
-                    // move on to the next of the next node
-                    trace!(
-                        "Unlink move next from {:?} to {:?} for node {:?}",
-                        next_ptr,
-                        next_next_ptr,
-                        node_ptr
-                    );
-                    next_ptr = next_next_ptr;
-                    backoff.spin();
-                    continue;
+                let prev_node = prev_ptr.deref();
+                let next_node = next_ptr.deref();
+                let prev_prev = prev_node.prev.load(Acquire, guard);
+                let prev_next = prev_node.next.load(Acquire, guard);
+                if !marked_prev {
+                    // check update prev
+                    if prev_prev.tag() == TRANS_TAG {
+                        prev_ptr = prev_prev;
+                        backoff.spin();
+                        continue;
+                    }
+                    if prev_next.tag() == TRANS_TAG {
+                        // Inserting, need to wait until it finished
+                        backoff.spin();
+                        continue;
+                    }
                 }
-                debug_assert_eq!(next_prev_ptr.tag(), STABLE_TAG);
-                let prev_prev_ptr = prev.prev.load(Acquire, guard);
-                let prev_next_ptr = prev.next.load(Acquire, guard);
-                if prev_next_ptr.tag() == TRANS_TAG {
-                    trace!(
-                        "Unlink move prev from {:?} to {:?} for node {:?}",
-                        prev_ptr,
-                        prev_prev_ptr,
-                        node_ptr
-                    );
-                    prev_ptr = prev_prev_ptr;
-                    backoff.spin();
-                    continue;
+                let next_prev = next_node.prev.load(Acquire, guard);
+                let next_next = next_node.next.load(Acquire, guard);
+                {
+                    // check update next
+                    if next_prev.tag() == TRANS_TAG {
+                        // Deleting or deleted, shift to next_next
+                        next_ptr = next_next;
+                        backoff.spin();
+                        continue;
+                    }
+                    // Don't care about insertion by next next because we are not going to touch it
                 }
-                debug_assert_eq!(prev_prev_ptr.tag(), STABLE_TAG);
-                if let Err(new_prev_next) = prev.next.compare_exchange(
-                    prev_next_ptr,
-                    next_ptr.with_tag(STABLE_TAG),
-                    AcqRel,
-                    Acquire,
-                    guard,
-                ) {
-                    let new_prev = new_prev_next.current;
-                    debug!(
-                        "Unlink swap prev next failed, move from {:?} to new prev {:?} for node {:?}",
-                        prev_ptr,
-                        new_prev,
-                        node_ptr
-                    );
-                    prev_ptr = new_prev;
+                debug_assert_ne!(prev_next.tag(), TRANS_TAG);
+                debug_assert_ne!(next_prev.tag(), TRANS_TAG);
+                if !marked_prev
+                    && prev_node
+                        .next
+                        .compare_exchange(
+                            prev_next,
+                            next_ptr.with_tag(STABLE_TAG),
+                            AcqRel,
+                            Acquire,
+                            guard,
+                        )
+                        .is_err()
+                {
                     backoff.spin();
                     continue;
-                } // III
-                fence(SeqCst);
-                if let Err(new_next_prev) = next.prev.compare_exchange(
-                    next_prev_ptr,
-                    prev_ptr.with_tag(STABLE_TAG),
-                    AcqRel,
-                    Acquire,
-                    guard,
-                ) {
-                    let new_next = new_next_prev.current;
-                    debug!(
-                        "Unlink swap next prev failed, move from {:?} to new next {:?} for node {:?}",
-                        next_ptr,
-                        new_next,
-                        node_ptr
-                    );
-                    next_ptr = new_next;
-                    backoff.spin();
-                    continue;
+                } else {
+                    marked_prev = true;
                 }
-                break;
+                if next_node
+                    .prev
+                    .compare_exchange(
+                        next_prev,
+                        next_ptr.with_tag(STABLE_TAG),
+                        AcqRel,
+                        Acquire,
+                        guard,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
+                backoff.spin();
             }
+            fence(SeqCst);
+            Self::mark_next_trans(node_ptr, guard, backoff);
         }
     }
 
-    fn mark_prev_deleted<'a>(
-        node_ptr: &'a Shared<'a, Node<T>>,
-        guard: &'a Guard,
-        backoff: &Backoff,
-    ) {
+    fn mark_next_trans<'a>(node_ptr: &'a Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
         unsafe {
             let node = node_ptr.deref();
             loop {
-                let node_prev_ptr = node.prev.load(Acquire, guard);
-                if node_prev_ptr.tag() == TRANS_TAG
+                let node_next_ptr = node.next.load(Acquire, guard);
+                if node_next_ptr.tag() == TRANS_TAG
                     || node
-                        .prev
+                        .next
                         .compare_exchange(
-                            node_prev_ptr,
-                            node_prev_ptr.with_tag(TRANS_TAG),
+                            node_next_ptr,
+                            node_next_ptr.with_tag(TRANS_TAG),
                             AcqRel,
                             Acquire,
                             guard,
@@ -339,40 +328,6 @@ impl<T: Clone> Deque<T> {
                 }
                 backoff.spin();
             }
-        }
-    }
-
-    fn link_prev<'a>(
-        prev_ptr: &Shared<'a, Node<T>>,
-        curr_ptr: &Shared<'a, Node<T>>,
-        guard: &'a Guard,
-        backoff: &Backoff,
-    ) {
-        let mut prev_ptr = prev_ptr.clone();
-        loop {
-            let prev = unsafe { prev_ptr.deref() };
-            let prev_next_ptr = prev.next.load(Acquire, guard);
-            if prev_next_ptr.tag() == TRANS_TAG {
-                let prev_prev = prev.prev.load(Acquire, guard);
-                debug_assert!(prev_prev != prev_next_ptr);
-                if !prev_ptr.is_null() {
-                    prev_ptr = prev_prev;
-                }
-                backoff.spin();
-                continue;
-            }
-            if let Err(other_prev_next) = prev.next.compare_exchange(
-                prev_next_ptr,
-                curr_ptr.with_tag(STABLE_TAG),
-                AcqRel,
-                Acquire,
-                guard,
-            ) {
-                prev_ptr = other_prev_next.current;
-                backoff.spin();
-                continue;
-            }
-            break;
         }
     }
 }
