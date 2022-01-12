@@ -23,8 +23,8 @@ pub struct Deque<T: Clone> {
     tail: Atomic<Node<T>>,
 }
 
-const TRANS_TAG: usize = 1;
-const STABLE_TAG: usize = 0;
+const DELETED_TAG: usize = 1;
+const EXISTED_TAG: usize = 0;
 
 impl<T: Clone> Deque<T> {
     pub fn new() -> Self {
@@ -53,19 +53,19 @@ impl<T: Clone> Deque<T> {
         loop {
             {
                 let prev_next = prev_node.next.load(Acquire, &guard);
-                if decomp_with_ptr(&prev_next) != (&next, STABLE_TAG) {
+                if decomp_with_ptr(&prev_next) != (&next, EXISTED_TAG) {
                     next = prev_next;
                     backoff.spin();
                     continue;
                 }
             }
-            curr_node.prev.store(prev.with_tag(STABLE_TAG), Relaxed);
-            curr_node.next.store(next.with_tag(TRANS_TAG), Relaxed);
+            curr_node.prev.store(prev.with_tag(EXISTED_TAG), Relaxed);
+            curr_node.next.store(next.with_tag(EXISTED_TAG), Relaxed);
             if prev_node
                 .next
                 .compare_exchange(
-                    next.with_tag(STABLE_TAG),
-                    curr.with_tag(STABLE_TAG),
+                    next.with_tag(EXISTED_TAG),
+                    curr.with_tag(EXISTED_TAG),
                     AcqRel,
                     Acquire,
                     &guard,
@@ -77,9 +77,7 @@ impl<T: Clone> Deque<T> {
             backoff.spin();
         } // I
         fence(SeqCst);
-        if let Some(next) = Self::insert_next_ops(&curr, next, prev, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(STABLE_TAG), Release);
-        }
+        Self::insert_next_ops(&curr, &next, &guard, &backoff)
     }
 
     pub fn insert_back(&self, value: T, guard: &Guard) {
@@ -87,18 +85,22 @@ impl<T: Clone> Deque<T> {
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
         let next = self.tail.load(Relaxed, &guard);
         let curr_node = unsafe { curr.deref() };
-        let mut prev;
         loop {
-            prev = unsafe { next.deref().prev.load(Acquire, &guard) };
+            let prev = unsafe { next.deref().prev.load(Acquire, &guard) };
             let prev_node = unsafe { prev.deref() };
-            curr_node.prev.store(prev.with_tag(STABLE_TAG), Relaxed);
-            curr_node.next.store(next.with_tag(TRANS_TAG), Relaxed);
-            debug_assert_eq!(next.tag(), STABLE_TAG);
+            let prev_next = prev_node.next.load(Acquire, &guard);
+            if decomp_with_ptr(&prev_next) != (&next, EXISTED_TAG) {
+                // prev node does not have tail node as its next node
+                // TODO: make sure deletion will fix this
+                continue;
+            }
+            curr_node.prev.store(prev.with_tag(EXISTED_TAG), Relaxed);
+            curr_node.next.store(next.with_tag(EXISTED_TAG), Relaxed);
             if prev_node
                 .next
                 .compare_exchange(
-                    next.with_tag(STABLE_TAG),
-                    curr.with_tag(STABLE_TAG),
+                    next.with_tag(EXISTED_TAG),
+                    curr.with_tag(EXISTED_TAG),
                     AcqRel,
                     Acquire,
                     &guard,
@@ -110,47 +112,41 @@ impl<T: Clone> Deque<T> {
             backoff.spin();
         }
         fence(SeqCst); // I
-        if let Some(next) = Self::insert_next_ops(&curr, next, prev, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(STABLE_TAG), Release);
-        }
+        Self::insert_next_ops(&curr, &next, &guard, &backoff)
     }
 
     fn insert_next_ops<'a>(
         node_ptr: &Shared<'a, Node<T>>,
-        mut next_ptr: Shared<'a, Node<T>>,
-        mut next_prev_ptr: Shared<'a, Node<T>>,
+        next_ptr: &Shared<'a, Node<T>>,
         guard: &'a Guard,
         backoff: &Backoff,
-    ) -> Option<Shared<'a, Node<T>>> {
+    ) {
         loop {
             unsafe {
                 let node = node_ptr.deref();
                 let next = next_ptr.deref();
-                if decomp_with_ptr(&node.next.load(Acquire, guard)) != (&next_ptr, STABLE_TAG) {
-                    warn!("RARE condition on insert next ops. node removed.");
-                    return None;
+                let next_prev_ptr = next.prev.load(Acquire, guard);
+                if next_prev_ptr.tag() == DELETED_TAG
+                    || decomp_with_ptr(&node.next.load(Acquire, guard)) != (next_ptr, EXISTED_TAG)
+                {
+                    // When the previous node is deleted or target node is changed, do nothing
+                    break;
                 }
-                if next_prev_ptr.tag() == TRANS_TAG {
-                    next_ptr = next_prev_ptr
-                } else {
-                    if let Err(new_next_prev) = next.prev.compare_exchange(
+                if next
+                    .prev
+                    .compare_exchange(
                         next_prev_ptr,
-                        node_ptr.with_tag(STABLE_TAG),
+                        node_ptr.with_tag(EXISTED_TAG),
                         AcqRel,
                         Acquire,
                         guard,
                     )
-                    // Changed the prev pointer of next node to the node_ptr
-                    {
-                        next_ptr = new_next_prev.current;
-                    } else {
-                        // II
-                        return Some(next_ptr);
-                    }
+                    .is_ok()
+                // Changed the prev pointer of next node to the node_ptr
+                {
+                    // II
+                    break;
                 }
-                // Refresh next prev from the new next node
-                let next = next_ptr.deref();
-                next_prev_ptr = next.prev.load(Acquire, guard);
                 backoff.spin();
             }
         }
@@ -168,18 +164,19 @@ impl<T: Clone> Deque<T> {
                 return None;
             }
             let curr_node = unsafe { curr.deref() };
-            let curr_prev = curr_node.next.load(Acquire, guard);
-            if curr_prev.tag() == TRANS_TAG {
+            let curr_next = curr_node.next.load(Acquire, guard);
+            if curr_next.tag() == DELETED_TAG {
                 // TODO: Make sure current node is properly removed
                 trace!("Current node is removed at {:?}, retry", curr);
                 backoff.spin();
                 continue;
             }
+            debug_assert_ne!(curr_next, prev);
             if curr_node
-                .prev
+                .next
                 .compare_exchange(
-                    curr_prev, // Stable tag ensured
-                    curr_prev.with_tag(TRANS_TAG),
+                    curr_next,
+                    curr_next.with_tag(DELETED_TAG),
                     AcqRel,
                     Acquire,
                     guard,
@@ -202,19 +199,19 @@ impl<T: Clone> Deque<T> {
         loop {
             let node_ptr = next.prev.load(Acquire, guard);
             let node = unsafe { node_ptr.deref() };
-            if node.prev.load(Acquire, guard).tag() == TRANS_TAG {
+            if node.next.load(Acquire, guard) != next_ptr.with_tag(EXISTED_TAG) {
+                Self::link_prev(&node_ptr, &next_ptr, guard, &backoff);
                 backoff.spin();
                 continue;
             }
             if node_ptr == self.head.load(Relaxed, guard) {
                 return None;
             }
-            let node_prev_ptr = node.prev.load(Acquire, guard);
             if node
-                .prev
+                .next
                 .compare_exchange(
-                    node_prev_ptr.with_tag(STABLE_TAG),
-                    node_prev_ptr.with_tag(TRANS_TAG),
+                    next_ptr.with_tag(EXISTED_TAG),
+                    next_ptr.with_tag(DELETED_TAG),
                     AcqRel,
                     Acquire,
                     guard,
@@ -230,91 +227,115 @@ impl<T: Clone> Deque<T> {
 
     fn unlink_node<'a>(node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
         fence(SeqCst);
+        Self::mark_prev_deleted(node_ptr, guard, backoff); // II
+        fence(SeqCst);
         unsafe {
             let node = node_ptr.deref();
             let mut prev_ptr = node.prev.load(Acquire, guard);
             let mut next_ptr = node.next.load(Acquire, guard);
-            let mut marked_prev = false;
+            let mut round = 0;
+            debug_assert_ne!(prev_ptr, next_ptr, "node on {:?}", node_ptr);
             loop {
-                let prev_node = prev_ptr.deref();
-                let next_node = next_ptr.deref();
-                let prev_prev = prev_node.prev.load(Acquire, guard);
-                let prev_next = prev_node.next.load(Acquire, guard);
-                if !marked_prev {
-                    // check update prev
-                    if prev_prev.tag() == TRANS_TAG {
-                        prev_ptr = prev_prev;
-                        backoff.spin();
-                        continue;
-                    }
-                    if prev_next.tag() == TRANS_TAG {
-                        // Inserting, need to wait until it finished
-                        backoff.spin();
-                        continue;
-                    }
-                }
-                let next_prev = next_node.prev.load(Acquire, guard);
-                let next_next = next_node.next.load(Acquire, guard);
-                {
-                    // check update next
-                    if next_prev.tag() == TRANS_TAG {
-                        // Deleting or deleted, shift to next_next
-                        next_ptr = next_next;
-                        backoff.spin();
-                        continue;
-                    }
-                    // Don't care about insertion by next next because we are not going to touch it
-                }
-                debug_assert_ne!(prev_next.tag(), TRANS_TAG);
-                debug_assert_ne!(next_prev.tag(), TRANS_TAG);
-                if !marked_prev
-                    && prev_node
-                        .next
-                        .compare_exchange(
-                            prev_next,
-                            next_ptr.with_tag(STABLE_TAG),
-                            AcqRel,
-                            Acquire,
-                            guard,
-                        )
-                        .is_err()
-                {
+                round += 1;
+                let prev = prev_ptr.deref();
+                let next = next_ptr.deref();
+                let next_prev_ptr = next.prev.load(Acquire, guard);
+                let next_next_ptr = next.next.load(Acquire, guard);
+                debug_assert_ne!(next_prev_ptr, next_next_ptr, "on {:?}", next_ptr);
+                if next_next_ptr.tag() == DELETED_TAG {
+                    // the next node we are going to work on is also deleted
+                    // move on to the next of the next node
+                    trace!(
+                        "Unlink move next from {:?} to {:?} for node {:?} at round {}",
+                        next_ptr,
+                        next_next_ptr,
+                        node_ptr,
+                        round
+                    );
+                    next_ptr = next_next_ptr;
                     backoff.spin();
                     continue;
-                } else {
-                    marked_prev = true;
                 }
-                if next_node
-                    .prev
-                    .compare_exchange(
-                        next_prev,
-                        next_ptr.with_tag(STABLE_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    .is_ok()
-                {
-                    break;
+                debug_assert_eq!(next_prev_ptr.tag(), EXISTED_TAG);
+                let prev_prev_ptr = prev.prev.load(Acquire, guard);
+                let prev_next_ptr = prev.next.load(Acquire, guard);
+                debug_assert_ne!(prev_prev_ptr, prev_next_ptr, "on {:?}", prev_ptr);
+                if prev_next_ptr.tag() == DELETED_TAG {
+                    debug_assert_ne!(prev_ptr, prev_prev_ptr);
+                    trace!(
+                        "Unlink move prev from {:?} to {:?} for node {:?} at round {}",
+                        prev_ptr,
+                        prev_prev_ptr,
+                        node_ptr,
+                        round
+                    );
+                    prev_ptr = prev_prev_ptr;
+                    backoff.spin();
+                    continue;
                 }
-                backoff.spin();
+                debug_assert_eq!(prev_prev_ptr.tag(), EXISTED_TAG);
+                debug_assert_ne!(prev_ptr, next_ptr, "self linking at round {}", round);
+                if let Err(new_prev_next) = prev.next.compare_exchange(
+                    prev_next_ptr,
+                    next_ptr.with_tag(EXISTED_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_prev = new_prev_next.current;
+                    debug!(
+                        "Unlink swap prev next failed, move from {:?} to new prev {:?} for node {:?} at round {}",
+                        prev_ptr,
+                        new_prev,
+                        node_ptr,
+                        round
+                    );
+                    prev_ptr = new_prev;
+                    backoff.spin();
+                    continue;
+                } // III
+                fence(SeqCst);
+                debug_assert_ne!(next_ptr, prev_ptr, "self linking at round {}", round);
+                if let Err(new_next_prev) = next.prev.compare_exchange(
+                    next_prev_ptr,
+                    prev_ptr.with_tag(EXISTED_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_next = new_next_prev.current;
+                    debug!(
+                        "Unlink swap next prev failed, move from {:?} to new next {:?} for node {:?} at round {}",
+                        next_ptr,
+                        new_next,
+                        node_ptr,
+                        round
+                    );
+                    next_ptr = new_next;
+                    backoff.spin();
+                    continue;
+                }
+                break;
             }
-            fence(SeqCst);
-            Self::mark_next_trans(node_ptr, guard, backoff);
         }
     }
 
-    fn mark_next_trans<'a>(node_ptr: &'a Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
+    fn mark_prev_deleted<'a>(
+        node_ptr: &'a Shared<'a, Node<T>>,
+        guard: &'a Guard,
+        backoff: &Backoff,
+    ) {
         unsafe {
             let node = node_ptr.deref();
             loop {
-                let node_next_ptr = node.next.load(Acquire, guard);
-                if node_next_ptr.tag() == TRANS_TAG
+                let node_prev_ptr = node.prev.load(Acquire, guard);
+                debug_assert_ne!(node_ptr, &node_prev_ptr, "self linking");
+                if node_prev_ptr.tag() == DELETED_TAG
                     || node
-                        .next
+                        .prev
                         .compare_exchange(
-                            node_next_ptr,
-                            node_next_ptr.with_tag(TRANS_TAG),
+                            node_prev_ptr,
+                            node_prev_ptr.with_tag(DELETED_TAG),
                             AcqRel,
                             Acquire,
                             guard,
@@ -325,6 +346,40 @@ impl<T: Clone> Deque<T> {
                 }
                 backoff.spin();
             }
+        }
+    }
+
+    fn link_prev<'a>(
+        prev_ptr: &Shared<'a, Node<T>>,
+        curr_ptr: &Shared<'a, Node<T>>,
+        guard: &'a Guard,
+        backoff: &Backoff,
+    ) {
+        let mut prev_ptr = prev_ptr.clone();
+        loop {
+            let prev = unsafe { prev_ptr.deref() };
+            let prev_next_ptr = prev.next.load(Acquire, guard);
+            if prev_next_ptr.tag() == DELETED_TAG {
+                let prev_prev = prev.prev.load(Acquire, guard);
+                debug_assert!(prev_prev != prev_next_ptr);
+                if !prev_ptr.is_null() {
+                    prev_ptr = prev_prev;
+                }
+                backoff.spin();
+                continue;
+            }
+            if let Err(other_prev_next) = prev.next.compare_exchange(
+                prev_next_ptr,
+                curr_ptr.with_tag(EXISTED_TAG),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                prev_ptr = other_prev_next.current;
+                backoff.spin();
+                continue;
+            }
+            break;
         }
     }
 }
@@ -374,22 +429,6 @@ mod test {
     use super::*;
     use itertools::Itertools;
     use std::{collections::HashSet, sync::Arc, thread};
-
-    #[test]
-    pub fn insert_front() {
-        let guard = crossbeam_epoch::pin();
-        let deque = Deque::new();
-        deque.insert_front(1, &guard);
-        deque.insert_front(2, &guard);
-    }
-
-    #[test]
-    pub fn insert_back() {
-        let guard = crossbeam_epoch::pin();
-        let deque = Deque::new();
-        deque.insert_back(1, &guard);
-        deque.insert_back(2, &guard);
-    }
 
     #[test]
     pub fn single_threaded_push_pop() {
