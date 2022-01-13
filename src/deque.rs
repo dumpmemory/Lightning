@@ -89,7 +89,8 @@ impl<T: Clone> Deque<T> {
         let curr_node = unsafe { curr.deref() };
         let mut prev;
         loop {
-            prev = unsafe { next.deref().prev.load(Acquire, &guard) };
+            let next_node = unsafe { next.deref() };
+            prev = next_node.prev.load(Acquire, &guard);
             let prev_node = unsafe { prev.deref() };
             curr_node.prev.store(prev.with_tag(STABLE_TAG), Relaxed);
             curr_node.next.store(next.with_tag(TRANS_TAG), Relaxed);
@@ -126,7 +127,7 @@ impl<T: Clone> Deque<T> {
             unsafe {
                 let node = node_ptr.deref();
                 let next = next_ptr.deref();
-                if decomp_with_ptr(&node.next.load(Acquire, guard)) != (&next_ptr, STABLE_TAG) {
+                if node.prev.load(Acquire, guard).tag() == TRANS_TAG {
                     warn!("RARE condition on insert next ops. node removed.");
                     return None;
                 }
@@ -168,7 +169,7 @@ impl<T: Clone> Deque<T> {
                 return None;
             }
             let curr_node = unsafe { curr.deref() };
-            let curr_prev = curr_node.next.load(Acquire, guard);
+            let curr_prev = curr_node.prev.load(Acquire, guard);
             if curr_prev.tag() == TRANS_TAG {
                 // TODO: Make sure current node is properly removed
                 trace!("Current node is removed at {:?}, retry", curr);
@@ -198,16 +199,20 @@ impl<T: Clone> Deque<T> {
     pub fn remove_back<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
         let next_ptr = self.tail.load(Relaxed, guard);
+        let head_ptr = self.head.load(Relaxed, guard);
         let next = unsafe { next_ptr.deref() };
+        debug_assert!(!next_ptr.is_null());
         loop {
             let node_ptr = next.prev.load(Acquire, guard);
+            debug_assert!(!node_ptr.is_null());
+            if node_ptr == head_ptr  {
+                return None;
+            }
             let node = unsafe { node_ptr.deref() };
-            if node.prev.load(Acquire, guard).tag() == TRANS_TAG {
+            let node_prev_ptr = node.prev.load(Acquire, guard);
+            if node_prev_ptr.tag() == TRANS_TAG {
                 backoff.spin();
                 continue;
-            }
-            if node_ptr == self.head.load(Relaxed, guard) {
-                return None;
             }
             let node_prev_ptr = node.prev.load(Acquire, guard);
             if node
@@ -288,7 +293,7 @@ impl<T: Clone> Deque<T> {
                     .prev
                     .compare_exchange(
                         next_prev,
-                        next_ptr.with_tag(STABLE_TAG),
+                        prev_ptr.with_tag(STABLE_TAG),
                         AcqRel,
                         Acquire,
                         guard,
@@ -381,6 +386,7 @@ mod test {
         let deque = Deque::new();
         deque.insert_front(1, &guard);
         deque.insert_front(2, &guard);
+        deque.insert_front(4, &guard);
     }
 
     #[test]
@@ -389,6 +395,26 @@ mod test {
         let deque = Deque::new();
         deque.insert_back(1, &guard);
         deque.insert_back(2, &guard);
+    }
+
+    #[test]
+    pub fn remove_front() {
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        deque.insert_front(1, &guard);
+        deque.insert_front(2, &guard);
+        assert_eq!(deque.remove_front(&guard).map(|s| unsafe { **s.deref() }), Some(2));
+        assert_eq!(deque.remove_front(&guard).map(|s| unsafe { **s.deref() }), Some(1));
+    }
+
+    #[test]
+    pub fn remove_back() {
+        let guard = crossbeam_epoch::pin();
+        let deque = Deque::new();
+        deque.insert_back(1, &guard);
+        deque.insert_back(2, &guard);
+        assert_eq!(deque.remove_back(&guard).map(|s| unsafe { **s.deref() }), Some(2));
+        assert_eq!(deque.remove_back(&guard).map(|s| unsafe { **s.deref() }), Some(1));
     }
 
     #[test]
