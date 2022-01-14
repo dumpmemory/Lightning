@@ -33,7 +33,10 @@ impl<T: Clone> Deque<T> {
         let tail = Atomic::new(Node::null());
         let head_ptr = head.load(Relaxed, &guard);
         let tail_ptr = tail.load(Relaxed, &guard);
-        debug!("Initialized deque with head: {:?} and tail: {:?}", head, tail);
+        debug!(
+            "Initialized deque with head: {:?} and tail: {:?}",
+            head, tail
+        );
         unsafe {
             let head_node = head_ptr.deref();
             let tail_node = tail_ptr.deref();
@@ -163,7 +166,11 @@ impl<T: Clone> Deque<T> {
         let prev_node = unsafe { prev.deref() };
         loop {
             let curr = prev_node.next.load(Acquire, guard);
-            debug_assert_ne!(prev, curr, "head node is linking it self");
+            debug_assert_ne!(
+                prev.with_tag(STABLE_TAG),
+                curr.with_tag(STABLE_TAG),
+                "head node is linking itself"
+            );
             if curr == self.tail.load(Relaxed, guard) {
                 // End of list
                 return None;
@@ -205,7 +212,7 @@ impl<T: Clone> Deque<T> {
         loop {
             let node_ptr = next.prev.load(Acquire, guard);
             debug_assert!(!node_ptr.is_null());
-            if node_ptr == head_ptr  {
+            if node_ptr == head_ptr {
                 return None;
             }
             let node = unsafe { node_ptr.deref() };
@@ -248,11 +255,12 @@ impl<T: Clone> Deque<T> {
                 if !marked_prev {
                     // check update prev
                     if prev_prev.tag() == TRANS_TAG {
-                        prev_ptr = prev_prev;
+                        if prev_next.tag() == TRANS_TAG {
+                            prev_ptr = prev_prev;
+                        }
                         backoff.spin();
                         continue;
-                    }
-                    if prev_next.tag() == TRANS_TAG {
+                    } else if prev_next.tag() == TRANS_TAG {
                         // Inserting, need to wait until it finished
                         backoff.spin();
                         continue;
@@ -263,15 +271,20 @@ impl<T: Clone> Deque<T> {
                 {
                     // check update next
                     if next_prev.tag() == TRANS_TAG {
-                        // Deleting or deleted, shift to next_next
-                        next_ptr = next_next;
+                        if next_next.tag() == TRANS_TAG {
+                            // Deleting or deleted, shift to next_next
+                            next_ptr = next_next;
+                        }
+                        backoff.spin();
+                        continue;
+                    } else if next_next.tag() == TRANS_TAG { 
                         backoff.spin();
                         continue;
                     }
-                    // Don't care about insertion by next next because we are not going to touch it
                 }
                 debug_assert_ne!(prev_next.tag(), TRANS_TAG);
                 debug_assert_ne!(next_prev.tag(), TRANS_TAG);
+                debug_assert_ne!(prev_ptr.with_tag(STABLE_TAG), next_ptr.with_tag(STABLE_TAG));
                 if !marked_prev
                     && prev_node
                         .next
@@ -403,8 +416,14 @@ mod test {
         let deque = Deque::new();
         deque.insert_front(1, &guard);
         deque.insert_front(2, &guard);
-        assert_eq!(deque.remove_front(&guard).map(|s| unsafe { **s.deref() }), Some(2));
-        assert_eq!(deque.remove_front(&guard).map(|s| unsafe { **s.deref() }), Some(1));
+        assert_eq!(
+            deque.remove_front(&guard).map(|s| unsafe { **s.deref() }),
+            Some(2)
+        );
+        assert_eq!(
+            deque.remove_front(&guard).map(|s| unsafe { **s.deref() }),
+            Some(1)
+        );
     }
 
     #[test]
@@ -413,8 +432,14 @@ mod test {
         let deque = Deque::new();
         deque.insert_back(1, &guard);
         deque.insert_back(2, &guard);
-        assert_eq!(deque.remove_back(&guard).map(|s| unsafe { **s.deref() }), Some(2));
-        assert_eq!(deque.remove_back(&guard).map(|s| unsafe { **s.deref() }), Some(1));
+        assert_eq!(
+            deque.remove_back(&guard).map(|s| unsafe { **s.deref() }),
+            Some(2)
+        );
+        assert_eq!(
+            deque.remove_back(&guard).map(|s| unsafe { **s.deref() }),
+            Some(1)
+        );
     }
 
     #[test]
