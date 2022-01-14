@@ -26,6 +26,7 @@ pub struct Deque<T: Clone> {
 const NOM_TAG: usize = 0;
 const DEL_TAG: usize = 1;
 const ADD_TAG: usize = 2;
+const LCK_TAG: usize = 3;
 
 impl<T: Clone> Deque<T> {
     pub fn new() -> Self {
@@ -52,22 +53,20 @@ impl<T: Clone> Deque<T> {
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
         let prev = self.head.load(Relaxed, &guard);
         let prev_node = unsafe { prev.deref() };
-        let mut next = unsafe { prev.deref().next.load(Acquire, &guard) };
+        let mut next = prev_node.next.load(Acquire, &guard);
         let curr_node = unsafe { curr.deref() };
         loop {
             curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
-            if prev_node
-                .next
-                .compare_exchange(
-                    next.with_tag(NOM_TAG),
-                    curr.with_tag(NOM_TAG),
-                    AcqRel,
-                    Acquire,
-                    &guard,
-                )
-                .is_ok()
-            {
+            if let Err(new_prev_next) = prev_node.next.compare_exchange(
+                next.with_tag(NOM_TAG),
+                curr.with_tag(NOM_TAG),
+                AcqRel,
+                Acquire,
+                &guard,
+            ) {
+                next = new_prev_next.current;
+            } else {
                 break;
             }
             backoff.spin();
@@ -107,7 +106,7 @@ impl<T: Clone> Deque<T> {
         }
         fence(SeqCst); // I
         if let Some(next) = Self::insert_next_ops(&curr, next, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(ADD_TAG), Release);
+            curr_node.next.store(next.with_tag(NOM_TAG), Release);
         }
     }
 
@@ -119,7 +118,6 @@ impl<T: Clone> Deque<T> {
     ) -> Option<Shared<'a, Node<T>>> {
         loop {
             unsafe {
-                let node = node_ptr.deref();
                 let next = next_ptr.deref();
                 let next_prev_ptr = next.prev.load(Acquire, guard);
                 let next_next_ptr = next.next.load(Acquire, guard);
@@ -130,7 +128,7 @@ impl<T: Clone> Deque<T> {
                     }
                 } else {
                     if let Err(new_next_prev) = next.prev.compare_exchange(
-                        next_prev_ptr,
+                        next_prev_ptr.with_tag(NOM_TAG),
                         node_ptr.with_tag(NOM_TAG),
                         AcqRel,
                         Acquire,
@@ -138,7 +136,12 @@ impl<T: Clone> Deque<T> {
                     )
                     // Changed the prev pointer of next node to the node_ptr
                     {
-                        next_ptr = new_next_prev.current;
+                        let new_next_prev = new_next_prev.current;
+                        if new_next_prev.tag() == DEL_TAG {
+                            next_ptr = next_next_ptr;
+                        } else {
+                            next_ptr = new_next_prev;
+                        }
                     } else {
                         // II
                         return Some(next_ptr);
@@ -167,6 +170,7 @@ impl<T: Clone> Deque<T> {
                 return None;
             }
             let curr_next = curr_node.next.load(Acquire, guard);
+            let curr_prev = curr_node.prev.load(Acquire, guard);
             if curr_node
                 .next
                 .compare_exchange(
@@ -196,21 +200,17 @@ impl<T: Clone> Deque<T> {
         loop {
             let node_ptr = next.prev.load(Acquire, guard);
             debug_assert!(!node_ptr.is_null());
+            debug_assert_ne!(next_ptr.with_tag(NOM_TAG), node_ptr.with_tag(NOM_TAG));
             if node_ptr == head_ptr {
                 return None;
             }
             let node = unsafe { node_ptr.deref() };
-            let node_prev_ptr = node.prev.load(Acquire, guard);
-            if node_prev_ptr.tag() == TRANS_TAG {
-                backoff.spin();
-                continue;
-            }
-            let node_prev_ptr = node.prev.load(Acquire, guard);
+            let node_next_ptr = node.next.load(Acquire, guard);
             if node
-                .prev
+                .next
                 .compare_exchange(
-                    node_prev_ptr.with_tag(STABLE_TAG),
-                    node_prev_ptr.with_tag(TRANS_TAG),
+                    node_next_ptr.with_tag(NOM_TAG),
+                    node_next_ptr.with_tag(DEL_TAG),
                     AcqRel,
                     Acquire,
                     guard,
@@ -238,66 +238,44 @@ impl<T: Clone> Deque<T> {
                 let prev_next = prev_node.next.load(Acquire, guard);
                 if !marked_prev {
                     // check update prev
-                    if prev_prev.tag() == TRANS_TAG {
-                        if prev_next.tag() == TRANS_TAG {
+                    if let Err(exg_prev_next) = prev_node.next.compare_exchange(
+                        prev_next.with_tag(NOM_TAG),
+                        prev_next.with_tag(LCK_TAG),
+                        AcqRel,
+                        Acquire,
+                        guard,
+                    ) {
+                        let new_prev_next = exg_prev_next.current;
+                        let new_prev_next_tag = new_prev_next.tag();
+                        if new_prev_next_tag == DEL_TAG {
                             prev_ptr = prev_prev;
                         }
                         backoff.spin();
                         continue;
-                    } else if prev_next.tag() == TRANS_TAG {
-                        // Inserting, need to wait until it finished
-                        backoff.spin();
-                        continue;
+                    } else {
+                        marked_prev = true;
                     }
                 }
                 let next_prev = next_node.prev.load(Acquire, guard);
                 let next_next = next_node.next.load(Acquire, guard);
-                {
-                    // check update next
-                    if next_prev.tag() == TRANS_TAG {
-                        if next_next.tag() == TRANS_TAG {
-                            // Deleting or deleted, shift to next_next
-                            next_ptr = next_next;
-                        }
-                        backoff.spin();
-                        continue;
-                    } else if next_next.tag() == TRANS_TAG { 
-                        backoff.spin();
-                        continue;
-                    }
-                }
-                debug_assert_ne!(prev_next.tag(), TRANS_TAG);
-                debug_assert_ne!(next_prev.tag(), TRANS_TAG);
-                debug_assert_ne!(prev_ptr.with_tag(STABLE_TAG), next_ptr.with_tag(STABLE_TAG));
-                if !marked_prev
-                    && prev_node
-                        .next
-                        .compare_exchange(
-                            prev_next,
-                            next_ptr.with_tag(STABLE_TAG),
-                            AcqRel,
-                            Acquire,
-                            guard,
-                        )
-                        .is_err()
-                {
-                    backoff.spin();
-                    continue;
-                } else {
-                    marked_prev = true;
-                }
-                if next_node
-                    .prev
-                    .compare_exchange(
-                        next_prev,
-                        prev_ptr.with_tag(STABLE_TAG),
+                if next_next.tag() == NOM_TAG {
+                    if let Err(exg_next_prev) = next_node.prev.compare_exchange(
+                        next_prev.with_tag(NOM_TAG),
+                        prev_ptr.with_tag(NOM_TAG),
                         AcqRel,
                         Acquire,
                         guard,
-                    )
-                    .is_ok()
-                {
-                    break;
+                    ) {
+                        let new_next_prev = exg_next_prev.current;
+                        if new_next_prev.tag() == DEL_TAG {
+                            next_ptr = next_next;
+                        } else {
+                            next_ptr = new_next_prev;
+                        }
+                    } else {
+                        prev_node.next.store(next_ptr.with_tag(NOM_TAG), Release);
+                        break;
+                    }
                 }
                 backoff.spin();
             }
@@ -697,12 +675,12 @@ mod test {
             .for_each(|n| {
                 all_nums.insert(n);
             });
-        assert!(deque.remove_front(&guard).is_none());
-        assert!(deque.remove_back(&guard).is_none());
         assert_eq!(all_nums.len(), num);
         for i in 0..num {
             assert!(all_nums.contains(&i));
         }
+        assert!(deque.remove_front(&guard).is_none());
+        assert!(deque.remove_back(&guard).is_none());
     }
 
     #[test]
