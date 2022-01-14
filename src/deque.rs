@@ -23,8 +23,9 @@ pub struct Deque<T: Clone> {
     tail: Atomic<Node<T>>,
 }
 
-const TRANS_TAG: usize = 1;
-const STABLE_TAG: usize = 0;
+const NOM_TAG: usize = 0;
+const DEL_TAG: usize = 1;
+const ADD_TAG: usize = 2;
 
 impl<T: Clone> Deque<T> {
     pub fn new() -> Self {
@@ -54,21 +55,13 @@ impl<T: Clone> Deque<T> {
         let mut next = unsafe { prev.deref().next.load(Acquire, &guard) };
         let curr_node = unsafe { curr.deref() };
         loop {
-            {
-                let prev_next = prev_node.next.load(Acquire, &guard);
-                if decomp_with_ptr(&prev_next) != (&next, STABLE_TAG) {
-                    next = prev_next;
-                    backoff.spin();
-                    continue;
-                }
-            }
-            curr_node.prev.store(prev.with_tag(STABLE_TAG), Relaxed);
-            curr_node.next.store(next.with_tag(TRANS_TAG), Relaxed);
+            curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
+            curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
             if prev_node
                 .next
                 .compare_exchange(
-                    next.with_tag(STABLE_TAG),
-                    curr.with_tag(STABLE_TAG),
+                    next.with_tag(NOM_TAG),
+                    curr.with_tag(NOM_TAG),
                     AcqRel,
                     Acquire,
                     &guard,
@@ -80,8 +73,8 @@ impl<T: Clone> Deque<T> {
             backoff.spin();
         } // I
         fence(SeqCst);
-        if let Some(next) = Self::insert_next_ops(&curr, next, prev, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(STABLE_TAG), Release);
+        if let Some(next) = Self::insert_next_ops(&curr, next, &guard, &backoff) {
+            curr_node.next.store(next.with_tag(NOM_TAG), Release);
         }
     }
 
@@ -89,20 +82,19 @@ impl<T: Clone> Deque<T> {
         let backoff = crossbeam_utils::Backoff::new();
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
         let next = self.tail.load(Relaxed, &guard);
+        let next_node = unsafe { next.deref() };
         let curr_node = unsafe { curr.deref() };
         let mut prev;
         loop {
-            let next_node = unsafe { next.deref() };
             prev = next_node.prev.load(Acquire, &guard);
             let prev_node = unsafe { prev.deref() };
-            curr_node.prev.store(prev.with_tag(STABLE_TAG), Relaxed);
-            curr_node.next.store(next.with_tag(TRANS_TAG), Relaxed);
-            debug_assert_eq!(next.tag(), STABLE_TAG);
+            curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
+            curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
             if prev_node
                 .next
                 .compare_exchange(
-                    next.with_tag(STABLE_TAG),
-                    curr.with_tag(STABLE_TAG),
+                    next.with_tag(NOM_TAG),
+                    curr.with_tag(NOM_TAG),
                     AcqRel,
                     Acquire,
                     &guard,
@@ -114,15 +106,14 @@ impl<T: Clone> Deque<T> {
             backoff.spin();
         }
         fence(SeqCst); // I
-        if let Some(next) = Self::insert_next_ops(&curr, next, prev, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(STABLE_TAG), Release);
+        if let Some(next) = Self::insert_next_ops(&curr, next, &guard, &backoff) {
+            curr_node.next.store(next.with_tag(ADD_TAG), Release);
         }
     }
 
     fn insert_next_ops<'a>(
         node_ptr: &Shared<'a, Node<T>>,
         mut next_ptr: Shared<'a, Node<T>>,
-        mut next_prev_ptr: Shared<'a, Node<T>>,
         guard: &'a Guard,
         backoff: &Backoff,
     ) -> Option<Shared<'a, Node<T>>> {
@@ -130,16 +121,17 @@ impl<T: Clone> Deque<T> {
             unsafe {
                 let node = node_ptr.deref();
                 let next = next_ptr.deref();
-                if node.prev.load(Acquire, guard).tag() == TRANS_TAG {
-                    warn!("RARE condition on insert next ops. node removed.");
-                    return None;
-                }
-                if next_prev_ptr.tag() == TRANS_TAG {
-                    next_ptr = next_prev_ptr
+                let next_prev_ptr = next.prev.load(Acquire, guard);
+                let next_next_ptr = next.next.load(Acquire, guard);
+                if next_next_ptr.tag() != NOM_TAG {
+                    if next_prev_ptr.tag() == DEL_TAG {
+                        // The deletion is final
+                        next_ptr = next_next_ptr
+                    }
                 } else {
                     if let Err(new_next_prev) = next.prev.compare_exchange(
                         next_prev_ptr,
-                        node_ptr.with_tag(STABLE_TAG),
+                        node_ptr.with_tag(NOM_TAG),
                         AcqRel,
                         Acquire,
                         guard,
@@ -152,9 +144,6 @@ impl<T: Clone> Deque<T> {
                         return Some(next_ptr);
                     }
                 }
-                // Refresh next prev from the new next node
-                let next = next_ptr.deref();
-                next_prev_ptr = next.prev.load(Acquire, guard);
                 backoff.spin();
             }
         }
@@ -162,32 +151,27 @@ impl<T: Clone> Deque<T> {
 
     pub fn remove_front<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
+        let tail = self.tail.load(Relaxed, guard);
         let prev = self.head.load(Acquire, guard);
         let prev_node = unsafe { prev.deref() };
         loop {
             let curr = prev_node.next.load(Acquire, guard);
+            let curr_node = unsafe { curr.deref() };
             debug_assert_ne!(
-                prev.with_tag(STABLE_TAG),
-                curr.with_tag(STABLE_TAG),
+                prev.with_tag(NOM_TAG),
+                curr.with_tag(NOM_TAG),
                 "head node is linking itself"
             );
-            if curr == self.tail.load(Relaxed, guard) {
+            if curr == tail {
                 // End of list
                 return None;
             }
-            let curr_node = unsafe { curr.deref() };
-            let curr_prev = curr_node.prev.load(Acquire, guard);
-            if curr_prev.tag() == TRANS_TAG {
-                // TODO: Make sure current node is properly removed
-                trace!("Current node is removed at {:?}, retry", curr);
-                backoff.spin();
-                continue;
-            }
+            let curr_next = curr_node.next.load(Acquire, guard);
             if curr_node
-                .prev
+                .next
                 .compare_exchange(
-                    curr_prev, // Stable tag ensured
-                    curr_prev.with_tag(TRANS_TAG),
+                    curr_next.with_tag(NOM_TAG), // Stable tag ensured
+                    curr_next.with_tag(NOM_TAG),
                     AcqRel,
                     Acquire,
                     guard,
@@ -318,21 +302,22 @@ impl<T: Clone> Deque<T> {
                 backoff.spin();
             }
             fence(SeqCst);
-            Self::mark_next_trans(node_ptr, guard, backoff);
+            Self::mark_prev_del(node_ptr, guard, backoff);
         }
     }
 
-    fn mark_next_trans<'a>(node_ptr: &'a Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
+    fn mark_prev_del<'a>(node_ptr: &'a Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
         unsafe {
             let node = node_ptr.deref();
             loop {
-                let node_next_ptr = node.next.load(Acquire, guard);
-                if node_next_ptr.tag() == TRANS_TAG
+                let node_prev_ptr = node.prev.load(Acquire, guard);
+                debug_assert_ne!(node_prev_ptr.tag(), ADD_TAG);
+                if node_prev_ptr.tag() == DEL_TAG
                     || node
-                        .next
+                        .prev
                         .compare_exchange(
-                            node_next_ptr,
-                            node_next_ptr.with_tag(TRANS_TAG),
+                            node_prev_ptr,
+                            node_prev_ptr.with_tag(DEL_TAG),
                             AcqRel,
                             Acquire,
                             guard,
