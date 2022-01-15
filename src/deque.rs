@@ -53,8 +53,8 @@ impl<T: Clone> Deque<T> {
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
         let prev = self.head.load(Relaxed, &guard);
         let prev_node = unsafe { prev.deref() };
-        let mut next = prev_node.next.load(Acquire, &guard);
         let curr_node = unsafe { curr.deref() };
+        let mut next = prev_node.next.load(Acquire, &guard);
         loop {
             curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
@@ -83,9 +83,8 @@ impl<T: Clone> Deque<T> {
         let next = self.tail.load(Relaxed, &guard);
         let next_node = unsafe { next.deref() };
         let curr_node = unsafe { curr.deref() };
-        let mut prev;
         loop {
-            prev = next_node.prev.load(Acquire, &guard);
+            let prev = next_node.prev.load(Acquire, &guard);
             let prev_node = unsafe { prev.deref() };
             curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
@@ -155,9 +154,9 @@ impl<T: Clone> Deque<T> {
     pub fn remove_front<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
         let tail = self.tail.load(Relaxed, guard);
-        let prev = self.head.load(Acquire, guard);
-        let prev_node = unsafe { prev.deref() };
+        let mut prev = self.head.load(Acquire, guard);
         loop {
+            let prev_node = unsafe { prev.deref() };
             let curr = prev_node.next.load(Acquire, guard);
             let curr_node = unsafe { curr.deref() };
             debug_assert_ne!(
@@ -170,18 +169,15 @@ impl<T: Clone> Deque<T> {
                 return None;
             }
             let curr_next = curr_node.next.load(Acquire, guard);
-            let curr_prev = curr_node.prev.load(Acquire, guard);
-            if curr_node
-                .next
-                .compare_exchange(
-                    curr_next.with_tag(NOM_TAG), // Stable tag ensured
-                    curr_next.with_tag(NOM_TAG),
-                    AcqRel,
-                    Acquire,
-                    guard,
-                )
-                .is_ok()
-            {
+            if let Err(_new_curr_next) = curr_node.next.compare_exchange(
+                curr_next.with_tag(NOM_TAG), // Stable tag ensured
+                curr_next.with_tag(DEL_TAG),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                // retry
+            } else {
                 // I
                 Self::unlink_node(&curr, guard, &backoff);
                 return Some(curr);
@@ -685,7 +681,7 @@ mod test {
 
     #[test]
     pub fn multithread_pop_back() {
-        let num = 4096;
+        let num = 40960;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
@@ -851,7 +847,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_pop_front() {
-        let num = 4096;
+        let num = 40960;
         let threshold = (num as f64 * 0.5) as usize;
         let deque = Arc::new(Deque::new());
         let guard = crossbeam_epoch::pin();
