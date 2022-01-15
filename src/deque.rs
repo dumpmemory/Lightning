@@ -178,24 +178,28 @@ impl<T: Clone> Deque<T> {
                 }
                 let next_prev = next_node.prev.load(Acquire, guard);
                 let next_next = next_node.next.load(Acquire, guard);
-                if next_next.tag() == DEL_TAG {
-                    next_ptr = next_next;
-                } else if let Err(exg_next_prev) = next_node.prev.compare_exchange(
+                if let Err(new_next_next) = next_node.next.compare_exchange(
+                    next_next.with_tag(NOM_TAG),
+                    next_next.with_tag(LCK_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_next_next = new_next_next.current;
+                    if new_next_next.tag() == DEL_TAG {
+                        next_ptr = new_next_next;
+                    }
+                } else if let Err(_exg_next_prev) = next_node.prev.compare_exchange(
                     next_prev.with_tag(NOM_TAG),
                     prev_ptr.with_tag(NOM_TAG),
                     AcqRel,
                     Acquire,
                     guard,
                 ) {
-                    let new_next_prev = exg_next_prev.current;
-                    if new_next_prev.tag() == DEL_TAG {
-                        next_ptr = next_next;
-                    } else {
-                        unreachable!();
-                        // next_ptr = new_next_prev;
-                    }
+                    unreachable!();
                 } else {
                     prev_node.next.store(next_ptr.with_tag(NOM_TAG), Release);
+                    next_node.next.store(next_next.with_tag(NOM_TAG), Release);
                     break;
                 }
                 backoff.spin();
@@ -323,35 +327,43 @@ impl<T: Clone> Deque<T> {
             }
             fence(SeqCst);
             let mut next_prev_ptr = prev_ptr.clone();
+            let mut turn = 0;
             loop {
+                turn += 1;
                 let next = next_ptr.deref();
                 let next_next_ptr = next.next.load(Acquire, guard);
-                if let Err(new_next_prev) = next.prev.compare_exchange(
+                if let Err(new_next_next) = next.next.compare_exchange(
+                    next_next_ptr.with_tag(NOM_TAG),
+                    next_next_ptr.with_tag(LCK_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_next_next = new_next_next.current;
+                    if new_next_next.tag() == DEL_TAG {
+                        next_prev_ptr = next_ptr;
+                        next_ptr = new_next_next;
+                    }
+                } else if let Err(new_next_prev) = next.prev.compare_exchange(
                     next_prev_ptr.with_tag(NOM_TAG),
                     node_ptr.with_tag(NOM_TAG),
                     AcqRel,
                     Acquire,
                     guard,
                 ) {
-                    let new_next_prev = new_next_prev.current;
-                    let next_prev_tag = new_next_prev.tag();
-                    if next_prev_tag == DEL_TAG {
-                        next_prev_ptr = next_ptr;
-                        next_ptr = next_next_ptr;
-                        backoff.spin();
-                    } else {
-                        unreachable!(
-                            "Tag is {}, ptr {:?}, expecting {:?}, head {:?}, tail {:?}, next is {:?}",
-                            next_prev_tag, new_next_prev, next_prev_ptr, 
-                            self.head.load(Relaxed, guard), self.tail.load(Relaxed, guard), 
-                            next_next_ptr
-                        );
-                    }
+                    unreachable!(
+                        "[{}] Tag is {}, ptr {:?}, expecting {:?}, head {:?}, tail {:?}, next is {:?}",
+                        turn, new_next_prev.current.tag(), new_next_prev.current, next_prev_ptr, 
+                        self.head.load(Relaxed, guard), self.tail.load(Relaxed, guard), 
+                        next_next_ptr
+                    );
                 } else {
+                    next.next.store(next_next_ptr.with_tag(NOM_TAG), Release);
                     prev.next.store(node_ptr.with_tag(NOM_TAG), Release);
                     node.next.store(next_ptr.with_tag(NOM_TAG), Release);
                     return true;
                 }
+                backoff.spin();
             }
         }
     }
