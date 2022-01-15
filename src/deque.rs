@@ -54,33 +54,34 @@ impl<T: Clone> Deque<T> {
         let prev = self.head.load(Relaxed, &guard);
         let prev_node = unsafe { prev.deref() };
         let curr_node = unsafe { curr.deref() };
-        let mut next = prev_node.next.load(Acquire, &guard);
+        let mut next;
+        curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
         loop {
-            curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
+            next = prev_node.next.load(Acquire, &guard);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
-            if let Err(new_prev_next) = prev_node.next.compare_exchange(
+            debug_assert_ne!(prev.with_tag(NOM_TAG), next.with_tag(NOM_TAG));
+            if let Err(_new_prev_next) = prev_node.next.compare_exchange(
                 next.with_tag(NOM_TAG),
-                curr.with_tag(NOM_TAG),
+                curr.with_tag(LCK_TAG),
                 AcqRel,
                 Acquire,
                 &guard,
             ) {
-                next = new_prev_next.current;
+                
             } else {
                 break;
             }
             backoff.spin();
-        } // I
-        fence(SeqCst);
-        if let Some(next) = Self::insert_next_ops(&curr, next, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(NOM_TAG), Release);
         }
+        next = Self::insert_next_ops(&curr, next, &guard, &backoff);
+        prev_node.next.store(curr.with_tag(NOM_TAG), Release);
+        curr_node.next.store(next.with_tag(NOM_TAG), Release);
     }
 
     pub fn insert_back(&self, value: T, guard: &Guard) {
         let backoff = crossbeam_utils::Backoff::new();
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
-        let next = self.tail.load(Relaxed, &guard);
+        let mut next = self.tail.load(Relaxed, &guard);
         let next_node = unsafe { next.deref() };
         let curr_node = unsafe { curr.deref() };
         loop {
@@ -103,10 +104,8 @@ impl<T: Clone> Deque<T> {
             }
             backoff.spin();
         }
-        fence(SeqCst); // I
-        if let Some(next) = Self::insert_next_ops(&curr, next, &guard, &backoff) {
-            curr_node.next.store(next.with_tag(NOM_TAG), Release);
-        }
+        next = Self::insert_next_ops(&curr, next, &guard, &backoff);
+        curr_node.next.store(next.with_tag(NOM_TAG), Release);
     }
 
     fn insert_next_ops<'a>(
@@ -114,39 +113,34 @@ impl<T: Clone> Deque<T> {
         mut next_ptr: Shared<'a, Node<T>>,
         guard: &'a Guard,
         backoff: &Backoff,
-    ) -> Option<Shared<'a, Node<T>>> {
+    ) -> Shared<'a, Node<T>> {
+        fence(SeqCst);
         loop {
             unsafe {
                 let next = next_ptr.deref();
                 let next_prev_ptr = next.prev.load(Acquire, guard);
                 let next_next_ptr = next.next.load(Acquire, guard);
-                if next_next_ptr.tag() != NOM_TAG {
-                    if next_prev_ptr.tag() == DEL_TAG {
-                        // The deletion is final
-                        next_ptr = next_next_ptr
+                if let Err(new_next_prev) = next.prev.compare_exchange(
+                    next_prev_ptr.with_tag(NOM_TAG),
+                    node_ptr.with_tag(NOM_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                )
+                // Changed the prev pointer of next node to the node_ptr
+                {
+                    let new_next_prev = new_next_prev.current;
+                    if new_next_prev.tag() == DEL_TAG {
+                        next_ptr = next_next_ptr;
+                        backoff.spin();
+                    } else {
+                        next_ptr = new_next_prev;
+                        backoff.spin();
                     }
                 } else {
-                    if let Err(new_next_prev) = next.prev.compare_exchange(
-                        next_prev_ptr.with_tag(NOM_TAG),
-                        node_ptr.with_tag(NOM_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    // Changed the prev pointer of next node to the node_ptr
-                    {
-                        let new_next_prev = new_next_prev.current;
-                        if new_next_prev.tag() == DEL_TAG {
-                            next_ptr = next_next_ptr;
-                        } else {
-                            next_ptr = new_next_prev;
-                        }
-                    } else {
-                        // II
-                        return Some(next_ptr);
-                    }
+                    // II
+                    return next_ptr;
                 }
-                backoff.spin();
             }
         }
     }
@@ -254,24 +248,22 @@ impl<T: Clone> Deque<T> {
                 }
                 let next_prev = next_node.prev.load(Acquire, guard);
                 let next_next = next_node.next.load(Acquire, guard);
-                if next_next.tag() == NOM_TAG {
-                    if let Err(exg_next_prev) = next_node.prev.compare_exchange(
-                        next_prev.with_tag(NOM_TAG),
-                        prev_ptr.with_tag(NOM_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    ) {
-                        let new_next_prev = exg_next_prev.current;
-                        if new_next_prev.tag() == DEL_TAG {
-                            next_ptr = next_next;
-                        } else {
-                            next_ptr = new_next_prev;
-                        }
+                if let Err(exg_next_prev) = next_node.prev.compare_exchange(
+                    next_prev.with_tag(NOM_TAG),
+                    prev_ptr.with_tag(NOM_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_next_prev = exg_next_prev.current;
+                    if new_next_prev.tag() == DEL_TAG {
+                        next_ptr = next_next;
                     } else {
-                        prev_node.next.store(next_ptr.with_tag(NOM_TAG), Release);
-                        break;
+                        next_ptr = new_next_prev;
                     }
+                } else {
+                    prev_node.next.store(next_ptr.with_tag(NOM_TAG), Release);
+                    break;
                 }
                 backoff.spin();
             }
@@ -809,7 +801,7 @@ mod test {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .chunks(32)
+            .chunks(128)
             .into_iter()
             .map(|nums| {
                 let deque = deque.clone();
@@ -847,7 +839,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_pop_front() {
-        let num = 40960;
+        let num = 512;
         let threshold = (num as f64 * 0.5) as usize;
         let deque = Arc::new(Deque::new());
         let guard = crossbeam_epoch::pin();
@@ -855,7 +847,7 @@ mod test {
             deque.insert_front(i, &guard);
         }
         let ths = (threshold..num)
-            .chunks(32)
+            .chunks(128)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -897,7 +889,7 @@ mod test {
             deque.insert_back(i, &guard);
         }
         let ths = (threshold..num)
-            .chunks(64)
+            .chunks(128)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
