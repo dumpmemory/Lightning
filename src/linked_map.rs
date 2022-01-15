@@ -5,7 +5,7 @@ use crossbeam_epoch::{Atomic, Shared};
 use crate::map::{Map, ObjectMap};
 use crate::spin::SpinLock;
 use std::ops::Deref;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Release, self};
+use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 use std::sync::Arc;
 
@@ -230,15 +230,13 @@ impl<T> LinkedObjectMap<T> {
     }
 
     pub fn iter(&self) -> LinkedMapIter<T> {
-        loop {
-            
-        }
+        loop {}
     }
 }
 
 pub struct LinkedMapIter<'a, T> {
     node: Arc<Node<T>>,
-    map: &'a LinkedObjectMap<T>
+    map: &'a LinkedObjectMap<T>,
 }
 
 impl<T> Node<T> {

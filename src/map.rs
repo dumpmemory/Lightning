@@ -3014,8 +3014,8 @@ mod tests {
     #[test]
     fn insert_with_num_fixes() {
         let map = WordMap::<System, DefaultHasher>::with_capacity(32);
-        assert_eq!(map.insert(&24, 0), None);   
-        assert_eq!(map.insert(&24, 1), Some(0));   
+        assert_eq!(map.insert(&24, 0), None);
+        assert_eq!(map.insert(&24, 1), Some(0));
         assert_eq!(map.insert(&0, 0), None);
         assert_eq!(map.insert(&0, 1), Some(0))
     }

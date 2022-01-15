@@ -21,7 +21,12 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
             table: ObjectTable::with_capacity(cap),
         }
     }
-    pub fn get<F: Fn(usize) -> Option<V>>(&self, key: usize, lifetime: usize, fallback: F) -> Option<V> {
+    pub fn get<F: Fn(usize) -> Option<V>>(
+        &self,
+        key: usize,
+        lifetime: usize,
+        fallback: F,
+    ) -> Option<V> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let time = since_the_epoch() as usize;
@@ -62,12 +67,17 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
                 crate::map::SwapResult::Succeed(_, _, _) => {}
                 _ => {
                     backoff.spin();
-                    continue
-                },
+                    continue;
+                }
             }
             if let Some(comp_v) = fallback(key) {
-                self.table
-                    .insert(InsertOp::Insert, &(), Some(comp_v.clone()), key, new_ttl_val);
+                self.table.insert(
+                    InsertOp::Insert,
+                    &(),
+                    Some(comp_v.clone()),
+                    key,
+                    new_ttl_val,
+                );
                 return Some(comp_v);
             } else {
                 self.table
