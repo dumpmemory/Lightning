@@ -157,31 +157,13 @@ impl<T: Clone> Deque<T> {
         loop {
             let prev_node = unsafe { prev.deref() };
             let curr = prev_node.next.load(Acquire, guard);
-            let curr_node = unsafe { curr.deref() };
-            debug_assert_ne!(
-                prev.with_tag(NOM_TAG),
-                curr.with_tag(NOM_TAG),
-                "head node is linking itself"
-            );
             if curr == tail {
                 // End of list
                 return None;
             }
-            let curr_next = curr_node.next.load(Acquire, guard);
-            if let Err(_new_curr_next) = curr_node.next.compare_exchange(
-                curr_next.with_tag(NOM_TAG), // Stable tag ensured
-                curr_next.with_tag(DEL_TAG),
-                AcqRel,
-                Acquire,
-                guard,
-            ) {
-                // retry
-            } else {
-                // I
-                Self::unlink_node(&curr, guard, &backoff);
+            if self.remove_node(&curr, guard) {
                 return Some(curr);
             }
-            trace!("Marking current deleted failed {:?}, retry", curr);
             backoff.spin();
         }
     }
@@ -308,7 +290,7 @@ impl<T: Clone> Deque<T> {
                     || node
                         .prev
                         .compare_exchange(
-                            node_prev_ptr,
+                            node_prev_ptr.with_tag(NOM_TAG),
                             node_prev_ptr.with_tag(DEL_TAG),
                             AcqRel,
                             Acquire,
@@ -566,10 +548,10 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_single_thread_pop_front() {
-        let num = 40960;
+        let num = 409600;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -603,10 +585,10 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_single_thread_pop_back() {
-        let num = 40960;
+        let num = 409600;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -640,10 +622,10 @@ mod test {
 
     #[test]
     pub fn multithread_push_back_single_thread_pop_front() {
-        let num = 40960;
+        let num = 409600;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -677,10 +659,10 @@ mod test {
 
     #[test]
     pub fn multithread_push_back_single_thread_pop_back() {
-        let num = 40960;
+        let num = 409600;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -884,14 +866,14 @@ mod test {
 
     #[test]
     pub fn multithread_pop_back_front() {
-        let num = 40960;
+        let num = 409600;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let deque = deque.clone();
