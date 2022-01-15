@@ -210,8 +210,8 @@ impl<T: Clone> Deque<T> {
         let head_ptr = self.head.load(Relaxed, guard);
         let next = unsafe { next_ptr.deref() };
         let mut locked = false; // TODO: Aviod locking tail sentinel
-        // For now remove_back and insert_back have lowe deadlocking due to cyclic prev pointers
-        // Reason for this have not been investigated
+                                // For now remove_back and insert_back have lowe deadlocking due to cyclic prev pointers
+                                // Reason for this have not been investigated
         debug_assert!(!next_ptr.is_null());
         loop {
             if !locked
@@ -322,7 +322,9 @@ impl<T: Clone> Deque<T> {
                 }
                 let next_prev = next_node.prev.load(Acquire, guard);
                 let next_next = next_node.next.load(Acquire, guard);
-                if let Err(exg_next_prev) = next_node.prev.compare_exchange(
+                if next_next.tag() == DEL_TAG {
+                    next_ptr = next_next;
+                } else if let Err(exg_next_prev) = next_node.prev.compare_exchange(
                     next_prev.with_tag(NOM_TAG),
                     prev_ptr.with_tag(NOM_TAG),
                     AcqRel,
@@ -371,8 +373,8 @@ impl<T: Clone> Deque<T> {
             }
         }
     }
-    
-    fn all<'a>(&self, guard: &'a Guard) -> Vec<Shared<'a, Node<T>>> {
+
+    pub fn all<'a>(&self, guard: &'a Guard) -> Vec<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
         let mut node_ptr = self.head.load(Relaxed, guard);
         let tail = self.tail.load(Relaxed, guard).with_tag(NOM_TAG);
@@ -394,8 +396,30 @@ impl<T: Clone> Deque<T> {
         res
     }
 
-    fn remove_node<'a>(&self, node: Shared<'a, Node<T>>) {
-        
+    pub fn remove_node<'a>(&self, node_ptr: Shared<'a, Node<T>>, guard: &'a Guard) {
+        let backoff = crossbeam_utils::Backoff::new();
+        let node = unsafe { node_ptr.deref() };
+        let mut next_ptr = node.next.load(Acquire, guard);
+        loop {
+            if let Err(new_node_next) = node.next.compare_exchange(
+                next_ptr.with_tag(NOM_TAG),
+                next_ptr.with_tag(DEL_TAG),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                let new_next = new_node_next.current;
+                if new_next.tag() == DEL_TAG {
+                    return;
+                } else if new_next.tag() == NOM_TAG {
+                    next_ptr = new_next;
+                }
+                backoff.spin();
+                continue;
+            }
+            break;
+        }
+        Self::unlink_node(&node_ptr, guard, &backoff);
     }
 }
 
