@@ -88,24 +88,9 @@ impl<T: Clone> Deque<T> {
         let curr_node = unsafe { curr.deref() };
         let mut prev;
         let mut prev_node;
-        let mut locked = false; // TODO: Aviod locking tail sentinel
         loop {
             prev = next_node.prev.load(Acquire, &guard);
             prev_node = unsafe { prev.deref() };
-            if !locked
-                && next_node
-                    .next
-                    .compare_exchange(
-                        Shared::null().with_tag(NOM_TAG),
-                        Shared::null().with_tag(LCK_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    .is_ok()
-            {
-                locked = true;
-            }
             curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
             if prev_node
@@ -126,9 +111,6 @@ impl<T: Clone> Deque<T> {
         next = Self::insert_next_ops(&curr, next, &guard, &backoff);
         prev_node.next.store(curr.with_tag(NOM_TAG), Release);
         curr_node.next.store(next.with_tag(NOM_TAG), Release);
-        next_node
-            .next
-            .store(Shared::null().with_tag(NOM_TAG), Release);
     }
 
     fn insert_next_ops<'a>(
@@ -206,50 +188,17 @@ impl<T: Clone> Deque<T> {
 
     pub fn remove_back<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
+        let head = self.head.load(Relaxed, guard).with_tag(NOM_TAG);
         let next_ptr = self.tail.load(Relaxed, guard);
-        let head_ptr = self.head.load(Relaxed, guard);
         let next = unsafe { next_ptr.deref() };
-        let mut locked = false; // TODO: Aviod locking tail sentinel
-                                // For now remove_back and insert_back have lowe deadlocking due to cyclic prev pointers
-                                // Reason for this have not been investigated
         debug_assert!(!next_ptr.is_null());
         loop {
-            if !locked
-                && next
-                    .next
-                    .compare_exchange(
-                        Shared::null().with_tag(NOM_TAG),
-                        Shared::null().with_tag(LCK_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    .is_ok()
-            {
-                locked = true;
-            }
             let node_ptr = next.prev.load(Acquire, guard);
-            debug_assert!(!node_ptr.is_null());
-            debug_assert_ne!(next_ptr.with_tag(NOM_TAG), node_ptr.with_tag(NOM_TAG));
-            if node_ptr == head_ptr {
+            if node_ptr.with_tag(NOM_TAG) == head {
                 return None;
             }
-            let node = unsafe { node_ptr.deref() };
-            let node_next_ptr = node.next.load(Acquire, guard);
-            if node
-                .next
-                .compare_exchange(
-                    node_next_ptr.with_tag(NOM_TAG),
-                    node_next_ptr.with_tag(DEL_TAG),
-                    AcqRel,
-                    Acquire,
-                    guard,
-                )
-                .is_ok()
-            {
-                Self::unlink_node(&node_ptr, guard, &backoff);
-                next.next.store(Shared::null().with_tag(NOM_TAG), Release);
-                return Some(node_ptr.clone());
+            if self.remove_node(&node_ptr, guard) {
+                return Some(node_ptr)
             }
             backoff.spin();
         }
@@ -396,10 +345,16 @@ impl<T: Clone> Deque<T> {
         res
     }
 
-    pub fn remove_node<'a>(&self, node_ptr: Shared<'a, Node<T>>, guard: &'a Guard) {
+    pub fn remove_node<'a>(&self, node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard) -> bool {
         let backoff = crossbeam_utils::Backoff::new();
         let node = unsafe { node_ptr.deref() };
         let mut next_ptr = node.next.load(Acquire, guard);
+        let head = self.head.load(Relaxed, guard).with_tag(NOM_TAG);
+        let tail = self.tail.load(Relaxed, guard).with_tag(NOM_TAG);
+        let norm_node_ptr = node_ptr.with_tag(NOM_TAG);
+        if norm_node_ptr == head || norm_node_ptr == tail {
+            return false;
+        }
         loop {
             if let Err(new_node_next) = node.next.compare_exchange(
                 next_ptr.with_tag(NOM_TAG),
@@ -410,7 +365,7 @@ impl<T: Clone> Deque<T> {
             ) {
                 let new_next = new_node_next.current;
                 if new_next.tag() == DEL_TAG {
-                    return;
+                    return false;
                 } else if new_next.tag() == NOM_TAG {
                     next_ptr = new_next;
                 }
@@ -419,7 +374,8 @@ impl<T: Clone> Deque<T> {
             }
             break;
         }
-        Self::unlink_node(&node_ptr, guard, &backoff);
+        Self::unlink_node(node_ptr, guard, &backoff);
+        return true;
     }
 }
 
@@ -1024,7 +980,7 @@ mod test {
             deque.insert_back(i, &guard);
         }
         let ths = (threshold..num)
-            .chunks(2048)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
