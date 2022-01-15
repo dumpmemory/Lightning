@@ -341,6 +341,7 @@ impl<T: Clone> Deque<T> {
             }
             fence(SeqCst);
             Self::mark_prev_del(node_ptr, guard, backoff);
+            guard.defer_destroy(node_ptr.clone());
         }
     }
 
