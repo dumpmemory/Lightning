@@ -371,6 +371,32 @@ impl<T: Clone> Deque<T> {
             }
         }
     }
+    
+    fn all<'a>(&self, guard: &'a Guard) -> Vec<Shared<'a, Node<T>>> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let mut node_ptr = self.head.load(Relaxed, guard);
+        let tail = self.tail.load(Relaxed, guard).with_tag(NOM_TAG);
+        let mut res = vec![];
+        loop {
+            if node_ptr.with_tag(NOM_TAG) == tail {
+                break;
+            }
+            let node_tag = node_ptr.tag();
+            let node = unsafe { node_ptr.deref() };
+            if node_tag != DEL_TAG {
+                if node_tag == NOM_TAG {
+                    res.push(node_ptr);
+                    node_ptr = node.next.load(Acquire, guard);
+                }
+            }
+            backoff.spin();
+        }
+        res
+    }
+
+    fn remove_node<'a>(&self, node: Shared<'a, Node<T>>) {
+        
+    }
 }
 
 impl<T: Clone> Node<T> {
@@ -410,11 +436,6 @@ impl<T> Deref for Node<T> {
     fn deref(&self) -> &Self::Target {
         &self.value
     }
-}
-
-pub struct DequeIter<'a, T> {
-    node: Shared<'a, Node<T>>,
-    forwarding: bool
 }
 
 #[cfg(test)]
