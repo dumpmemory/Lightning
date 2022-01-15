@@ -60,15 +60,17 @@ impl<T: Clone> Deque<T> {
             next = prev_node.next.load(Acquire, &guard);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
             debug_assert_ne!(prev.with_tag(NOM_TAG), next.with_tag(NOM_TAG));
-            if let Err(_new_prev_next) = prev_node.next.compare_exchange(
-                next.with_tag(NOM_TAG),
-                curr.with_tag(LCK_TAG),
-                AcqRel,
-                Acquire,
-                &guard,
-            ) {
-                
-            } else {
+            if prev_node
+                .next
+                .compare_exchange(
+                    next.with_tag(NOM_TAG),
+                    curr.with_tag(LCK_TAG),
+                    AcqRel,
+                    Acquire,
+                    &guard,
+                )
+                .is_ok()
+            {
                 break;
             }
             backoff.spin();
@@ -84,16 +86,33 @@ impl<T: Clone> Deque<T> {
         let mut next = self.tail.load(Relaxed, &guard);
         let next_node = unsafe { next.deref() };
         let curr_node = unsafe { curr.deref() };
+        let mut prev;
+        let mut prev_node;
+        let mut locked = false; // TODO: Aviod locking tail sentinel
         loop {
-            let prev = next_node.prev.load(Acquire, &guard);
-            let prev_node = unsafe { prev.deref() };
+            prev = next_node.prev.load(Acquire, &guard);
+            prev_node = unsafe { prev.deref() };
+            if !locked
+                && next_node
+                    .next
+                    .compare_exchange(
+                        Shared::null().with_tag(NOM_TAG),
+                        Shared::null().with_tag(LCK_TAG),
+                        AcqRel,
+                        Acquire,
+                        guard,
+                    )
+                    .is_ok()
+            {
+                locked = true;
+            }
             curr_node.prev.store(prev.with_tag(NOM_TAG), Relaxed);
             curr_node.next.store(next.with_tag(ADD_TAG), Relaxed);
             if prev_node
                 .next
                 .compare_exchange(
                     next.with_tag(NOM_TAG),
-                    curr.with_tag(NOM_TAG),
+                    curr.with_tag(LCK_TAG),
                     AcqRel,
                     Acquire,
                     &guard,
@@ -105,7 +124,11 @@ impl<T: Clone> Deque<T> {
             backoff.spin();
         }
         next = Self::insert_next_ops(&curr, next, &guard, &backoff);
+        prev_node.next.store(curr.with_tag(NOM_TAG), Release);
         curr_node.next.store(next.with_tag(NOM_TAG), Release);
+        next_node
+            .next
+            .store(Shared::null().with_tag(NOM_TAG), Release);
     }
 
     fn insert_next_ops<'a>(
@@ -148,7 +171,7 @@ impl<T: Clone> Deque<T> {
     pub fn remove_front<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
         let tail = self.tail.load(Relaxed, guard);
-        let mut prev = self.head.load(Acquire, guard);
+        let prev = self.head.load(Acquire, guard);
         loop {
             let prev_node = unsafe { prev.deref() };
             let curr = prev_node.next.load(Acquire, guard);
@@ -186,8 +209,23 @@ impl<T: Clone> Deque<T> {
         let next_ptr = self.tail.load(Relaxed, guard);
         let head_ptr = self.head.load(Relaxed, guard);
         let next = unsafe { next_ptr.deref() };
+        let mut locked = false; // TODO: Aviod locking tail sentinel
         debug_assert!(!next_ptr.is_null());
         loop {
+            if !locked
+                && next
+                    .next
+                    .compare_exchange(
+                        Shared::null().with_tag(NOM_TAG),
+                        Shared::null().with_tag(LCK_TAG),
+                        AcqRel,
+                        Acquire,
+                        guard,
+                    )
+                    .is_ok()
+            {
+                locked = true;
+            }
             let node_ptr = next.prev.load(Acquire, guard);
             debug_assert!(!node_ptr.is_null());
             debug_assert_ne!(next_ptr.with_tag(NOM_TAG), node_ptr.with_tag(NOM_TAG));
@@ -208,6 +246,7 @@ impl<T: Clone> Deque<T> {
                 .is_ok()
             {
                 Self::unlink_node(&node_ptr, guard, &backoff);
+                next.next.store(Shared::null().with_tag(NOM_TAG), Release);
                 return Some(node_ptr.clone());
             }
             backoff.spin();
@@ -224,8 +263,8 @@ impl<T: Clone> Deque<T> {
             loop {
                 let prev_node = prev_ptr.deref();
                 let next_node = next_ptr.deref();
-                let prev_prev = prev_node.prev.load(Acquire, guard);
                 let prev_next = prev_node.next.load(Acquire, guard);
+                debug_assert_ne!(prev_ptr.with_tag(NOM_TAG), prev_next.with_tag(NOM_TAG));
                 if !marked_prev {
                     // check update prev
                     if let Err(exg_prev_next) = prev_node.next.compare_exchange(
@@ -238,9 +277,42 @@ impl<T: Clone> Deque<T> {
                         let new_prev_next = exg_prev_next.current;
                         let new_prev_next_tag = new_prev_next.tag();
                         if new_prev_next_tag == DEL_TAG {
-                            prev_ptr = prev_prev;
+                            let prev_prev = prev_node.prev.load(Acquire, guard);
+                            debug_assert_ne!(
+                                prev_ptr.with_tag(NOM_TAG),
+                                prev_prev.with_tag(NOM_TAG)
+                            );
+                            debug_assert!(!prev_prev.is_null());
+                            if new_prev_next_tag == NOM_TAG {
+                                trace!(
+                                    "Shifting from {:?} to prev next {:?} for {:?}",
+                                    prev_ptr,
+                                    new_prev_next,
+                                    node_ptr
+                                );
+                                prev_ptr = new_prev_next;
+                                backoff.spin();
+                            } else {
+                                trace!(
+                                    "Shifting from {:?} to prev prev {:?} for {:?}",
+                                    prev_ptr,
+                                    prev_prev,
+                                    node_ptr
+                                );
+                                debug_assert_ne!(
+                                    prev_prev.with_tag(NOM_TAG),
+                                    node_ptr.with_tag(NOM_TAG)
+                                );
+                                prev_ptr = prev_prev;
+                                backoff.spin();
+                            }
+                        } else if new_prev_next_tag == ADD_TAG {
+                            backoff.spin();
+                        } else if new_prev_next_tag == LCK_TAG {
+                            backoff.spin();
+                        } else {
+                            backoff.spin();
                         }
-                        backoff.spin();
                         continue;
                     } else {
                         marked_prev = true;
@@ -634,14 +706,14 @@ mod test {
     #[test]
     pub fn multithread_pop_front() {
         let _ = env_logger::try_init();
-        let num = 40960;
+        let num = 409600;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .chunks(256)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let deque = deque.clone();
@@ -673,14 +745,14 @@ mod test {
 
     #[test]
     pub fn multithread_pop_back() {
-        let num = 40960;
+        let num = 409600;
         let guard = crossbeam_epoch::pin();
         let deque = Arc::new(Deque::new());
         for i in 0..num {
             deque.insert_front(i, &guard);
         }
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let deque = deque.clone();
@@ -708,14 +780,23 @@ mod test {
         for i in 0..num {
             assert!(all_nums.contains(&i));
         }
+        deque.insert_back(1, &guard);
+        deque.insert_back(2, &guard);
+        deque.insert_back(3, &guard);
+        unsafe {
+            assert_eq!(**deque.remove_back(&guard).unwrap().deref(), 3);
+            assert_eq!(**deque.remove_back(&guard).unwrap().deref(), 2);
+            assert_eq!(**deque.remove_back(&guard).unwrap().deref(), 1);
+        }
+        assert!(deque.remove_back(&guard).is_none());
     }
 
     #[test]
     pub fn multithread_push_front_and_back_single_thread_pop_front() {
-        let num = 40960;
+        let num = 409600;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -753,10 +834,10 @@ mod test {
 
     #[test]
     pub fn multithread_push_front_and_back_single_thread_pop_back() {
-        let num = 40960;
+        let num = 409600;
         let deque = Arc::new(Deque::new());
         let ths = (0..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -839,7 +920,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_pop_front() {
-        let num = 512;
+        let num = 40960;
         let threshold = (num as f64 * 0.5) as usize;
         let deque = Arc::new(Deque::new());
         let guard = crossbeam_epoch::pin();
@@ -847,7 +928,7 @@ mod test {
             deque.insert_front(i, &guard);
         }
         let ths = (threshold..num)
-            .chunks(128)
+            .chunks(1024)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
@@ -881,6 +962,7 @@ mod test {
 
     #[test]
     pub fn multithread_push_pop_back() {
+        let _ = env_logger::try_init();
         let num = 40960;
         let threshold = (num as f64 * 0.5) as usize;
         let deque = Arc::new(Deque::new());
@@ -889,7 +971,7 @@ mod test {
             deque.insert_back(i, &guard);
         }
         let ths = (threshold..num)
-            .chunks(128)
+            .chunks(2048)
             .into_iter()
             .map(|nums| {
                 let nums = nums.collect_vec();
