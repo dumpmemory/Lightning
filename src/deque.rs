@@ -210,6 +210,8 @@ impl<T: Clone> Deque<T> {
         let head_ptr = self.head.load(Relaxed, guard);
         let next = unsafe { next_ptr.deref() };
         let mut locked = false; // TODO: Aviod locking tail sentinel
+        // For now remove_back and insert_back have lowe deadlocking due to cyclic prev pointers
+        // Reason for this have not been investigated
         debug_assert!(!next_ptr.is_null());
         loop {
             if !locked
@@ -408,6 +410,11 @@ impl<T> Deref for Node<T> {
     fn deref(&self) -> &Self::Target {
         &self.value
     }
+}
+
+pub struct DequeIter<'a, T> {
+    node: Shared<'a, Node<T>>,
+    forwarding: bool
 }
 
 #[cfg(test)]
