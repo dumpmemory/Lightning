@@ -303,9 +303,7 @@ impl<T: Clone> Deque<T> {
             let mut next;
             let mut next_next_ptr;
             let mut next_prev_ptr = prev_ptr.clone();
-            let mut turn = 0;
             loop {
-                turn += 1;
                 next = next_ptr.deref();
                 next_next_ptr = next.next.load(Acquire, guard);
                 if let Err(new_next_next) = next.next.compare_exchange(
@@ -334,8 +332,7 @@ impl<T: Clone> Deque<T> {
                 guard,
             ) {
                 unreachable!(
-                    "[{}] Tag is {}, ptr {:?}, expecting {:?}, head {:?}, tail {:?}, next is {:?}",
-                    turn,
+                    "Tag is {}, ptr {:?}, expecting {:?}, head {:?}, tail {:?}, next is {:?}",
                     new_next_prev.current.tag(),
                     new_next_prev.current,
                     next_prev_ptr,
