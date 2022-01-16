@@ -109,7 +109,8 @@ impl<T: Clone> Deque<T> {
         }
     }
 
-    fn unlink_node<'a>(node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
+    fn unlink_prev_node<'a>(node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
+        // Unlink previous node and link previous node to the next node
         fence(SeqCst);
         Self::mark_prev_del(node_ptr, guard, backoff);
         fence(SeqCst);
@@ -218,6 +219,81 @@ impl<T: Clone> Deque<T> {
                 backoff.spin();
             }
         }
+    }
+
+    fn link_with_prev<'a>(
+        &self,
+        prev_ptr: &Shared<'a, Node<T>>,
+        node_ptr: &Shared<'a, Node<T>>,
+        guard: &'a Guard,
+        backoff: &Backoff,
+    ) -> Shared<'a, Node<T>>{
+        let mut prev_ptr = prev_ptr.clone();
+        let mut last_prev_ptr: Shared<'a, Node<T>> = Shared::null();
+        let node_nom = node_ptr.with_tag(NOM_TAG);
+        loop {
+            unsafe {
+                let node = node_ptr.deref();
+                let prev = prev_ptr.deref();
+                let prev_next_ptr = prev.next.load(Acquire, guard);
+                if prev_next_ptr.tag() == DEL_TAG {
+                    if !last_prev_ptr.is_null() {
+                        Self::mark_prev_del(&prev_ptr, guard, backoff);
+                        let last_prev = last_prev_ptr.deref();
+                        let prev_next = prev.next.load(Acquire, guard);
+                        if last_prev
+                            .next
+                            .compare_exchange(
+                                prev_ptr.with_tag(NOM_TAG),
+                                prev_next.with_tag(NOM_TAG),
+                                AcqRel,
+                                Acquire,
+                                guard,
+                            )
+                            .is_err()
+                        {
+                            prev_ptr = last_prev_ptr;
+                            last_prev_ptr = Shared::null();
+                        }
+                    } else {
+                        prev_ptr = prev.prev.load(Acquire, guard);
+                    }
+                    backoff.spin();
+                    continue;
+                }
+                let node_prev_ptr = node.prev.load(Acquire, guard);
+                if node_prev_ptr.tag() == DEL_TAG {
+                    break;
+                }
+                if prev_next_ptr != node_nom {
+                    last_prev_ptr = prev_ptr;
+                    prev_ptr = prev_next_ptr;
+                    backoff.spin();
+                    continue;
+                }
+                if node_prev_ptr == prev_ptr {
+                    break;
+                }
+                if prev.next.load(Acquire, guard).with_tag(NOM_TAG) == node_nom
+                    && node
+                        .prev
+                        .compare_exchange(
+                            node_prev_ptr,
+                            prev_ptr.with_tag(NOM_TAG),
+                            AcqRel,
+                            Acquire,
+                            guard,
+                        )
+                        .is_ok()
+                {
+                    if prev.prev.load(Acquire, guard).tag() != DEL_TAG {
+                        // Double check see if prev is deleted, if yes, retry
+                        break;
+                    }
+                }
+            }
+        }
+        return prev_ptr;
     }
 
     pub fn all<'a>(&self, guard: &'a Guard) -> Vec<Shared<'a, Node<T>>> {
