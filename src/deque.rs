@@ -63,12 +63,9 @@ impl<T: Clone> Deque<T> {
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
         let tail_ptr = self.tail.load(Relaxed, &guard);
         let tail = unsafe { tail_ptr.deref() };
-        let mut prev_ptr = tail.prev.load(Acquire, &guard);
+        let prev_ptr = tail.prev.load(Acquire, &guard);
         loop {
-            let prev = unsafe { prev_ptr.deref() };
-            if prev.next.load(Acquire, guard) != tail_ptr.with_tag(NOM_TAG) {
-                prev_ptr = self.link_with_prev(&prev_ptr, &tail_ptr, guard, &backoff);
-            } else if self.insert_after(&curr, &prev_ptr, guard, &backoff) {
+            if self.insert_after(&curr, &prev_ptr, guard, &backoff) {
                 break;
             }
             backoff.spin();
@@ -96,11 +93,11 @@ impl<T: Clone> Deque<T> {
     pub fn remove_back<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, Node<T>>> {
         let backoff = crossbeam_utils::Backoff::new();
         let head = self.head.load(Relaxed, guard).with_tag(NOM_TAG);
-        let next_ptr = self.tail.load(Relaxed, guard);
-        let next = unsafe { next_ptr.deref() };
-        debug_assert!(!next_ptr.is_null());
+        let tail_ptr = self.tail.load(Relaxed, guard);
+        let tail = unsafe { tail_ptr.deref() };
         loop {
-            let node_ptr = next.prev.load(Acquire, guard);
+            let node_ptr = tail.prev.load(Acquire, guard);
+            let node = unsafe { node_ptr.deref() };
             if node_ptr.with_tag(NOM_TAG) == head {
                 return None;
             }
