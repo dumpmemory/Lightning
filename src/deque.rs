@@ -25,6 +25,8 @@ pub struct Deque<T: Clone> {
 
 const NOM_TAG: usize = 0;
 const DEL_TAG: usize = 1;
+const ADD_TAG: usize = 2;
+const LCK_TAG: usize = 3;
 
 impl<T: Clone> Deque<T> {
     pub fn new() -> Self {
@@ -111,87 +113,73 @@ impl<T: Clone> Deque<T> {
 
     fn unlink_node<'a>(node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
         fence(SeqCst);
-        Self::mark_prev_del(node_ptr, guard, backoff);
-        fence(SeqCst);
         unsafe {
             let node = node_ptr.deref();
             let mut prev_ptr = node.prev.load(Acquire, guard);
             let mut next_ptr = node.next.load(Acquire, guard);
             let mut prev_node;
             let mut next_node;
-            let mut last_prev: Shared<'a, Node<T>> = Shared::null();
+            let mut next_next;
             loop {
                 prev_node = prev_ptr.deref();
-                next_node = next_ptr.deref();
-                let next_next_ptr = next_node.next.load(Acquire, guard);
-                let next_next = next_next_ptr.deref();
-                if prev_ptr == next_ptr {
-                    break;
-                }
-                if next_next_ptr.tag() == DEL_TAG {
-                    // Next node or the node is deleted, move to next
-                    Self::mark_prev_del(&next_ptr, guard, backoff); // Make sure it marked deleted
-                    next_ptr = next_next_ptr;
-                    backoff.spin();
-                    continue;
-                }
                 let prev_next = prev_node.next.load(Acquire, guard);
-                if prev_next.tag() == DEL_TAG {
-                    // Prev node is deleted
-                    Self::mark_prev_del(&prev_ptr, guard, backoff); // Ensured mark prev deleted
-                    if !last_prev.is_null() {
-                        // If we have last prev, we can fix the link between last prev with prev
-                        let prev_next = prev_node.next.load(Acquire, guard);
-                        let last_prev_node = last_prev.deref();
-                        if last_prev_node // Fix the next link from last prev from prev to next of prev
-                            .next
-                            .compare_exchange(
-                                prev_ptr.with_tag(NOM_TAG),
-                                prev_next.with_tag(NOM_TAG),
-                                AcqRel,
-                                Acquire,
-                                guard,
-                            )
-                            .is_err()
-                        {
-                            // If failed, there are other node between last prev and prev next to last prev
-                            // At this point, we don't need to fix next link for last prev any more
-                            // Move our prev to last prev
-                            prev_ptr = last_prev;
-                            last_prev = Shared::null();
+                if let Err(exg_prev_next) = prev_node.next.compare_exchange(
+                    prev_next.with_tag(NOM_TAG),
+                    prev_next.with_tag(LCK_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_prev_next = exg_prev_next.current;
+                    let new_prev_next_tag = new_prev_next.tag();
+                    if new_prev_next_tag == DEL_TAG {
+                        let prev_prev = prev_node.prev.load(Acquire, guard);
+                        debug_assert!(!prev_prev.is_null());
+                        if new_prev_next_tag == NOM_TAG {
+                            prev_ptr = new_prev_next;
+                        } else {
+                            prev_ptr = prev_prev;
                         }
-                    } else {
-                        // last prev is null, we can't fix anything. Move to prev prev instead
-                        // Expecting prev is right before the node
-                        prev_ptr = prev_node.prev.load(Acquire, guard);
                     }
-                    backoff.spin();
-                    continue;
-                }
-                if prev_next.with_tag(NOM_TAG) != node_ptr.with_tag(NOM_TAG) {
-                    // Prev next have been changed by other thread
-                    // We know that prev is not deleted
-                    // We can move to prev next, wich can potentially close to the node we are trying to delete
-                    last_prev = prev_ptr; // Take a note of last prev
-                    prev_ptr = prev_next; // Shift to prev next
-                    backoff.spin();
-                    continue;
-                }
-                // Final step
-                if prev_node
-                    .next
-                    .compare_exchange(
-                        node_ptr.with_tag(NOM_TAG),
-                        next_ptr.with_tag(NOM_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    .is_ok()
-                {
+                } else {
                     break;
                 }
                 backoff.spin();
+            }
+            loop {
+                next_node = next_ptr.deref();
+                next_next = next_node.next.load(Acquire, guard);
+                if let Err(new_next_next) = next_node.next.compare_exchange(
+                    next_next.with_tag(NOM_TAG),
+                    next_next.with_tag(LCK_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_next_next = new_next_next.current;
+                    if new_next_next.tag() == DEL_TAG {
+                        next_ptr = new_next_next;
+                    }
+                } else {
+                    break;
+                }
+            }
+            fence(SeqCst);
+            let next_prev = next_node.prev.load(Acquire, guard);
+            if let Err(_exg_next_prev) = next_node.prev.compare_exchange(
+                next_prev.with_tag(NOM_TAG),
+                prev_ptr.with_tag(NOM_TAG),
+                AcqRel,
+                Acquire,
+                guard,
+            ) {
+                unreachable!();
+            } else {
+                prev_node.next.store(next_ptr.with_tag(NOM_TAG), Release);
+                next_node.next.store(next_next.with_tag(NOM_TAG), Release);
+                fence(SeqCst);
+                Self::mark_prev_del(node_ptr, guard, backoff);
+                guard.defer_destroy(node_ptr.clone());
             }
         }
     }
@@ -201,6 +189,7 @@ impl<T: Clone> Deque<T> {
             let node = node_ptr.deref();
             loop {
                 let node_prev_ptr = node.prev.load(Acquire, guard);
+                debug_assert_ne!(node_prev_ptr.tag(), ADD_TAG);
                 if node_prev_ptr.tag() == DEL_TAG
                     || node
                         .prev
@@ -306,6 +295,30 @@ impl<T: Clone> Deque<T> {
                 {
                     // We have prev locked down
                     next_ptr = prev_next;
+                    break;
+                }
+                backoff.spin();
+            }
+            fence(SeqCst);
+            let mut next;
+            let mut next_next_ptr;
+            let mut next_prev_ptr = prev_ptr.clone();
+            loop {
+                next = next_ptr.deref();
+                next_next_ptr = next.next.load(Acquire, guard);
+                if let Err(new_next_next) = next.next.compare_exchange(
+                    next_next_ptr.with_tag(NOM_TAG),
+                    next_next_ptr.with_tag(LCK_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    let new_next_next = new_next_next.current;
+                    if new_next_next.tag() == DEL_TAG {
+                        next_prev_ptr = next_ptr;
+                        next_ptr = new_next_next;
+                    }
+                } else {
                     break;
                 }
                 backoff.spin();
