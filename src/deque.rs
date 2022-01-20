@@ -51,7 +51,7 @@ impl<T: Clone> Deque<T> {
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
         let head = self.head.load(Relaxed, &guard);
         loop {
-            if self.insert_after(&curr, &head, guard) {
+            if self.insert_after(&curr, &head, guard, &backoff) {
                 break;
             }
             backoff.spin();
@@ -61,12 +61,14 @@ impl<T: Clone> Deque<T> {
     pub fn insert_back(&self, value: T, guard: &Guard) {
         let backoff = crossbeam_utils::Backoff::new();
         let curr = Owned::new(Node::new(value)).into_shared(&guard);
-        let tail = self.tail.load(Relaxed, &guard);
-        let tail_node = unsafe { tail.deref() };
-        let mut prev;
+        let tail_ptr = self.tail.load(Relaxed, &guard);
+        let tail = unsafe { tail_ptr.deref() };
+        let mut prev_ptr = tail.prev.load(Acquire, &guard);
         loop {
-            prev = tail_node.prev.load(Acquire, &guard);
-            if self.insert_after(&curr, &prev, guard) {
+            let prev = unsafe { prev_ptr.deref() };
+            if prev.next.load(Acquire, guard) != tail_ptr.with_tag(NOM_TAG) {
+                prev_ptr = self.link_with_prev(&prev_ptr, &tail_ptr, guard, &backoff);
+            } else if self.insert_after(&curr, &prev_ptr, guard, &backoff) {
                 break;
             }
             backoff.spin();
@@ -84,7 +86,7 @@ impl<T: Clone> Deque<T> {
                 // End of list
                 return None;
             }
-            if self.remove_node(&curr, guard) {
+            if self.remove_node(&curr, guard, &backoff) {
                 return Some(curr);
             }
             backoff.spin();
@@ -102,13 +104,14 @@ impl<T: Clone> Deque<T> {
             if node_ptr.with_tag(NOM_TAG) == head {
                 return None;
             }
-            if self.remove_node(&node_ptr, guard) {
+            if self.remove_node(&node_ptr, guard, &backoff) {
                 return Some(node_ptr);
             }
             backoff.spin();
         }
     }
 
+    // HelpDelete
     fn unlink_prev_node<'a>(node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard, backoff: &Backoff) {
         // Unlink previous node and link previous node to the next node
         fence(SeqCst);
@@ -221,6 +224,7 @@ impl<T: Clone> Deque<T> {
         }
     }
 
+    // HelpInsert
     fn link_with_prev<'a>(
         &self,
         prev_ptr: &Shared<'a, Node<T>>,
@@ -296,6 +300,7 @@ impl<T: Clone> Deque<T> {
         return prev_ptr;
     }
 
+    // PushCommon
     pub fn add_link_with_next<'a>(
         &self,
         node_ptr: &Shared<'a, Node<T>>,
@@ -355,37 +360,40 @@ impl<T: Clone> Deque<T> {
         res
     }
 
-    pub fn remove_node<'a>(&self, node_ptr: &Shared<'a, Node<T>>, guard: &'a Guard) -> bool {
-        let backoff = crossbeam_utils::Backoff::new();
-        let node = unsafe { node_ptr.deref() };
-        let mut next_ptr = node.next.load(Acquire, guard);
-        let head = self.head.load(Relaxed, guard).with_tag(NOM_TAG);
-        let tail = self.tail.load(Relaxed, guard).with_tag(NOM_TAG);
-        let norm_node_ptr = node_ptr.with_tag(NOM_TAG);
-        if norm_node_ptr == head || norm_node_ptr == tail {
-            return false;
-        }
-        loop {
-            if let Err(new_node_next) = node.next.compare_exchange(
-                next_ptr.with_tag(NOM_TAG),
-                next_ptr.with_tag(DEL_TAG),
-                AcqRel,
-                Acquire,
-                guard,
-            ) {
-                let new_next = new_node_next.current;
-                if new_next.tag() == DEL_TAG {
-                    return false;
-                } else if new_next.tag() == NOM_TAG {
-                    next_ptr = new_next;
+    pub fn remove_node<'a>(
+        &self,
+        node_ptr: &Shared<'a, Node<T>>,
+        guard: &'a Guard,
+        backoff: &Backoff,
+    ) -> bool {
+        unsafe {
+            let node = node_ptr.deref();
+            loop {
+                let node_next_ptr = node.next.load(Acquire, guard);
+                let mut node_prev_ptr = node.prev.load(Acquire, guard);
+                if let Err(e) = node.next.compare_exchange(
+                    node_next_ptr.with_tag(NOM_TAG),
+                    node_next_ptr.with_tag(DEL_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    if e.current.tag() == DEL_TAG {
+                        // The node have been deleted
+                        Self::unlink_prev_node(node_ptr, guard, backoff);
+                        return false;
+                    } else {
+                        backoff.spin();
+                        continue;
+                    }
+                } else {
+                    Self::unlink_prev_node(node_ptr, guard, backoff);
+                    self.link_with_prev(&node_prev_ptr, &node_next_ptr, guard, backoff);
+                    guard.defer_destroy(node_ptr.clone());
+                    return true;
                 }
-                backoff.spin();
-                continue;
             }
-            break;
         }
-        Self::unlink_node(node_ptr, guard, &backoff);
-        return true;
     }
 
     pub fn insert_after<'a>(
@@ -393,58 +401,29 @@ impl<T: Clone> Deque<T> {
         node_ptr: &Shared<'a, Node<T>>,
         prev_ptr: &Shared<'a, Node<T>>,
         guard: &'a Guard,
+        backoff: &Backoff,
     ) -> bool {
-        let backoff = crossbeam_utils::Backoff::new();
         unsafe {
             let node = node_ptr.deref();
             let prev = prev_ptr.deref();
-            node.prev.store(prev_ptr.with_tag(NOM_TAG), Relaxed);
-            node.next.store(Shared::null().with_tag(ADD_TAG), Relaxed);
-            let mut next_ptr;
-            loop {
-                let prev_next = prev.next.load(Acquire, guard);
-                if prev_next.tag() == DEL_TAG {
-                    return false;
-                }
-                if prev
-                    .next
-                    .compare_exchange(
-                        prev_next.with_tag(NOM_TAG),
-                        node_ptr.with_tag(LCK_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    .is_ok()
-                {
-                    // We have prev locked down
-                    next_ptr = prev_next;
-                    break;
-                }
-                backoff.spin();
-            }
-            fence(SeqCst);
-            if let Err(new_next_prev) = next.prev.compare_exchange(
-                next_prev_ptr.with_tag(NOM_TAG),
-                node_ptr.with_tag(NOM_TAG),
-                AcqRel,
-                Acquire,
-                guard,
-            ) {
-                unreachable!(
-                    "Tag is {}, ptr {:?}, expecting {:?}, head {:?}, tail {:?}, next is {:?}",
-                    new_next_prev.current.tag(),
-                    new_next_prev.current,
-                    next_prev_ptr,
-                    self.head.load(Relaxed, guard),
-                    self.tail.load(Relaxed, guard),
-                    next_next_ptr
-                );
+            let prev_next_ptr = prev.next.load(Acquire, guard);
+            let nom_prev_next_ptr = prev.next.load(Acquire, guard).with_tag(NOM_TAG);
+            node.prev.store(prev_ptr.with_tag(NOM_TAG), Release);
+            node.next.store(nom_prev_next_ptr, Release);
+            if prev
+                .next
+                .compare_exchange(
+                    nom_prev_next_ptr,
+                    node_ptr.with_tag(NOM_TAG),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                )
+                .is_err()
+            {
+                return false;
             } else {
-                next.next.store(next_next_ptr.with_tag(NOM_TAG), Release);
-                prev.next.store(node_ptr.with_tag(NOM_TAG), Release);
-                fence(SeqCst);
-                node.next.store(next_ptr.with_tag(NOM_TAG), Release);
+                self.add_link_with_next(node_ptr, &prev_next_ptr, guard, backoff);
                 return true;
             }
         }
