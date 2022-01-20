@@ -227,7 +227,7 @@ impl<T: Clone> Deque<T> {
         node_ptr: &Shared<'a, Node<T>>,
         guard: &'a Guard,
         backoff: &Backoff,
-    ) -> Shared<'a, Node<T>> {
+    ) -> Shared<'a, Node<T>>{
         let mut prev_ptr = prev_ptr.clone();
         let mut last_prev_ptr: Shared<'a, Node<T>> = Shared::null();
         let node_nom = node_ptr.with_tag(NOM_TAG);
@@ -294,43 +294,6 @@ impl<T: Clone> Deque<T> {
             }
         }
         return prev_ptr;
-    }
-
-    pub fn add_link_with_next<'a>(
-        &self,
-        node_ptr: &Shared<'a, Node<T>>,
-        next_ptr: &Shared<'a, Node<T>>,
-        guard: &'a Guard,
-        backoff: &Backoff,
-    ) {
-        unsafe {
-            let node = node_ptr.deref();
-            let next = next_ptr.deref();
-            loop {
-                let next_prev = next.prev.load(Acquire, guard);
-                let node_next = node.next.load(Acquire, guard);
-                if next_prev.tag() == DEL_TAG || node_next != next_ptr.with_tag(NOM_TAG) {
-                    break;
-                }
-                if next
-                    .prev
-                    .compare_exchange(
-                        next_prev,
-                        node_ptr.with_tag(NOM_TAG),
-                        AcqRel,
-                        Acquire,
-                        guard,
-                    )
-                    .is_ok()
-                {
-                    if node.prev.load(Acquire, guard).tag() == DEL_TAG {
-                        self.link_with_prev(node_ptr, next_ptr, guard, backoff);
-                    }
-                    break;
-                }
-                backoff.spin();
-            }
-        }
     }
 
     pub fn all<'a>(&self, guard: &'a Guard) -> Vec<Shared<'a, Node<T>>> {
