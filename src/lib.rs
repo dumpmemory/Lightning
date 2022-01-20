@@ -7,7 +7,7 @@ extern crate log;
 extern crate alloc;
 extern crate test;
 
-pub mod deque;
+// pub mod deque;
 pub mod linked_map;
 pub mod list;
 pub mod map;
