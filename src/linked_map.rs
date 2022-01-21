@@ -5,7 +5,7 @@ use crossbeam_epoch::{Atomic, Shared};
 use crate::map::{Map, ObjectMap};
 use crate::spin::SpinLock;
 use std::ops::Deref;
-use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Release};
+use std::sync::atomic::Ordering::{self, *};
 use std::sync::atomic::{fence, AtomicUsize};
 use std::sync::Arc;
 
@@ -59,12 +59,12 @@ impl<T> LinkedObjectMap<T> {
                 continue;
             }
             new_front.set_next(front);
-            if self.head.compare_and_swap(front, *key, AcqRel) == front {
+            if self.head.compare_exchange(front, *key, AcqRel, Relaxed).is_ok() {
                 if let Some(ref front_node) = front_node {
                     front_node.prev.store(*key, Release);
                 } else {
                     debug_assert_eq!(front, NONE_KEY);
-                    self.tail.compare_and_swap(NONE_KEY, *key, AcqRel);
+                    let _ = self.tail.compare_exchange(NONE_KEY, *key, AcqRel, Relaxed);
                 }
                 break;
             } else {
@@ -84,26 +84,28 @@ impl<T> LinkedObjectMap<T> {
         loop {
             let back = self.tail.load(Acquire);
             let back_node = self.map.get(&back);
-            let _back_guard = back_node.as_ref().map(|n| n.lock.lock());
+            let back_guard = back_node.as_ref().map(|n| n.lock.lock());
             if let Some(ref back_node) = back_node {
                 if back_node.get_next() != NONE_KEY {
                     backoff.spin();
                     continue;
                 }
             } else if back != NONE_KEY {
+                drop(back_guard);
                 backoff.spin();
                 continue;
             }
             new_back.set_prev(back);
-            if self.tail.compare_and_swap(back, *key, AcqRel) == back {
+            if self.tail.compare_exchange(back, *key, AcqRel, Relaxed).is_ok() {
                 if let Some(ref back_node) = back_node {
                     back_node.next.store(*key, Release);
                 } else {
                     debug_assert_eq!(back, NONE_KEY);
-                    self.head.compare_and_swap(NONE_KEY, *key, AcqRel);
+                    let _ = self.head.compare_exchange(NONE_KEY, *key, AcqRel, Relaxed);
                 }
                 break;
             } else {
+                drop(back_guard);
                 backoff.spin();
             }
         }
@@ -137,9 +139,9 @@ impl<T> LinkedObjectMap<T> {
                 continue;
             }
             // Lock 3 nodes, from left to right to avoid dead lock
-            let _prev_guard = prev_node.as_ref().map(|n| n.lock.lock());
-            let _self_guard = val_node.lock.lock();
-            let _next_guard = next_node.as_ref().map(|n| n.lock.lock());
+            let prev_guard = prev_node.as_ref().map(|n| n.lock.lock());
+            let self_guard = val_node.lock.lock();
+            let next_guard = next_node.as_ref().map(|n| n.lock.lock());
             // Validate 3 nodes, retry on failure
             if {
                 prev_node
@@ -153,6 +155,9 @@ impl<T> LinkedObjectMap<T> {
                         .map(|n| n.get_prev() != key)
                         .unwrap_or(false)
             } {
+                drop(prev_guard);
+                drop(self_guard);
+                drop(next_guard);
                 backoff.spin();
                 continue;
             }
@@ -228,15 +233,6 @@ impl<T> LinkedObjectMap<T> {
         }
         res
     }
-
-    pub fn iter(&self) -> LinkedMapIter<T> {
-        loop {}
-    }
-}
-
-pub struct LinkedMapIter<'a, T> {
-    node: Arc<Node<T>>,
-    map: &'a LinkedObjectMap<T>,
 }
 
 impl<T> Node<T> {
