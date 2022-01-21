@@ -1015,7 +1015,7 @@ impl<
         // Swap in old chunk as placeholder for the lock
         if let Err(_) = self
             .new_chunk
-            .compare_and_set(Shared::null(), old_chunk_ptr, AcqRel, guard)
+            .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");

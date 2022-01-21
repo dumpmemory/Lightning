@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{
     AtomicU8,
-    Ordering::{AcqRel, Acquire, Release},
+    Ordering::{AcqRel, Relaxed, Release},
 };
 
 pub struct SpinLock<T> {
@@ -24,7 +24,7 @@ impl<T> SpinLock<T> {
 
     pub fn lock(&self) -> SpinLockGuard<T> {
         let backoff = crossbeam_utils::Backoff::new();
-        while self.mark.compare_and_swap(0, 1, AcqRel) != 0 {
+        while self.mark.compare_exchange(0, 1, AcqRel, Relaxed).is_err() {
             backoff.spin();
         }
         SpinLockGuard { lock: self }
