@@ -13,6 +13,7 @@ pub mod list;
 pub mod map;
 pub mod spin;
 pub mod ttl_cache;
+pub mod ring_buffer;
 
 pub mod rand;
 
