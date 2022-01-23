@@ -913,11 +913,8 @@ mod exchange {
 #[cfg(test)]
 mod test {
     use crate::list::*;
-    use std::alloc::{Global, System};
-    use std::collections::BTreeSet;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::{Arc, Mutex};
+    use std::alloc::{System};
+    use std::sync::{Arc};
     use std::thread;
 
     #[test]

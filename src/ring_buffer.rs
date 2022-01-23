@@ -20,7 +20,6 @@ pub struct RingBuffer<T: Clone, const N: usize> {
 
 impl<T: Clone, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
-        assert!(N.is_power_of_two());
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
@@ -121,7 +120,7 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 
     fn incr(num: usize) -> usize {
-        (num + 1) & (N - 1)
+        (num + 1) % N
     }
 
     fn decr(num: usize) -> usize {
@@ -133,8 +132,14 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 }
 
+unsafe impl <T: Clone, const N: usize> Sync for RingBuffer <T, N> {}
+
 #[cfg(test)]
 mod test {
+    use std::{sync::Arc, thread, collections::HashSet};
+
+    use itertools::Itertools;
+
     use super::*;
 
     #[test]
@@ -203,5 +208,432 @@ mod test {
             assert_eq!(ring.pop_front(), Some(i));
         }
         assert_eq!(ring.pop_back(), None);
+    }
+
+    #[test]
+    pub fn multithread_push_front_single_thread_pop_front() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    for i in nums {
+                        deque.push_front(i).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        ths.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let mut all_nums = HashSet::new();
+        for _ in 0..NUM {
+            all_nums.insert(
+                deque
+                    .pop_front()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_push_front_single_thread_pop_back() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    for i in nums {
+                        deque.push_front(i).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        ths.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let mut all_nums = HashSet::new();
+        for _ in 0..NUM {
+            all_nums.insert(
+                deque
+                    .pop_back()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_push_back_single_thread_pop_front() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    for i in nums {
+                        deque.push_back(i).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        ths.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let mut all_nums = HashSet::new();
+        for _ in 0..NUM {
+            all_nums.insert(
+                deque
+                    .pop_front()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_push_back_single_thread_pop_back() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    for i in nums {
+                        deque.push_back(i).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        ths.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let mut all_nums = HashSet::new();
+        for _ in 0..NUM {
+            all_nums.insert(
+                deque
+                    .pop_back()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_pop_front() {
+        let _ = env_logger::try_init();
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        for i in 0..NUM {
+            deque.push_front(i).unwrap();
+        }
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let deque = deque.clone();
+                let nums = nums.collect_vec();
+                thread::spawn(move || {
+                    nums.into_iter()
+                        .map(|_| {
+                            deque.pop_front().unwrap()
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut all_nums = HashSet::new();
+        ths.into_iter()
+            .map(|t| t.join().unwrap().into_iter())
+            .flatten()
+            .for_each(|n| {
+                all_nums.insert(n);
+            });
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+        assert!(deque.pop_front().is_none());
+        assert!(deque.pop_back().is_none());
+    }
+
+    #[test]
+    pub fn multithread_pop_back() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        for i in 0..NUM {
+            deque.push_front(i).unwrap();
+        }
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let deque = deque.clone();
+                let nums = nums.collect_vec();
+                thread::spawn(move || {
+                    nums.into_iter()
+                        .map(|_| {
+                            deque.pop_back().unwrap()
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut all_nums = HashSet::new();
+        ths.into_iter()
+            .map(|t| t.join().unwrap().into_iter())
+            .flatten()
+            .for_each(|n| {
+                all_nums.insert(n);
+            });
+        assert!(deque.pop_front().is_none());
+        assert!(deque.pop_back().is_none());
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+        deque.push_back(1).unwrap();
+        deque.push_back(2).unwrap();
+        deque.push_back(3).unwrap();
+        assert_eq!(deque.pop_back().unwrap(), 3);
+        assert_eq!(deque.pop_back().unwrap(), 2);
+        assert_eq!(deque.pop_back().unwrap(), 1);
+        assert!(deque.pop_back().is_none());
+    }
+
+    #[test]
+    pub fn multithread_push_front_and_back_single_thread_pop_front() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    nums.into_iter().for_each(|i| {
+                        if i % 2 == 0 {
+                            deque.push_front(i).unwrap();
+                        } else {
+                            deque.push_back(i).unwrap();
+                        }
+                    });
+                })
+            })
+            .collect::<Vec<_>>();
+        ths.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let mut all_nums = HashSet::new();
+        for _ in 0..NUM {
+            all_nums.insert(
+                deque
+                    .pop_front()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_push_front_and_back_single_thread_pop_back() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let ths = (0..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    nums.into_iter().for_each(|i| {
+                        if i % 2 == 0 {
+                            deque.push_front(i).unwrap();
+                        } else {
+                            deque.push_back(i).unwrap();
+                        }
+                    });
+                })
+            })
+            .collect::<Vec<_>>();
+        ths.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+        let mut all_nums = HashSet::new();
+        for _ in 0..NUM {
+            all_nums.insert(
+                deque
+                    .pop_back()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_pop_back_front() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        for i in 0..NUM {
+            deque.push_front(i).unwrap();
+        }
+        let ths = (0..NUM)
+            .chunks(512)
+            .into_iter()
+            .map(|nums| {
+                let deque = deque.clone();
+                let nums = nums.collect_vec();
+                thread::spawn(move || {
+                    nums.into_iter()
+                        .map(|i| {
+                            if i % 2 == 0 {
+                                deque.pop_front().unwrap()
+                            } else {
+                                deque.pop_back().unwrap()
+                            }
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut all_nums = HashSet::new();
+        ths.into_iter()
+            .map(|t| t.join().unwrap().into_iter())
+            .flatten()
+            .for_each(|n| {
+                all_nums.insert(n);
+            });
+        assert!(deque.pop_front().is_none());
+        assert!(deque.pop_back().is_none());
+        assert_eq!(all_nums.len(), NUM);
+        for i in 0..NUM {
+            assert!(all_nums.contains(&i));
+        }
+    }
+
+    #[test]
+    pub fn multithread_push_pop_front() {
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let threshold = (NUM as f64 * 0.5) as usize;
+        for i in 0..threshold {
+            deque.push_front(i).unwrap();
+        }
+        let ths = (threshold..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    nums.into_iter()
+                        .map(|i| {
+                            if i % 2 == 0 {
+                                deque.push_front(i).unwrap();
+                                None
+                            } else {
+                                Some(deque.pop_front().unwrap())
+                            }
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = ths
+            .into_iter()
+            .map(|j| j.join().unwrap().into_iter())
+            .flatten()
+            .filter_map(|n| n)
+            .collect::<Vec<_>>();
+        let results_len = results.len();
+        assert_eq!(results_len, (NUM - threshold) / 2);
+        let set = results.into_iter().collect::<HashSet<_>>();
+        assert_eq!(results_len, set.len());
+    }
+
+    #[test]
+    pub fn multithread_push_pop_back() {
+        let _ = env_logger::try_init();
+        const NUM: usize = 20480;
+        const CAPACITY: usize = NUM * 2;
+        let deque = Arc::new(RingBuffer::<_, CAPACITY>::new());
+        let threshold = (NUM as f64 * 0.5) as usize;
+        for i in 0..threshold {
+            deque.push_back(i).unwrap();
+        }
+        let ths = (threshold..NUM)
+            .chunks(256)
+            .into_iter()
+            .map(|nums| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    nums.into_iter()
+                        .map(|i| {
+                            if i % 2 == 0 {
+                                deque.push_back(i).unwrap();
+                                None
+                            } else {
+                                Some(deque.pop_back().unwrap())
+                            }
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = ths
+            .into_iter()
+            .map(|j| j.join().unwrap().into_iter())
+            .flatten()
+            .filter_map(|n| n)
+            .collect::<Vec<_>>();
+        let results_len = results.len();
+        assert_eq!(results_len, (NUM - threshold) / 2);
+        let set = results.into_iter().collect::<HashSet<_>>();
+        assert_eq!(results_len, set.len());
     }
 }
