@@ -139,7 +139,8 @@ mod test {
 
     #[test]
     pub fn general() {
-        let ring = RingBuffer::<_, 32>::new();
+        const CAPACITY: usize = 32;
+        let ring = RingBuffer::<_, CAPACITY>::new();
         assert!(ring.push_back(1).is_ok());
         assert!(ring.push_back(2).is_ok());
         assert!(ring.push_back(3).is_ok());
@@ -174,6 +175,33 @@ mod test {
         assert_eq!(ring.pop_back(), Some(6));
         assert_eq!(ring.pop_back(), Some(7));
         assert_eq!(ring.pop_back(), Some(8));
+        assert_eq!(ring.pop_back(), None);
+        assert!(ring.push_back(1).is_ok());
+        assert!(ring.push_back(2).is_ok());
+        assert!(ring.push_back(3).is_ok());
+        assert!(ring.push_back(4).is_ok());
+        assert!(ring.push_front(5).is_ok());
+        assert!(ring.push_front(6).is_ok());
+        assert!(ring.push_front(7).is_ok());
+        assert!(ring.push_front(8).is_ok());
+        assert_eq!(ring.pop_front(), Some(8));
+        assert_eq!(ring.pop_front(), Some(7));
+        assert_eq!(ring.pop_front(), Some(6));
+        assert_eq!(ring.pop_front(), Some(5));
+        assert_eq!(ring.pop_front(), Some(1));
+        assert_eq!(ring.pop_front(), Some(2));
+        assert_eq!(ring.pop_front(), Some(3));
+        assert_eq!(ring.pop_front(), Some(4));
+        assert_eq!(ring.pop_back(), None);
+        assert_eq!(ring.pop_front(), None);
+        for i in 0..CAPACITY - 1 {
+            assert!(ring.push_back(i).is_ok(), "on {}", i)
+        }
+        assert_eq!(ring.push_front(CAPACITY), Err(CAPACITY));
+        assert_eq!(ring.push_back(CAPACITY + 1), Err(CAPACITY + 1));
+        for i in 0..CAPACITY - 1 {
+            assert_eq!(ring.pop_front(), Some(i));
+        }
         assert_eq!(ring.pop_back(), None);
     }
 }
