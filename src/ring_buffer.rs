@@ -1,6 +1,7 @@
 use std::cell::Cell;
+use std::mem::MaybeUninit;
 use std::sync::atomic::Ordering::*;
-use std::{mem::MaybeUninit, sync::atomic::*};
+use std::{mem, sync::atomic::*};
 
 use crossbeam_utils::Backoff;
 
@@ -18,13 +19,19 @@ pub struct RingBuffer<T: Clone, const N: usize> {
     flags: [AtomicU8; N],
 }
 
-impl<T: Clone, const N: usize> RingBuffer<T, N> {
+impl<T: Clone + Default + Sized, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
+        let mut elements: [Cell<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+        for ele in &mut elements {
+            unsafe {
+                std::ptr::write(ele.as_ptr(), T::default());
+            }
+        }
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
-            elements: unsafe { MaybeUninit::uninit().assume_init() },
             flags: [EMPTY_SLOT; N],
+            elements,
         }
     }
 
@@ -43,7 +50,7 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
         target: &AtomicUsize,
         other_side: &AtomicUsize,
         shift: S,
-        ahead: bool
+        ahead: bool,
     ) -> Result<(), T>
     where
         S: Fn(usize) -> usize,
@@ -76,11 +83,17 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 
     pub fn pop_back(&self) -> Option<T> {
-        self.pop_general(&self.tail, &self.head, Self::decr, true) 
+        self.pop_general(&self.tail, &self.head, Self::decr, true)
     }
 
     #[inline(always)]
-    fn pop_general<S>(&self, target: &AtomicUsize, other_side: &AtomicUsize, shift: S, ahead: bool) -> Option<T>
+    fn pop_general<S>(
+        &self,
+        target: &AtomicUsize,
+        other_side: &AtomicUsize,
+        shift: S,
+        ahead: bool,
+    ) -> Option<T>
     where
         S: Fn(usize) -> usize,
     {
@@ -101,9 +114,9 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
                     .compare_exchange(flag_val, EMPTY, AcqRel, Acquire)
                     .is_ok()
             {
-                let mut res = unsafe { MaybeUninit::uninit().assume_init() };
+                let mut res = T::default();
                 if flag_val != SENTINEL {
-                    res = obj.replace(unsafe { MaybeUninit::uninit().assume_init() });
+                    res = obj.replace(res);
                 }
                 if target
                     .compare_exchange(target_val, new_target_val, AcqRel, Acquire)
@@ -112,8 +125,51 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
                     flag.store(SENTINEL, Release);
                 }
                 if flag_val != SENTINEL {
-                    return Some(res)
+                    return Some(res);
                 }
+            }
+            backoff.spin();
+        }
+    }
+
+    pub fn peek_back(&self) -> Option<ItemRef<T, N>> {
+        let tail = self.tail.load(Acquire);
+        self.peek_general(tail, &self.head, Self::decr, true)
+    }
+
+    pub fn peek_front(&self) -> Option<ItemRef<T, N>> {
+        let head = self.head.load(Acquire);
+        self.peek_general(head, &self.tail, Self::incr, false)
+    }
+
+    #[inline(always)]
+    pub fn peek_general<S>(
+        &self,
+        mut exp_pos: usize,
+        other_side: &AtomicUsize,
+        shift: S,
+        ahead: bool,
+    ) -> Option<ItemRef<T, N>>
+    where
+        S: Fn(usize) -> usize,
+    {
+        let backoff = Backoff::new();
+        loop {
+            let head = other_side.load(Acquire);
+            if head == exp_pos {
+                return None;
+            }
+            let next_pos = shift(exp_pos);
+            let pos = if ahead { next_pos } else { exp_pos };
+            let flag = &self.flags[pos];
+            let flag_val = flag.load(Acquire);
+            if flag_val != ACQUIRED {
+                exp_pos = next_pos;
+            } else {
+                return Some(ItemRef {
+                    buffer: self,
+                    idx: pos,
+                });
             }
             backoff.spin();
         }
@@ -132,11 +188,86 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 }
 
-unsafe impl <T: Clone, const N: usize> Sync for RingBuffer <T, N> {}
+pub struct ItemRef<'a, T: Clone, const N: usize> {
+    buffer: &'a RingBuffer<T, N>,
+    idx: usize,
+}
+
+impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
+    pub fn deref(&self) -> Option<T> {
+        let idx = self.idx;
+        let buffer = self.buffer;
+        let flag = &buffer.flags[idx];
+        let ele = &buffer.elements[idx];
+        let obj = unsafe { (&*ele.as_ptr()).clone() };
+        let flag_val = flag.load(Acquire);
+        if flag_val == ACQUIRED {
+            return Some(obj);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn remove(&self) -> Option<T> {
+        let idx = self.idx;
+        let buffer = self.buffer;
+        let flag = &buffer.flags[idx];
+        let ele = &buffer.elements[idx];
+        let obj = unsafe { (&*ele.as_ptr()).clone() };
+        let flag_val = flag.load(Acquire);
+        if flag_val == ACQUIRED
+            && flag
+                .compare_exchange(flag_val, SENTINEL, AcqRel, Acquire)
+                .is_ok()
+        {
+            ele.set(Default::default());
+            let head = buffer.head.load(Acquire);
+            let tail = buffer.tail.load(Acquire);
+            if tail - 1 == idx {
+                let new_tail = RingBuffer::<T, N>::decr(tail);
+                if buffer
+                    .tail
+                    .compare_exchange(tail, new_tail, AcqRel, Acquire)
+                    .is_ok()
+                {
+                    let _ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
+                }
+            }
+            if head == idx {
+                let new_head = RingBuffer::<T, N>::incr(tail);
+                if buffer
+                    .head
+                    .compare_exchange(head, new_head, AcqRel, Acquire)
+                    .is_ok()
+                {
+                    let _ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
+                }
+            }
+            return Some(obj);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn set(&self, value: T) -> Option<T> {
+        let idx = self.idx;
+        let buffer = self.buffer;
+        let flag = &buffer.flags[idx];
+        let ele = &buffer.elements[idx];
+        let flag_val = flag.load(Acquire);
+        if flag_val == ACQUIRED {
+            Some(ele.replace(value))
+        } else {
+            None
+        }
+    }
+}
+
+unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
 
 #[cfg(test)]
 mod test {
-    use std::{sync::Arc, thread, collections::HashSet};
+    use std::{collections::HashSet, sync::Arc, thread};
 
     use itertools::Itertools;
 
@@ -150,11 +281,19 @@ mod test {
         assert!(ring.push_back(2).is_ok());
         assert!(ring.push_back(3).is_ok());
         assert!(ring.push_back(4).is_ok());
+        assert_eq!(ring.peek_back().unwrap().deref(), Some(4));
+        assert_eq!(ring.peek_back().unwrap().deref(), Some(4));
+        assert_eq!(ring.peek_front().unwrap().deref(), Some(1));
+        assert_eq!(ring.peek_front().unwrap().deref(), Some(1));
         assert_eq!(ring.pop_back(), Some(4));
         assert_eq!(ring.pop_back(), Some(3));
+        assert_eq!(ring.peek_back().unwrap().deref(), Some(2));
+        assert_eq!(ring.peek_front().unwrap().deref(), Some(1));
         assert_eq!(ring.pop_back(), Some(2));
         assert_eq!(ring.pop_back(), Some(1));
         assert_eq!(ring.pop_back(), None);
+        assert!(ring.peek_back().is_none());
+        assert!(ring.peek_front().is_none());
         assert!(ring.push_front(1).is_ok());
         assert!(ring.push_front(2).is_ok());
         assert!(ring.push_front(3).is_ok());
@@ -233,11 +372,7 @@ mod test {
         });
         let mut all_nums = HashSet::new();
         for _ in 0..NUM {
-            all_nums.insert(
-                deque
-                    .pop_front()
-                    .unwrap(),
-            );
+            all_nums.insert(deque.pop_front().unwrap());
         }
         assert_eq!(all_nums.len(), NUM);
         for i in 0..NUM {
@@ -268,11 +403,7 @@ mod test {
         });
         let mut all_nums = HashSet::new();
         for _ in 0..NUM {
-            all_nums.insert(
-                deque
-                    .pop_back()
-                    .unwrap(),
-            );
+            all_nums.insert(deque.pop_back().unwrap());
         }
         assert_eq!(all_nums.len(), NUM);
         for i in 0..NUM {
@@ -303,11 +434,7 @@ mod test {
         });
         let mut all_nums = HashSet::new();
         for _ in 0..NUM {
-            all_nums.insert(
-                deque
-                    .pop_front()
-                    .unwrap(),
-            );
+            all_nums.insert(deque.pop_front().unwrap());
         }
         assert_eq!(all_nums.len(), NUM);
         for i in 0..NUM {
@@ -338,11 +465,7 @@ mod test {
         });
         let mut all_nums = HashSet::new();
         for _ in 0..NUM {
-            all_nums.insert(
-                deque
-                    .pop_back()
-                    .unwrap(),
-            );
+            all_nums.insert(deque.pop_back().unwrap());
         }
         assert_eq!(all_nums.len(), NUM);
         for i in 0..NUM {
@@ -367,9 +490,7 @@ mod test {
                 let nums = nums.collect_vec();
                 thread::spawn(move || {
                     nums.into_iter()
-                        .map(|_| {
-                            deque.pop_front().unwrap()
-                        })
+                        .map(|_| deque.pop_front().unwrap())
                         .collect_vec()
                 })
             })
@@ -405,9 +526,7 @@ mod test {
                 let nums = nums.collect_vec();
                 thread::spawn(move || {
                     nums.into_iter()
-                        .map(|_| {
-                            deque.pop_back().unwrap()
-                        })
+                        .map(|_| deque.pop_back().unwrap())
                         .collect_vec()
                 })
             })
@@ -461,11 +580,7 @@ mod test {
         });
         let mut all_nums = HashSet::new();
         for _ in 0..NUM {
-            all_nums.insert(
-                deque
-                    .pop_front()
-                    .unwrap(),
-            );
+            all_nums.insert(deque.pop_front().unwrap());
         }
         assert_eq!(all_nums.len(), NUM);
         for i in 0..NUM {
@@ -500,11 +615,7 @@ mod test {
         });
         let mut all_nums = HashSet::new();
         for _ in 0..NUM {
-            all_nums.insert(
-                deque
-                    .pop_back()
-                    .unwrap(),
-            );
+            all_nums.insert(deque.pop_back().unwrap());
         }
         assert_eq!(all_nums.len(), NUM);
         for i in 0..NUM {
