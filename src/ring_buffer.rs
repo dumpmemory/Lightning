@@ -30,11 +30,11 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 
     pub fn push_back(&self, data: T) -> Result<(), T> {
-        self.push_general(data, &self.tail, &self.head, Self::incr)
+        self.push_general(data, &self.tail, &self.head, Self::incr, false)
     }
 
     pub fn push_front(&self, data: T) -> Result<(), T> {
-        self.push_general(data, &self.head, &self.tail, Self::decr)
+        self.push_general(data, &self.head, &self.tail, Self::decr, true)
     }
 
     #[inline(always)]
@@ -44,6 +44,7 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
         target: &AtomicUsize,
         other_side: &AtomicUsize,
         shift: S,
+        ahead: bool
     ) -> Result<(), T>
     where
         S: Fn(usize) -> usize,
@@ -53,6 +54,7 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
             let target_val = target.load(Acquire);
             let other_val = other_side.load(Acquire);
             let new_target_val = shift(target_val);
+            let pos = if ahead { new_target_val } else { target_val };
             if new_target_val == other_val {
                 // overflow
                 return Err(data);
@@ -60,8 +62,8 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
                 .compare_exchange(target_val, new_target_val, AcqRel, Acquire)
                 .is_ok()
             {
-                let flag = &self.flags[target_val];
-                let obj = &self.elements[target_val];
+                let flag = &self.flags[pos];
+                let obj = &self.elements[pos];
                 obj.set(data);
                 flag.store(ACQUIRED, Release);
                 return Ok(());
@@ -71,15 +73,15 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 
     pub fn pop_front(&self) -> Option<T> {
-        self.pop_general(&self.head, &self.tail, Self::incr)
+        self.pop_general(&self.head, &self.tail, Self::incr, false)
     }
 
     pub fn pop_back(&self) -> Option<T> {
-        self.pop_general(&self.tail, &self.head, Self::decr) 
+        self.pop_general(&self.tail, &self.head, Self::decr, true) 
     }
 
     #[inline(always)]
-    fn pop_general<S>(&self, target: &AtomicUsize, other_side: &AtomicUsize, shift: S) -> Option<T>
+    fn pop_general<S>(&self, target: &AtomicUsize, other_side: &AtomicUsize, shift: S, ahead: bool) -> Option<T>
     where
         S: Fn(usize) -> usize,
     {
@@ -91,8 +93,9 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
                 return None;
             }
             let new_target_val = shift(target_val);
-            let flag = &self.flags[target_val];
-            let obj = &self.elements[target_val];
+            let pos = if ahead { new_target_val } else { target_val }; // target value is always on step ahead
+            let flag = &self.flags[pos];
+            let obj = &self.elements[pos];
             let flag_val = flag.load(Acquire);
             if flag_val != EMPTY
                 && flag
@@ -123,9 +126,54 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
 
     fn decr(num: usize) -> usize {
         if num == 0 {
-            N
+            N - 1
         } else {
             num - 1
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    pub fn general() {
+        let ring = RingBuffer::<_, 32>::new();
+        assert!(ring.push_back(1).is_ok());
+        assert!(ring.push_back(2).is_ok());
+        assert!(ring.push_back(3).is_ok());
+        assert!(ring.push_back(4).is_ok());
+        assert_eq!(ring.pop_back(), Some(4));
+        assert_eq!(ring.pop_back(), Some(3));
+        assert_eq!(ring.pop_back(), Some(2));
+        assert_eq!(ring.pop_back(), Some(1));
+        assert_eq!(ring.pop_back(), None);
+        assert!(ring.push_front(1).is_ok());
+        assert!(ring.push_front(2).is_ok());
+        assert!(ring.push_front(3).is_ok());
+        assert!(ring.push_front(4).is_ok());
+        assert_eq!(ring.pop_front(), Some(4));
+        assert_eq!(ring.pop_front(), Some(3));
+        assert_eq!(ring.pop_front(), Some(2));
+        assert_eq!(ring.pop_front(), Some(1));
+        assert_eq!(ring.pop_back(), None);
+        assert!(ring.push_back(1).is_ok());
+        assert!(ring.push_back(2).is_ok());
+        assert!(ring.push_back(3).is_ok());
+        assert!(ring.push_back(4).is_ok());
+        assert!(ring.push_front(5).is_ok());
+        assert!(ring.push_front(6).is_ok());
+        assert!(ring.push_front(7).is_ok());
+        assert!(ring.push_front(8).is_ok());
+        assert_eq!(ring.pop_back(), Some(4));
+        assert_eq!(ring.pop_back(), Some(3));
+        assert_eq!(ring.pop_back(), Some(2));
+        assert_eq!(ring.pop_back(), Some(1));
+        assert_eq!(ring.pop_back(), Some(5));
+        assert_eq!(ring.pop_back(), Some(6));
+        assert_eq!(ring.pop_back(), Some(7));
+        assert_eq!(ring.pop_back(), Some(8));
+        assert_eq!(ring.pop_back(), None);
     }
 }
