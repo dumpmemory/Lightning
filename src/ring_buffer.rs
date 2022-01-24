@@ -433,7 +433,7 @@ mod test {
         assert_eq!(ring.pop_front(), Some(3));
         assert_eq!(ring.peek_back().unwrap().remove(), Some(1));
         assert_eq!(ring.peek_front().unwrap().deref(), Some(2));
-        assert_eq!(ring.peek_back().unwrap().set(4), Some(2));
+        assert_eq!(ring.peek_back().unwrap().set(4), Ok(2));
         assert_eq!(ring.peek_front().unwrap().deref(), Some(4));
         assert_eq!(ring.pop_back(), Some(4));
         assert_eq!(ring.pop_front(), None);

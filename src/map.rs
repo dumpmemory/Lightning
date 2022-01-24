@@ -1003,9 +1003,6 @@ impl<
             if epoch < 5 {
                 cap <<= 1;
             }
-            if timestamp() - self.timestamp.load(Acquire) < 1000 {
-                cap <<= 1;
-            }
             cap
         };
         debug!(
@@ -2931,83 +2928,6 @@ mod tests {
                     None => panic!("{}", i),
                 }
             }
-        }
-    }
-
-    use std::thread::JoinHandle;
-    #[test]
-    fn atomic_ordering() {
-        let test_load = 102400;
-        let epoch = Arc::new(AtomicUsize::new(0));
-        let old_ptr = Arc::new(AtomicUsize::new(0));
-        let new_ptr = Arc::new(AtomicUsize::new(0));
-        let write = || -> JoinHandle<()> {
-            let epoch = epoch.clone();
-            let old_ptr = old_ptr.clone();
-            let new_ptr = new_ptr.clone();
-            thread::spawn(move || {
-                for _ in 0..test_load {
-                    let old = old_ptr.load(Acquire);
-                    if new_ptr.compare_and_swap(0, old, AcqRel) != 0 {
-                        return;
-                    }
-                    dfence();
-                    if old_ptr.load(Acquire) != old {
-                        new_ptr.store(0, Release);
-                        dfence();
-                        return;
-                    }
-                    let new = old + 1;
-                    new_ptr.store(new, Release);
-                    dfence();
-                    assert_eq!(epoch.fetch_add(1, AcqRel) % 2, 0);
-                    // Do something
-                    for _ in 0..1000 {
-                        std::sync::atomic::spin_loop_hint();
-                    }
-                    old_ptr.store(new, Release);
-                    dfence();
-                    assert_eq!(epoch.fetch_add(1, AcqRel) % 2, 1);
-                    dfence();
-                    new_ptr.store(0, Release);
-                }
-            })
-        };
-        let read = || -> JoinHandle<()> {
-            let epoch = epoch.clone();
-            let old_ptr = old_ptr.clone();
-            let new_ptr = new_ptr.clone();
-            thread::spawn(move || {
-                for _ in 0..test_load {
-                    let epoch_val = epoch.load(Acquire);
-                    let old = old_ptr.load(Acquire);
-                    let new = new_ptr.load(Acquire);
-                    let changing = epoch_val % 2 == 1;
-                    for _ in 0..500 {
-                        std::sync::atomic::spin_loop_hint();
-                    }
-                    if changing && epoch.load(Acquire) == epoch_val {
-                        assert_ne!(old, new);
-                        assert_ne!(new, 0);
-                    }
-                }
-            })
-        };
-        let num_writers = 5;
-        let mut writers = Vec::with_capacity(num_writers);
-        for _ in 0..num_writers {
-            writers.push(write());
-        }
-        let num_readers = num_cpus::get();
-        let mut readers = Vec::with_capacity(num_readers);
-        for _ in 0..num_readers {
-            readers.push(read());
-        }
-        for reader in readers {
-            reader.join().unwrap();
-        }
-        for writer in writers {
-            writer.join().unwrap();
         }
     }
 
