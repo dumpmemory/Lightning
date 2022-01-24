@@ -143,7 +143,7 @@ impl<T: Clone + Default + Sized, const N: usize> RingBuffer<T, N> {
     }
 
     #[inline(always)]
-    pub fn peek_general<S>(
+    fn peek_general<S>(
         &self,
         mut exp_pos: usize,
         other_side: &AtomicUsize,
@@ -172,6 +172,32 @@ impl<T: Clone + Default + Sized, const N: usize> RingBuffer<T, N> {
                 });
             }
             backoff.spin();
+        }
+    }
+
+    pub fn iter_back(&self) -> ItemIter<T, N> {
+        let shift = Self::decr;
+        let item = self.peek_back();
+        ItemIter {
+            buffer: self,
+            other_side: &self.head,
+            shift,
+            idx: item.as_ref().map(|item| item.idx).unwrap_or(0),
+            ahead: true,
+            current: item,
+        }
+    }
+
+    pub fn iter_front(&self) -> ItemIter<T, N> {
+        let shift = Self::incr;
+        let item = self.peek_front();
+        ItemIter {
+            buffer: self,
+            other_side: &self.tail,
+            shift,
+            idx: item.as_ref().map(|item| item.idx).unwrap_or(0),
+            ahead: false,
+            current: item,
         }
     }
 
@@ -263,6 +289,32 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
     }
 }
 
+pub struct ItemIter<'a, T: Clone, const N: usize> {
+    buffer: &'a RingBuffer<T, N>,
+    other_side: &'a AtomicUsize,
+    shift: fn(usize) -> usize,
+    idx: usize,
+    ahead: bool,
+    current: Option<ItemRef<'a, T, N>>
+}
+
+impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
+    type Item = ItemRef<'a, T, N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current.is_none() {
+            return None;
+        }
+        let shift = self.shift;
+        let curr_pos = if !self.ahead { shift(self.idx) } else { self.idx };
+        let other_side = self.other_side;
+        let new_item = self.buffer
+            .peek_general(curr_pos, other_side, shift, self.ahead);
+        new_item.as_ref().map(|item| self.idx = item.idx);
+        mem::replace(&mut self.current, new_item)
+    }
+}
+
 unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
 
 #[cfg(test)]
@@ -307,6 +359,20 @@ mod test {
         assert!(ring.push_back(2).is_ok());
         assert!(ring.push_back(3).is_ok());
         assert!(ring.push_back(4).is_ok());
+
+        // Testing iterator
+        let mut front_iter = ring.iter_front();
+        let mut back_iter = ring.iter_back();
+        for i in 1..=4 {
+            assert_eq!(front_iter.next().unwrap().deref(), Some(i), "at front {}", i);
+        }
+        assert!(front_iter.next().is_none());
+        for i in (1..=4).rev() {
+            assert_eq!(back_iter.next().unwrap().deref(), Some(i), "at back {}", i);
+        }
+        assert!(back_iter.next().is_none());
+        assert!(front_iter.next().is_none());
+
         assert!(ring.push_front(5).is_ok());
         assert!(ring.push_front(6).is_ok());
         assert!(ring.push_front(7).is_ok());
