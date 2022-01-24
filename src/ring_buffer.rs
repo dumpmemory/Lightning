@@ -223,24 +223,24 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
             ele.set(Default::default());
             let head = buffer.head.load(Acquire);
             let tail = buffer.tail.load(Acquire);
-            if tail - 1 == idx {
+            if RingBuffer::<T, N>::decr(tail) == idx {
                 let new_tail = RingBuffer::<T, N>::decr(tail);
                 if buffer
                     .tail
                     .compare_exchange(tail, new_tail, AcqRel, Acquire)
                     .is_ok()
                 {
-                    let _ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
+                    let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
                 }
             }
             if head == idx {
-                let new_head = RingBuffer::<T, N>::incr(tail);
+                let new_head = RingBuffer::<T, N>::incr(head);
                 if buffer
                     .head
                     .compare_exchange(head, new_head, AcqRel, Acquire)
                     .is_ok()
                 {
-                    let _ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
+                    let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
                 }
             }
             return Some(obj);
@@ -337,6 +337,19 @@ mod test {
         assert_eq!(ring.pop_front(), Some(3));
         assert_eq!(ring.pop_front(), Some(4));
         assert_eq!(ring.pop_back(), None);
+        assert_eq!(ring.pop_front(), None);
+        assert!(ring.push_front(1).is_ok());
+        assert!(ring.push_front(2).is_ok());
+        assert!(ring.push_front(3).is_ok());
+        assert!(ring.push_front(4).is_ok());
+        assert_eq!(ring.peek_front().unwrap().remove(), Some(4));
+        assert_eq!(ring.peek_front().unwrap().deref(), Some(3));
+        assert_eq!(ring.pop_front(), Some(3));
+        assert_eq!(ring.peek_back().unwrap().remove(), Some(1));
+        assert_eq!(ring.peek_front().unwrap().deref(), Some(2));
+        assert_eq!(ring.peek_back().unwrap().set(4), Some(2));
+        assert_eq!(ring.peek_front().unwrap().deref(), Some(4));
+        assert_eq!(ring.pop_back(), Some(4));
         assert_eq!(ring.pop_front(), None);
         for i in 0..CAPACITY - 1 {
             assert!(ring.push_back(i).is_ok(), "on {}", i)
@@ -566,6 +579,8 @@ mod test {
                 let deque = deque.clone();
                 thread::spawn(move || {
                     nums.into_iter().for_each(|i| {
+                        deque.peek_front();
+                        deque.peek_back();
                         if i % 2 == 0 {
                             deque.push_front(i).unwrap();
                         } else {
@@ -601,6 +616,8 @@ mod test {
                 let deque = deque.clone();
                 thread::spawn(move || {
                     nums.into_iter().for_each(|i| {
+                        deque.peek_front();
+                        deque.peek_back();
                         if i % 2 == 0 {
                             deque.push_front(i).unwrap();
                         } else {
@@ -640,6 +657,8 @@ mod test {
                 thread::spawn(move || {
                     nums.into_iter()
                         .map(|i| {
+                            deque.peek_front();
+                            deque.peek_back();
                             if i % 2 == 0 {
                                 deque.pop_front().unwrap()
                             } else {
@@ -683,6 +702,8 @@ mod test {
                 thread::spawn(move || {
                     nums.into_iter()
                         .map(|i| {
+                            deque.peek_front();
+                            deque.peek_back();
                             if i % 2 == 0 {
                                 deque.push_front(i).unwrap();
                                 None
@@ -725,6 +746,8 @@ mod test {
                 thread::spawn(move || {
                     nums.into_iter()
                         .map(|i| {
+                            deque.peek_front();
+                            deque.peek_back();
                             if i % 2 == 0 {
                                 deque.push_back(i).unwrap();
                                 None
