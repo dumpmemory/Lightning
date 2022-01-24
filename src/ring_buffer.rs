@@ -275,16 +275,26 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         }
     }
 
-    pub fn set(&self, value: T) -> Option<T> {
+    pub fn set(&self, value: T) -> Result<T, ()> {
         let idx = self.idx;
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
         let ele = &buffer.elements[idx];
-        let flag_val = flag.load(Acquire);
-        if flag_val == ACQUIRED {
-            Some(ele.replace(value))
+        if flag
+            .compare_exchange(ACQUIRED, SENTINEL, AcqRel, Acquire)
+            .is_err()
+        {
+            return Err(());
         } else {
-            None
+            let old = ele.replace(value);
+            if flag
+                .compare_exchange(SENTINEL, ACQUIRED, AcqRel, Acquire)
+                .is_err()
+            {
+                return Err(());
+            } else {
+                return Ok(old);
+            }
         }
     }
 }
@@ -295,7 +305,7 @@ pub struct ItemIter<'a, T: Clone, const N: usize> {
     shift: fn(usize) -> usize,
     idx: usize,
     ahead: bool,
-    current: Option<ItemRef<'a, T, N>>
+    current: Option<ItemRef<'a, T, N>>,
 }
 
 impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
@@ -306,9 +316,14 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
             return None;
         }
         let shift = self.shift;
-        let curr_pos = if !self.ahead { shift(self.idx) } else { self.idx };
+        let curr_pos = if !self.ahead {
+            shift(self.idx)
+        } else {
+            self.idx
+        };
         let other_side = self.other_side;
-        let new_item = self.buffer
+        let new_item = self
+            .buffer
             .peek_general(curr_pos, other_side, shift, self.ahead);
         new_item.as_ref().map(|item| self.idx = item.idx);
         mem::replace(&mut self.current, new_item)
@@ -364,7 +379,12 @@ mod test {
         let mut front_iter = ring.iter_front();
         let mut back_iter = ring.iter_back();
         for i in 1..=4 {
-            assert_eq!(front_iter.next().unwrap().deref(), Some(i), "at front {}", i);
+            assert_eq!(
+                front_iter.next().unwrap().deref(),
+                Some(i),
+                "at front {}",
+                i
+            );
         }
         assert!(front_iter.next().is_none());
         for i in (1..=4).rev() {
