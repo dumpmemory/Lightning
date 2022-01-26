@@ -49,15 +49,46 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     let new_node = RingBufferNode::new();
                     new_node.next.store(head_ptr, Relaxed);
                     let new_node_ptr = Owned::new(new_node).into_shared(&guard);
+                    let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
                     if self
                         .head
                         .compare_exchange(head_ptr, new_node_ptr, AcqRel, Acquire, &guard)
                         .is_ok()
                     {
-                        
+                        head_node.prev.store(new_node_ptr, Release);
                     }
                 }
                 val = v;
+                backoff.spin();
+            } else {
+                return;
+            }
+        }
+    }
+
+    pub fn push_back(&self, mut val: T) {
+        let guard = crossbeam_epoch::pin();
+        let backoff = Backoff::new();
+        loop {
+            let tail_ptr = self.tail.load(Acquire, &guard);
+            let tail_node = unsafe { tail_ptr.deref() };
+            if let Err(v) = tail_node.buffer.push_back(val) {
+                let tail_lock = tail_node.lock.try_lock();
+                if tail_lock.is_some() {
+                    let new_node = RingBufferNode::new();
+                    new_node.prev.store(tail_ptr, Relaxed);
+                    let new_node_ptr = Owned::new(new_node).into_shared(&guard);
+                    let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
+                    if self
+                        .tail
+                        .compare_exchange(tail_ptr, new_node_ptr, AcqRel, Acquire, &guard)
+                        .is_ok()
+                    {
+                        tail_node.next.store(new_node_ptr, Release);
+                    }
+                }
+                val = v;
+                backoff.spin();
             } else {
                 return;
             }
