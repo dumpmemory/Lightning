@@ -235,6 +235,35 @@ mod test {
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
 
-        
+        for i in 0..nums {
+            list.push_front(i);
+        }
+        for i in 0..nums {
+            list.push_back(i)
+        }
+        for i in (0..nums).rev() {
+            debug_assert_eq!(list.pop_front(), Some(i));
+        }
+        for i in 0..nums {
+            debug_assert_eq!(list.pop_front(), Some(i));
+        }
+        debug_assert_eq!(list.pop_front(), None);
+        debug_assert_eq!(list.pop_back(), None);
+
+
+        for i in 0..nums {
+            list.push_back(i)
+        }
+        for i in 0..nums {
+            list.push_front(i);
+        }
+        for i in (0..nums).rev() {
+            debug_assert_eq!(list.pop_back(), Some(i));
+        }
+        for i in 0..nums {
+            debug_assert_eq!(list.pop_back(), Some(i));
+        }
+        debug_assert_eq!(list.pop_front(), None);
+        debug_assert_eq!(list.pop_back(), None);
     }
 }
