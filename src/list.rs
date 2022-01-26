@@ -118,7 +118,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     && head_next_node.prev.load(Acquire, &guard) == head_ptr
                     && self
                         .head
-                        .compare_exchange(head_ptr, head_next, AcqRel, Release, &guard)
+                        .compare_exchange(head_ptr, head_next, AcqRel, Acquire, &guard)
                         .is_ok()
                 {
                     head_next_node.prev.store(Shared::null(), Release);
@@ -164,7 +164,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     && tail_prev_node.next.load(Acquire, &guard) == tail_ptr
                     && self
                         .tail
-                        .compare_exchange(tail_ptr, tail_prev, AcqRel, Release, &guard)
+                        .compare_exchange(tail_ptr, tail_prev, AcqRel, Acquire, &guard)
                         .is_ok()
                 {
                     tail_prev_node.next.store(Shared::null(), Release);
@@ -192,5 +192,49 @@ impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
             buffer: RingBuffer::<T, N>::new(),
             lock: Mutex::new(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    pub fn general() {
+        let nums = 204800;
+        let list = LinkedRingBufferList::<_, 32>::new();
+        for i in 0..nums {
+            list.push_front(i);
+        }
+        for i in (0..nums).rev() {
+            debug_assert_eq!(list.pop_front(), Some(i));
+        }
+        debug_assert_eq!(list.pop_front(), None);
+        debug_assert_eq!(list.pop_back(), None);
+        for i in 0..nums {
+            list.push_back(i)
+        }
+        for i in (0..nums).rev() {
+            debug_assert_eq!(list.pop_back(), Some(i));
+        }
+        debug_assert_eq!(list.pop_front(), None);
+        debug_assert_eq!(list.pop_back(), None);
+
+        for i in 0..nums {
+            list.push_front(i);
+        }
+        for i in 0..nums {
+            list.push_back(i)
+        }
+        for i in (0..nums).rev() {
+            debug_assert_eq!(list.pop_front(), Some(i));
+        }
+        for i in (0..nums).rev() {
+            debug_assert_eq!(list.pop_back(), Some(i));
+        }
+        debug_assert_eq!(list.pop_front(), None);
+        debug_assert_eq!(list.pop_back(), None);
+
+        
     }
 }
