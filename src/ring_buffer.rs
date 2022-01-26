@@ -12,14 +12,14 @@ const SENTINEL: u8 = 1;
 const ACQUIRED: u8 = 2;
 const EMPTY_SLOT: AtomicU8 = AtomicU8::new(EMPTY);
 
-pub struct RingBuffer<T: Clone, const N: usize> {
+pub struct RingBuffer<T, const N: usize> {
     head: AtomicUsize,
     tail: AtomicUsize,
     elements: [Cell<T>; N],
     flags: [AtomicU8; N],
 }
 
-impl<T: Clone + Default + Sized, const N: usize> RingBuffer<T, N> {
+impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
         let mut elements: [Cell<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
         for ele in &mut elements {
