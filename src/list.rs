@@ -1,15 +1,11 @@
-use std::{cmp::min, mem, ops::Deref};
-
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::{ring_buffer::RingBuffer, spin::SpinLock};
+use crate::{ring_buffer::RingBuffer};
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering::*;
 
 // A mostly lock-free list with linked ring buffers
-
-const ALIGEMENT_SIZE: usize = 4096;
 
 pub struct LinkedRingBufferList<T, const B: usize> {
     head: Atomic<RingBufferNode<T, B>>,
