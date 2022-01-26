@@ -201,6 +201,14 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    pub fn pop_all(&self) -> Vec<T> {
+        let mut res = vec![];
+        while let Some(v) = self.pop_front() {
+            res.push(v);
+        }
+        res
+    }
+
     fn incr(num: usize) -> usize {
         (num + 1) % N
     }
