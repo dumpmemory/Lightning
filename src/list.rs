@@ -104,7 +104,10 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let mut remains = vec![];
             {
                 let head_next = head_node.next.load(Acquire, &guard);
-                debug_assert!(!head_next.is_null());
+                if head_next.is_null() {
+                    backoff.spin();
+                    continue;
+                }
                 let head_next_node = unsafe { head_next.deref() };
                 if head_next_node.next.load(Acquire, &guard).is_null() {
                     // Approching back most node, shall not update head
@@ -123,7 +126,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         .is_ok()
                 {
                     head_next_node.prev.store(Shared::null(), Release);
-                    head_node.prev.store(Shared::null(), Relaxed);
+                    head_node.prev.store(Shared::null(), Release);
                     head_node.next.store(Shared::null(), Release);
                     remains = head_node.buffer.pop_all();
                     unsafe {
@@ -151,7 +154,10 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let mut remains = vec![];
             {
                 let tail_prev = tail_node.prev.load(Acquire, &guard);
-                debug_assert!(!tail_prev.is_null());
+                if tail_prev.is_null() {
+                    backoff.spin();
+                    continue;
+                }
                 let tail_prev_node = unsafe { tail_prev.deref() };
                 if tail_prev_node.prev.load(Acquire, &guard).is_null() {
                     // Approching back most node, shall not update head
@@ -170,7 +176,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         .is_ok()
                 {
                     tail_prev_node.next.store(Shared::null(), Release);
-                    tail_node.prev.store(Shared::null(), Relaxed);
+                    tail_node.prev.store(Shared::null(), Release);
                     tail_node.next.store(Shared::null(), Release);
                     remains = tail_node.buffer.pop_all();
                     unsafe {
