@@ -1,7 +1,7 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::{ring_buffer::RingBuffer};
+use crate::{ring_buffer::{RingBuffer, ItemRef}};
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering::*;
 
@@ -104,6 +104,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let mut remains = vec![];
             {
                 let head_next = head_node.next.load(Acquire, &guard);
+                debug_assert!(!head_next.is_null());
                 let head_next_node = unsafe { head_next.deref() };
                 if head_next_node.next.load(Acquire, &guard).is_null() {
                     // Approching back most node, shall not update head
@@ -150,6 +151,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let mut remains = vec![];
             {
                 let tail_prev = tail_node.prev.load(Acquire, &guard);
+                debug_assert!(!tail_prev.is_null());
                 let tail_prev_node = unsafe { tail_prev.deref() };
                 if tail_prev_node.prev.load(Acquire, &guard).is_null() {
                     // Approching back most node, shall not update head
@@ -182,6 +184,29 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             backoff.spin();
         }
     }
+    
+    // pub fn peek_front(&self) -> ListItemRef<T, N> {
+    //     let guard = crossbeam_epoch::pin();
+    //     let backoff = Backoff::new();
+    //     let obj;
+    //     let mut node_ptr = self.head.load(Acquire, &guard);
+    //     loop {
+    //         let node = unsafe { node_ptr.deref() };
+    //         if let Some(o) = node.buffer.peek_front() {
+    //             obj = o;
+    //             break;
+    //         }
+    //     }
+    //     ListItemRef {
+    //         obj_ref: obj,
+    //         node_ptr
+    //     }
+    // }
+}
+
+pub struct ListItemRef<'a, T: Clone, const N: usize> {
+    obj_ref: ItemRef<'a, T, N>,
+    node_ptr: Shared<'a, RingBufferNode<T, N>>
 }
 
 impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
@@ -197,6 +222,8 @@ impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
 
 #[cfg(test)]
 mod test {
+    use crate::par_list_tests;
+
     use super::*;
 
     #[test]
@@ -266,4 +293,14 @@ mod test {
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
     }
+
+    const NUM: usize = 409600;
+    const CAP: usize = 128;
+
+    par_list_tests!(
+        {
+            LinkedRingBufferList::<_, CAP>::new()
+        },
+        NUM
+    );
 }

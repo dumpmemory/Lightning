@@ -5,6 +5,8 @@ macro_rules! par_list_tests {
         $num: expr
     ) => 
     {
+        use itertools::Itertools;
+        use std::{collections::HashSet, sync::Arc, thread};
         #[test]
         pub fn multithread_push_front_single_thread_pop_front() {
             let num: usize = $num;
@@ -17,7 +19,7 @@ macro_rules! par_list_tests {
                     let deque = deque.clone();
                     thread::spawn(move || {
                         for i in nums {
-                            deque.push_front(i).unwrap();
+                            deque.push_front(i);
                         }
                     })
                 })
@@ -47,7 +49,7 @@ macro_rules! par_list_tests {
                     let deque = deque.clone();
                     thread::spawn(move || {
                         for i in nums {
-                            deque.push_front(i).unwrap();
+                            deque.push_front(i);
                         }
                     })
                 })
@@ -77,7 +79,7 @@ macro_rules! par_list_tests {
                     let deque = deque.clone();
                     thread::spawn(move || {
                         for i in nums {
-                            deque.push_back(i).unwrap();
+                            deque.push_back(i);
                         }
                     })
                 })
@@ -107,7 +109,7 @@ macro_rules! par_list_tests {
                     let deque = deque.clone();
                     thread::spawn(move || {
                         for i in nums {
-                            deque.push_back(i).unwrap();
+                            deque.push_back(i);
                         }
                     })
                 })
@@ -131,7 +133,7 @@ macro_rules! par_list_tests {
             let num: usize = $num;
             let deque = Arc::new($list_init);
             for i in 0..num {
-                deque.push_front(i).unwrap();
+                deque.push_front(i);
             }
             let ths = (0..num)
                 .chunks(256)
@@ -166,7 +168,7 @@ macro_rules! par_list_tests {
             let num: usize = $num;
             let deque = Arc::new($list_init);
             for i in 0..num {
-                deque.push_front(i).unwrap();
+                deque.push_front(i);
             }
             let ths = (0..num)
                 .chunks(256)
@@ -194,9 +196,9 @@ macro_rules! par_list_tests {
             for i in 0..num {
                 assert!(all_nums.contains(&i));
             }
-            deque.push_back(1).unwrap();
-            deque.push_back(2).unwrap();
-            deque.push_back(3).unwrap();
+            deque.push_back(1);
+            deque.push_back(2);
+            deque.push_back(3);
             assert_eq!(deque.pop_back().unwrap(), 3);
             assert_eq!(deque.pop_back().unwrap(), 2);
             assert_eq!(deque.pop_back().unwrap(), 1);
@@ -215,12 +217,10 @@ macro_rules! par_list_tests {
                     let deque = deque.clone();
                     thread::spawn(move || {
                         nums.into_iter().for_each(|i| {
-                            deque.peek_front();
-                            deque.peek_back();
                             if i % 2 == 0 {
-                                deque.push_front(i).unwrap();
+                                deque.push_front(i);
                             } else {
-                                deque.push_back(i).unwrap();
+                                deque.push_back(i);
                             }
                         });
                     })
@@ -251,12 +251,10 @@ macro_rules! par_list_tests {
                     let deque = deque.clone();
                     thread::spawn(move || {
                         nums.into_iter().for_each(|i| {
-                            deque.peek_front();
-                            deque.peek_back();
                             if i % 2 == 0 {
-                                deque.push_front(i).unwrap();
+                                deque.push_front(i);
                             } else {
-                                deque.push_back(i).unwrap();
+                                deque.push_back(i);
                             }
                         });
                     })
@@ -280,7 +278,7 @@ macro_rules! par_list_tests {
             let num: usize = $num;
             let deque = Arc::new($list_init);
             for i in 0..num {
-                deque.push_front(i).unwrap();
+                deque.push_front(i);
             }
             let ths = (0..num)
                 .chunks(512)
@@ -291,8 +289,6 @@ macro_rules! par_list_tests {
                     thread::spawn(move || {
                         nums.into_iter()
                             .map(|i| {
-                                deque.peek_front();
-                                deque.peek_back();
                                 if i % 2 == 0 {
                                     deque.pop_front().unwrap()
                                 } else {
@@ -324,7 +320,7 @@ macro_rules! par_list_tests {
             let deque = Arc::new($list_init);
             let threshold = (num as f64 * 0.5) as usize;
             for i in 0..threshold {
-                deque.push_front(i).unwrap();
+                deque.push_front(i);
             }
             let ths = (threshold..num)
                 .chunks(256)
@@ -335,10 +331,8 @@ macro_rules! par_list_tests {
                     thread::spawn(move || {
                         nums.into_iter()
                             .map(|i| {
-                                deque.peek_front();
-                                deque.peek_back();
                                 if i % 2 == 0 {
-                                    deque.push_front(i).unwrap();
+                                    deque.push_front(i);
                                     None
                                 } else {
                                     Some(deque.pop_front().unwrap())
@@ -367,7 +361,7 @@ macro_rules! par_list_tests {
             let deque = Arc::new($list_init);
             let threshold = (num as f64 * 0.5) as usize;
             for i in 0..threshold {
-                deque.push_back(i).unwrap();
+                deque.push_back(i);
             }
             let ths = (threshold..num)
                 .chunks(256)
@@ -378,10 +372,8 @@ macro_rules! par_list_tests {
                     thread::spawn(move || {
                         nums.into_iter()
                             .map(|i| {
-                                deque.peek_front();
-                                deque.peek_back();
                                 if i % 2 == 0 {
-                                    deque.push_back(i).unwrap();
+                                    deque.push_back(i);
                                     None
                                 } else {
                                     Some(deque.pop_back().unwrap())

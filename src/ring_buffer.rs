@@ -342,12 +342,7 @@ unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashSet, sync::Arc, thread};
-
-    use itertools::Itertools;
-
     use crate::par_list_tests;
-
     use super::*;
 
     #[test]
