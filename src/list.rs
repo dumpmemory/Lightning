@@ -285,7 +285,12 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                         next.map(|n| n.prev.store(prev_ptr, Release));
                         let remains = node.buffer.pop_all();
                         for v in remains {
-                            self.list.push_back(v);
+                            // Compensate, order may changed but not much choice here
+                            if prev.is_none() { // Possibly removing head node
+                                self.list.push_front(v);
+                            } else { // Possibly removing tail or internal node
+                                self.list.push_back(v)
+                            }
                         }
                         unsafe {
                             guard.defer_destroy(node_ref);
