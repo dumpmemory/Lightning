@@ -29,6 +29,13 @@ impl<T> SpinLock<T> {
         }
         SpinLockGuard { lock: self }
     }
+    pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
+        if self.mark.compare_exchange(0, 1, AcqRel, Relaxed).is_ok() {
+            Some(SpinLockGuard { lock: self })
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a, T> Deref for SpinLockGuard<'a, T> {
