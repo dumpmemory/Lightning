@@ -337,13 +337,17 @@ mod test {
             list.push_back(i)
         }
         for i in (0..nums).rev() {
+            debug_assert_eq!(list.peek_front().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_front(), Some(i));
         }
         for i in (0..nums).rev() {
+            debug_assert_eq!(list.peek_back().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_back(), Some(i));
         }
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
+        debug_assert!(list.peek_front().is_none());
+        debug_assert!(list.peek_back().is_none());
 
         for i in 0..nums {
             list.push_front(i);
@@ -352,13 +356,17 @@ mod test {
             list.push_back(i)
         }
         for i in (0..nums).rev() {
+            debug_assert_eq!(list.peek_front().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_front(), Some(i));
         }
         for i in 0..nums {
+            debug_assert_eq!(list.peek_front().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_front(), Some(i));
         }
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
+        debug_assert!(list.peek_front().is_none());
+        debug_assert!(list.peek_back().is_none());
 
         for i in 0..nums {
             list.push_back(i)
@@ -367,13 +375,17 @@ mod test {
             list.push_front(i);
         }
         for i in (0..nums).rev() {
+            debug_assert_eq!(list.peek_back().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_back(), Some(i));
         }
         for i in 0..nums {
+            debug_assert_eq!(list.peek_back().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_back(), Some(i));
         }
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
+        debug_assert!(list.peek_front().is_none());
+        debug_assert!(list.peek_back().is_none());
     }
 
     const NUM: usize = 409600;
