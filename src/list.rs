@@ -1,7 +1,7 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::{ring_buffer::{RingBuffer, ItemRef}};
+use crate::ring_buffer::{ItemRef, RingBuffer};
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering::*;
 
@@ -13,7 +13,7 @@ pub struct LinkedRingBufferList<T, const B: usize> {
 }
 
 pub struct RingBufferNode<T, const N: usize> {
-    buffer: RingBuffer<T, N>,
+    pub buffer: RingBuffer<T, N>,
     prev: Atomic<Self>,
     next: Atomic<Self>,
     lock: Mutex<()>,
@@ -104,10 +104,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let mut remains = vec![];
             {
                 let head_next = head_node.next.load(Acquire, &guard);
-                if head_next.is_null() {
-                    backoff.spin();
-                    continue;
-                }
                 let head_next_node = unsafe { head_next.deref() };
                 if head_next_node.next.load(Acquire, &guard).is_null() {
                     // Approching back most node, shall not update head
@@ -126,8 +122,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         .is_ok()
                 {
                     head_next_node.prev.store(Shared::null(), Release);
-                    head_node.prev.store(Shared::null(), Release);
-                    head_node.next.store(Shared::null(), Release);
+                    // Need to keep prev and next reference for iterator
                     remains = head_node.buffer.pop_all();
                     unsafe {
                         guard.defer_destroy(head_ptr);
@@ -154,10 +149,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let mut remains = vec![];
             {
                 let tail_prev = tail_node.prev.load(Acquire, &guard);
-                if tail_prev.is_null() {
-                    backoff.spin();
-                    continue;
-                }
                 let tail_prev_node = unsafe { tail_prev.deref() };
                 if tail_prev_node.prev.load(Acquire, &guard).is_null() {
                     // Approching back most node, shall not update head
@@ -176,8 +167,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         .is_ok()
                 {
                     tail_prev_node.next.store(Shared::null(), Release);
-                    tail_node.prev.store(Shared::null(), Release);
-                    tail_node.next.store(Shared::null(), Release);
+                    // Need to keep prev and next reference for iterator
                     remains = tail_node.buffer.pop_all();
                     unsafe {
                         guard.defer_destroy(tail_ptr);
@@ -190,29 +180,58 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             backoff.spin();
         }
     }
-    
-    // pub fn peek_front(&self) -> ListItemRef<T, N> {
-    //     let guard = crossbeam_epoch::pin();
-    //     let backoff = Backoff::new();
-    //     let obj;
-    //     let mut node_ptr = self.head.load(Acquire, &guard);
-    //     loop {
-    //         let node = unsafe { node_ptr.deref() };
-    //         if let Some(o) = node.buffer.peek_front() {
-    //             obj = o;
-    //             break;
-    //         }
-    //     }
-    //     ListItemRef {
-    //         obj_ref: obj,
-    //         node_ptr
-    //     }
-    // }
-}
 
-pub struct ListItemRef<'a, T: Clone, const N: usize> {
-    obj_ref: ItemRef<'a, T, N>,
-    node_ptr: Shared<'a, RingBufferNode<T, N>>
+    pub fn peek_front(&self) -> Option<ListItemRef<T, N>> {
+        let guard = crossbeam_epoch::pin();
+        let backoff = Backoff::new();
+        let mut node_ptr = self.head.load(Acquire, &guard);
+        let obj_idx;
+        loop {
+            let node = unsafe { node_ptr.deref() };
+            if let Some(o) = node.buffer.peek_front() {
+                obj_idx = o.idx;
+                break;
+            } else {
+                node_ptr = node.next.load(Acquire, &guard);
+                if node_ptr.is_null() {
+                    return None;
+                }
+            }
+            backoff.spin();
+        }
+        let node_ptr = node_ptr.as_raw();
+        Some(ListItemRef {
+            guard,
+            obj_idx,
+            node_ptr,
+        })
+    }
+
+    pub fn peek_back(&self) -> Option<ListItemRef<T, N>> {
+        let guard = crossbeam_epoch::pin();
+        let backoff = Backoff::new();
+        let mut node_ptr = self.tail.load(Acquire, &guard);
+        let obj_idx;
+        loop {
+            let node = unsafe { node_ptr.deref() };
+            if let Some(o) = node.buffer.peek_back() {
+                obj_idx = o.idx;
+                break;
+            } else {
+                node_ptr = node.prev.load(Acquire, &guard);
+                if node_ptr.is_null() {
+                    return None;
+                }
+            }
+            backoff.spin();
+        }
+        let node_ptr = node_ptr.as_raw();
+        Some(ListItemRef {
+            guard,
+            obj_idx,
+            node_ptr,
+        })
+    }
 }
 
 impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
@@ -222,6 +241,63 @@ impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
             next: Atomic::null(),
             buffer: RingBuffer::<T, N>::new(),
             lock: Mutex::new(()),
+        }
+    }
+}
+
+pub struct ListItemRef<T: Clone, const N: usize> {
+    guard: Guard,
+    obj_idx: usize,
+    node_ptr: *const RingBufferNode<T, N>,
+}
+
+impl<T: Clone + Default, const N: usize> ListItemRef<T, N> {
+    pub fn deref(&self) -> Option<T> {
+        self.item_ref().deref()
+    }
+
+    pub fn remove(&self) -> Option<T> {
+        let guard = &self.guard;
+        let node_ref = Shared::from(self.node_ptr);
+        let node = unsafe { node_ref.deref() };
+        let item_ref = ItemRef {
+            buffer: &node.buffer,
+            idx: self.obj_idx,
+        };
+        if let Some(obj) = item_ref.remove() {
+            if node.buffer.peek_back().is_none() {
+                // Internal node is empty, shall remove the node
+                loop {
+                    let prev_ptr = node.prev.load(Acquire, guard);
+                    let next_ptr = node.next.load(Acquire, guard);
+                    let prev = unsafe { prev_ptr.as_ref() };
+                    let next = unsafe { next_ptr.as_ref() };
+                    let _prev_lock = prev.as_ref().map(|n| n.lock.lock());
+                    let _node_lock = node.lock.lock();
+                    let _next_lock = next.as_ref().map(|n| n.lock.lock());
+                    if prev.map_or(true, |n| n.next.load(Acquire, guard) == node_ref)
+                        && next.map_or(true, |n| n.prev.load(Acquire, guard) == node_ref)
+                    {
+                        prev.map(|n| n.next.store(next_ptr, Release));
+                        next.map(|n| n.prev.store(prev_ptr, Release));
+                        unsafe {
+                            guard.defer_destroy(node_ref);
+                        }
+                    }
+                }
+            }
+            Some(obj)
+        } else {
+            None
+        }
+    }
+
+    pub fn item_ref(&self) -> ItemRef<T, N> {
+        let node_ref = Shared::from(self.node_ptr);
+        let node = unsafe { node_ref.deref() };
+        ItemRef {
+            buffer: &node.buffer,
+            idx: self.obj_idx,
         }
     }
 }
@@ -283,7 +359,6 @@ mod test {
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
 
-
         for i in 0..nums {
             list.push_back(i)
         }
@@ -303,10 +378,5 @@ mod test {
     const NUM: usize = 409600;
     const CAP: usize = 128;
 
-    par_list_tests!(
-        {
-            LinkedRingBufferList::<_, CAP>::new()
-        },
-        NUM
-    );
+    par_list_tests!({ LinkedRingBufferList::<_, CAP>::new() }, NUM);
 }

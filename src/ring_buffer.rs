@@ -223,8 +223,8 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
 }
 
 pub struct ItemRef<'a, T: Clone, const N: usize> {
-    buffer: &'a RingBuffer<T, N>,
-    idx: usize,
+    pub buffer: &'a RingBuffer<T, N>,
+    pub idx: usize,
 }
 
 impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
