@@ -283,6 +283,7 @@ impl<T: Clone + Default, const N: usize> ListItemRef<T, N> {
                         unsafe {
                             guard.defer_destroy(node_ref);
                         }
+                        break;
                     }
                 }
             }
