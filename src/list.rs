@@ -204,6 +204,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             guard,
             obj_idx,
             node_ptr,
+            list: self
         })
     }
 
@@ -230,6 +231,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             guard,
             obj_idx,
             node_ptr,
+            list: self
         })
     }
 }
@@ -245,13 +247,14 @@ impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
     }
 }
 
-pub struct ListItemRef<T: Clone, const N: usize> {
+pub struct ListItemRef<'a, T: Clone, const N: usize> {
     guard: Guard,
     obj_idx: usize,
+    list: &'a LinkedRingBufferList<T, N>,
     node_ptr: *const RingBufferNode<T, N>,
 }
 
-impl<T: Clone + Default, const N: usize> ListItemRef<T, N> {
+impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
     pub fn deref(&self) -> Option<T> {
         self.item_ref().deref()
     }
@@ -280,6 +283,10 @@ impl<T: Clone + Default, const N: usize> ListItemRef<T, N> {
                     {
                         prev.map(|n| n.next.store(next_ptr, Release));
                         next.map(|n| n.prev.store(prev_ptr, Release));
+                        let remains = node.buffer.pop_all();
+                        for v in remains {
+                            self.list.push_back(v);
+                        }
                         unsafe {
                             guard.defer_destroy(node_ref);
                         }
