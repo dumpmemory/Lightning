@@ -74,7 +74,7 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
                 flag.store(ACQUIRED, Release);
                 return Ok(ItemRef {
                     buffer: self,
-                    idx: pos
+                    idx: pos,
                 });
             }
             backoff.spin();
@@ -245,7 +245,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         }
     }
 
-    pub fn remove(self) -> Option<T> {
+    pub fn remove(&self) -> Option<T> {
         let idx = self.idx;
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
@@ -312,7 +312,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
     pub fn to_ptr(&self) -> ItemPtr<T, N> {
         ItemPtr {
             buffer: &*self.buffer,
-            idx: self.idx
+            idx: self.idx,
         }
     }
 }
@@ -348,12 +348,13 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
     }
 }
 
+#[derive(Clone)]
 pub struct ItemPtr<T: Clone, const N: usize> {
     buffer: *const RingBuffer<T, N>,
-    idx: usize
+    idx: usize,
 }
 
-impl <T: Clone + Default, const N: usize> ItemPtr<T, N> {
+impl<T: Clone + Default, const N: usize> ItemPtr<T, N> {
     pub unsafe fn deref(&self) -> &T {
         let buffer = &*self.buffer;
         &*buffer.elements[self.idx].as_ptr()
@@ -366,7 +367,7 @@ impl <T: Clone + Default, const N: usize> ItemPtr<T, N> {
         }
     }
 
-    pub unsafe fn remove(self) -> Option<T> {
+    pub unsafe fn remove(&self) -> Option<T> {
         self.to_ref().remove()
     }
 
@@ -379,8 +380,8 @@ unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
 
 #[cfg(test)]
 mod test {
-    use crate::par_list_tests;
     use super::*;
+    use crate::par_list_tests;
 
     #[test]
     pub fn general() {
@@ -493,10 +494,5 @@ mod test {
     const NUM: usize = 20480;
     const CAP: usize = 20480 * 2;
 
-    par_list_tests!(
-        {
-            RingBuffer::<_, CAP>::new()
-        },
-        NUM
-    );
+    par_list_tests!({ RingBuffer::<_, CAP>::new() }, NUM);
 }
