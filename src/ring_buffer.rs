@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::mem::MaybeUninit;
-use std::ops::Deref;
 use std::sync::atomic::Ordering::*;
 use std::{mem, sync::atomic::*};
 
@@ -246,7 +245,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         }
     }
 
-    pub fn remove(&self) -> Option<T> {
+    pub fn remove(self) -> Option<T> {
         let idx = self.idx;
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
@@ -354,10 +353,25 @@ pub struct ItemPtr<T: Clone, const N: usize> {
     idx: usize
 }
 
-impl <T: Clone, const N: usize> ItemPtr<T, N> {
+impl <T: Clone + Default, const N: usize> ItemPtr<T, N> {
     pub unsafe fn deref(&self) -> &T {
         let buffer = &*self.buffer;
         &*buffer.elements[self.idx].as_ptr()
+    }
+
+    pub unsafe fn to_ref(&self) -> ItemRef<T, N> {
+        ItemRef {
+            buffer: &*self.buffer,
+            idx: self.idx,
+        }
+    }
+
+    pub unsafe fn remove(self) -> Option<T> {
+        self.to_ref().remove()
+    }
+
+    pub unsafe fn set(&self, data: T) -> Result<T, ()> {
+        self.to_ref().set(data)
     }
 }
 
