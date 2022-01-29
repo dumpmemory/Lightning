@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::mem::MaybeUninit;
+use std::ops::Deref;
 use std::sync::atomic::Ordering::*;
 use std::{mem, sync::atomic::*};
 
@@ -351,6 +352,13 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
 pub struct ItemPtr<T: Clone, const N: usize> {
     buffer: *const RingBuffer<T, N>,
     idx: usize
+}
+
+impl <T: Clone, const N: usize> ItemPtr<T, N> {
+    pub unsafe fn deref(&self) -> &T {
+        let buffer = &*self.buffer;
+        &*buffer.elements[self.idx].as_ptr()
+    }
 }
 
 unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
