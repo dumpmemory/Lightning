@@ -35,11 +35,11 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         }
     }
 
-    pub fn push_back(&self, data: T) -> Result<(), T> {
+    pub fn push_back(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_general(data, &self.tail, &self.head, Self::incr, false)
     }
 
-    pub fn push_front(&self, data: T) -> Result<(), T> {
+    pub fn push_front(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_general(data, &self.head, &self.tail, Self::decr, true)
     }
 
@@ -51,7 +51,7 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         other_side: &AtomicUsize,
         shift: S,
         ahead: bool,
-    ) -> Result<(), T>
+    ) -> Result<ItemRef<T, N>, T>
     where
         S: Fn(usize) -> usize,
     {
@@ -72,7 +72,10 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
                 let obj = &self.elements[pos];
                 obj.set(data);
                 flag.store(ACQUIRED, Release);
-                return Ok(());
+                return Ok(ItemRef {
+                    buffer: self,
+                    idx: pos
+                });
             }
             backoff.spin();
         }
@@ -305,6 +308,13 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
             }
         }
     }
+
+    pub fn to_ptr(&self) -> ItemPtr<T, N> {
+        ItemPtr {
+            buffer: &*self.buffer,
+            idx: self.idx
+        }
+    }
 }
 
 pub struct ItemIter<'a, T: Clone, const N: usize> {
@@ -336,6 +346,11 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
         new_item.as_ref().map(|item| self.idx = item.idx);
         mem::replace(&mut self.current, new_item)
     }
+}
+
+pub struct ItemPtr<T: Clone, const N: usize> {
+    buffer: *const RingBuffer<T, N>,
+    idx: usize
 }
 
 unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
@@ -445,8 +460,8 @@ mod test {
         for i in 0..CAPACITY - 1 {
             assert!(ring.push_back(i).is_ok(), "on {}", i)
         }
-        assert_eq!(ring.push_front(CAPACITY), Err(CAPACITY));
-        assert_eq!(ring.push_back(CAPACITY + 1), Err(CAPACITY + 1));
+        assert_eq!(ring.push_front(CAPACITY).err(), Some(CAPACITY));
+        assert_eq!(ring.push_back(CAPACITY + 1).err(), Some(CAPACITY + 1));
         for i in 0..CAPACITY - 1 {
             assert_eq!(ring.pop_front(), Some(i));
         }

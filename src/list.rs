@@ -1,7 +1,7 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::ring_buffer::{ItemIter, ItemRef, RingBuffer};
+use crate::ring_buffer::{ItemIter, ItemRef, RingBuffer, ItemPtr};
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering::*;
 
@@ -33,60 +33,66 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             tail: Atomic::from(tail_ptr),
         }
     }
-    pub fn push_front(&self, mut val: T) {
+    pub fn push_front(&self, mut val: T) -> ItemPtr<T, N> {
         let guard = crossbeam_epoch::pin();
         let backoff = Backoff::new();
         loop {
             let head_ptr = self.head.load(Acquire, &guard);
             let head_node = unsafe { head_ptr.deref() };
-            if let Err(v) = head_node.buffer.push_front(val) {
-                let head_lock = head_node.lock.try_lock();
-                if head_lock.is_some() && head_node.prev.load(Acquire, &guard).is_null() {
-                    let new_node = RingBufferNode::new();
-                    new_node.next.store(head_ptr, Relaxed);
-                    let new_node_ptr = Owned::new(new_node).into_shared(&guard);
-                    let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
-                    if self
-                        .head
-                        .compare_exchange(head_ptr, new_node_ptr, AcqRel, Acquire, &guard)
-                        .is_ok()
-                    {
-                        head_node.prev.store(new_node_ptr, Release);
+            match head_node.buffer.push_front(val) {
+                Ok(r) => {
+                    return r.to_ptr();
+                },
+                Err(v) => {
+                    let head_lock = head_node.lock.try_lock();
+                    if head_lock.is_some() && head_node.prev.load(Acquire, &guard).is_null() {
+                        let new_node = RingBufferNode::new();
+                        new_node.next.store(head_ptr, Relaxed);
+                        let new_node_ptr = Owned::new(new_node).into_shared(&guard);
+                        let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
+                        if self
+                            .head
+                            .compare_exchange(head_ptr, new_node_ptr, AcqRel, Acquire, &guard)
+                            .is_ok()
+                        {
+                            head_node.prev.store(new_node_ptr, Release);
+                        }
                     }
+                    val = v;
+                    backoff.spin();
                 }
-                val = v;
-                backoff.spin();
-            } else {
-                return;
             }
         }
     }
 
-    pub fn push_back(&self, mut val: T) {
+    pub fn push_back(&self, mut val: T) -> ItemPtr<T, N> {
         let guard = crossbeam_epoch::pin();
         let backoff = Backoff::new();
         loop {
             let tail_ptr = self.tail.load(Acquire, &guard);
             let tail_node = unsafe { tail_ptr.deref() };
-            if let Err(v) = tail_node.buffer.push_back(val) {
-                let tail_lock = tail_node.lock.try_lock();
-                if tail_lock.is_some() && tail_node.next.load(Acquire, &guard).is_null() {
-                    let new_node = RingBufferNode::new();
-                    new_node.prev.store(tail_ptr, Relaxed);
-                    let new_node_ptr = Owned::new(new_node).into_shared(&guard);
-                    let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
-                    if self
-                        .tail
-                        .compare_exchange(tail_ptr, new_node_ptr, AcqRel, Acquire, &guard)
-                        .is_ok()
-                    {
-                        tail_node.next.store(new_node_ptr, Release);
-                    }
+            match tail_node.buffer.push_back(val) {
+                Ok(r) => {
+                    return r.to_ptr();
                 }
-                val = v;
-                backoff.spin();
-            } else {
-                return;
+                Err(v) => {
+                    let tail_lock = tail_node.lock.try_lock();
+                    if tail_lock.is_some() && tail_node.next.load(Acquire, &guard).is_null() {
+                        let new_node = RingBufferNode::new();
+                        new_node.prev.store(tail_ptr, Relaxed);
+                        let new_node_ptr = Owned::new(new_node).into_shared(&guard);
+                        let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
+                        if self
+                            .tail
+                            .compare_exchange(tail_ptr, new_node_ptr, AcqRel, Acquire, &guard)
+                            .is_ok()
+                        {
+                            tail_node.next.store(new_node_ptr, Release);
+                        }
+                    }
+                    val = v;
+                    backoff.spin();
+                }
             }
         }
     }
@@ -323,7 +329,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                                 self.list.push_front(v);
                             } else {
                                 // Possibly removing tail or internal node
-                                self.list.push_back(v)
+                                self.list.push_back(v);
                             }
                         }
                         unsafe {
@@ -415,7 +421,7 @@ mod test {
         debug_assert_eq!(list.pop_front(), None);
         debug_assert_eq!(list.pop_back(), None);
         for i in 0..nums {
-            list.push_back(i)
+            list.push_back(i);
         }
         for i in (0..nums).rev() {
             debug_assert_eq!(list.pop_back(), Some(i));
@@ -427,7 +433,7 @@ mod test {
             list.push_front(i);
         }
         for i in 0..nums {
-            list.push_back(i)
+            list.push_back(i);
         }
         let mut iter = list.iter_front();
         for i in (0..nums).rev() {
@@ -462,7 +468,7 @@ mod test {
             list.push_front(i);
         }
         for i in 0..nums {
-            list.push_back(i)
+            list.push_back(i);
         }
         for i in (0..nums).rev() {
             debug_assert_eq!(list.peek_front().and_then(|r| r.deref()), Some(i));
@@ -478,7 +484,7 @@ mod test {
         debug_assert!(list.peek_back().is_none());
 
         for i in 0..nums {
-            list.push_back(i)
+            list.push_back(i);
         }
         for i in 0..nums {
             list.push_front(i);
