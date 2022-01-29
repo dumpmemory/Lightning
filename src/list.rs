@@ -429,6 +429,22 @@ mod test {
         for i in 0..nums {
             list.push_back(i)
         }
+        let mut iter = list.iter_front();
+        for i in (0..nums).rev() {
+            debug_assert_eq!(iter.next().and_then(|r| r.deref()), Some(i));
+        }
+        for i in 0..nums {
+            debug_assert_eq!(iter.next().and_then(|r| r.deref()), Some(i));
+        }
+        debug_assert!(iter.next().is_none());
+        let mut iter = list.iter_back();
+        for i in (0..nums).rev() {
+            debug_assert_eq!(iter.next().and_then(|r| r.deref()), Some(i));
+        }
+        for i in 0..nums {
+            debug_assert_eq!(iter.next().and_then(|r| r.deref()), Some(i));
+        }
+        debug_assert!(iter.next().is_none());
         for i in (0..nums).rev() {
             debug_assert_eq!(list.peek_front().and_then(|r| r.deref()), Some(i));
             debug_assert_eq!(list.pop_front(), Some(i));
