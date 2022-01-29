@@ -1,7 +1,7 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::ring_buffer::{ItemRef, RingBuffer};
+use crate::ring_buffer::{ItemIter, ItemRef, RingBuffer};
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering::*;
 
@@ -204,7 +204,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             guard,
             obj_idx,
             node_ptr,
-            list: self
+            list: self,
         })
     }
 
@@ -231,8 +231,40 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             guard,
             obj_idx,
             node_ptr,
-            list: self
+            list: self,
         })
+    }
+
+    pub fn iter_front(&self) -> ListIter<T, N> {
+        self.iter_general(true)
+    }
+
+    pub fn iter_back(&self) -> ListIter<T, N> {
+        self.iter_general(false)
+    }
+
+    #[inline(always)]
+    fn iter_general(&self, forwarding: bool) -> ListIter<T, N> {
+        let (node_ptr, buffer_iter, guard) = {
+            let guard = crossbeam_epoch::pin();
+            let end = if forwarding { &self.head } else { &self.tail };
+            let node_ref = end.load(Acquire, &guard);
+            let node_ptr = node_ref.as_raw();
+            let node = unsafe { Shared::from(node_ptr).deref() };
+            let iter = if forwarding {
+                node.buffer.iter_front()
+            } else {
+                node.buffer.iter_back()
+            };
+            (node_ptr, iter, guard)
+        };
+        ListIter {
+            node_ptr,
+            buffer_iter,
+            forwarding,
+            list: self,
+            guard,
+        }
     }
 }
 
@@ -286,9 +318,11 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                         let remains = node.buffer.pop_all();
                         for v in remains {
                             // Compensate, order may changed but not much choice here
-                            if prev.is_none() { // Possibly removing head node
+                            if prev.is_none() {
+                                // Possibly removing head node
                                 self.list.push_front(v);
-                            } else { // Possibly removing tail or internal node
+                            } else {
+                                // Possibly removing tail or internal node
                                 self.list.push_back(v)
                             }
                         }
@@ -311,6 +345,53 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
         ItemRef {
             buffer: &node.buffer,
             idx: self.obj_idx,
+        }
+    }
+}
+
+pub struct ListIter<'a, T: Clone, const N: usize> {
+    guard: Guard,
+    node_ptr: *const RingBufferNode<T, N>,
+    list: &'a LinkedRingBufferList<T, N>,
+    buffer_iter: ItemIter<'a, T, N>,
+    forwarding: bool,
+}
+
+impl<'a, T: Clone + Default, const N: usize> Iterator for ListIter<'a, T, N> {
+    type Item = ListItemRef<'a, T, N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let item = self.buffer_iter.next();
+            if let Some(item) = item {
+                let guard = crossbeam_epoch::pin();
+                return Some(ListItemRef {
+                    guard,
+                    obj_idx: item.idx,
+                    list: self.list,
+                    node_ptr: self.node_ptr,
+                });
+            } else {
+                let node_ref = Shared::from(self.node_ptr);
+                let node = unsafe { node_ref.deref() };
+                let next_ptr = if self.forwarding {
+                    node.next.load(Acquire, &self.guard)
+                } else {
+                    node.prev.load(Acquire, &self.guard)
+                }
+                .as_raw();
+                if next_ptr.is_null() {
+                    return None;
+                }
+                let next_node = unsafe { Shared::from(next_ptr).deref() };
+                let buffer_iter = if self.forwarding {
+                    next_node.buffer.iter_front()
+                } else {
+                    next_node.buffer.iter_back()
+                };
+                self.node_ptr = next_ptr;
+                self.buffer_iter = buffer_iter;
+            }
         }
     }
 }
