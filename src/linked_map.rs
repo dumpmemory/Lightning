@@ -42,6 +42,33 @@ impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
             .map(|l| unsafe { (&*l).deref().clone().1 })
     }
 
+    pub fn get_to_front(&self, key: usize) -> Option<T> {
+        self.get_to_general(key, true)
+    }
+
+    pub fn get_to_back(&self, key: usize) -> Option<T> {
+        self.get_to_general(key, false)
+    }
+
+    #[inline(always)]
+    pub fn get_to_general(&self, key: usize, forwarding: bool) -> Option<T> {
+        self.map
+            .write(key)
+            .and_then(|mut l| {
+                let pair = unsafe { l.deref() }.clone();
+                let new_ref = if forwarding {
+                    self.list.push_front(pair)
+                } else {
+                    self.list.push_back(pair)
+                };
+                let old_ref = l.clone();
+                *l = new_ref;
+                unsafe {
+                    old_ref.remove().map(|(_, v)| v)
+                }
+            })
+    }
+
     pub fn remove(&self, key: usize) -> Option<T> {
         self.map
             .write(key)
