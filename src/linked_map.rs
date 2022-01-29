@@ -50,6 +50,37 @@ impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
             })
     }
 
+    pub fn pop_front(&self) -> Option<(usize, T)> {
+        self.pop_general(true)
+    }
+
+    pub fn pop_back(&self) -> Option<(usize, T)> {
+        self.pop_general(false)
+    }
+
+    #[inline(always)]
+    fn pop_general(&self, forwarding: bool) -> Option<(usize, T)> {
+        loop {
+            let list_item = if forwarding {
+                self.list.peek_front()
+            } else {
+                self.list.peek_back()
+            };
+            if let Some(pair) = list_item {
+                if let Some((k, v)) = pair.deref() {
+                    if let Some(l) = self.map.write(k) {
+                        unsafe {
+                            ObjectMapWriteGuard::remove(l).remove();
+                            return Some((k, v));
+                        }
+                    }
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
