@@ -1,61 +1,65 @@
 // A concurrent linked hash map, fast and lock-free on iterate
 use crate::list::{LinkedRingBufferList, ListIter};
-use crate::map::{Map, ObjectMap, ObjectMapWriteGuard};
+use crate::map::{Map, HashMap, HashMapWriteGuard};
 use crate::ring_buffer::ItemPtr;
+use std::hash::Hash;
 
-pub struct LinkedObjectMap<T: Clone + Default, const N: usize> {
-    map: ObjectMap<ItemPtr<(usize, T), N>>,
-    list: LinkedRingBufferList<(usize, T), N>,
+#[derive(Clone, Default)]
+pub struct KVPair<K: Clone + Default, V: Clone + Default>(pub K, pub V);
+
+pub struct LinkedHashMap<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
+    map: HashMap<K, ItemPtr<KVPair<K, V>, N>>,
+    list: LinkedRingBufferList<KVPair<K, V>, N>,
 }
 
-impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
+impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedHashMap<K, V, N> {
     pub fn with_capacity(cap: usize) -> Self {
-        LinkedObjectMap {
-            map: ObjectMap::with_capacity(cap),
+        LinkedHashMap {
+            map: HashMap::with_capacity(cap),
             list: LinkedRingBufferList::new(),
         }
     }
 
-    pub fn insert_front(&self, key: usize, value: T) -> Option<T> {
-        let pair = (key, value);
+    pub fn insert_front(&self, key: K, value: V) -> Option<V> {
+        let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_front(pair);
         if let Some(old) = self.map.insert(&key, list_ref) {
             unsafe {
-                old.remove().map(|(_, v)| v)
+                old.remove().map(|KVPair(_, v)| v)
             }
         } else {
             None
         }
     }
 
-    pub fn insert_back(&self, key: usize, value: T) -> Option<T> {
-        let pair = (key, value);
+    pub fn insert_back(&self, key: K, value: V) -> Option<V> {
+        let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_back(pair);
         if let Some(old) = self.map.insert(&key, list_ref) {
             unsafe {
-                old.remove().map(|(_, v)| v)
+                old.remove().map(|KVPair(_, v)| v)
             }
         } else {
             None
         }
     }
 
-    pub fn get(&self, key: usize) -> Option<T> {
+    pub fn get(&self, key: &K) -> Option<V> {
         self.map
             .read(key)
             .map(|l| unsafe { (&*l).deref().clone().1 })
     }
 
-    pub fn get_to_front(&self, key: usize) -> Option<T> {
+    pub fn get_to_front(&self, key: &K) -> Option<V> {
         self.get_to_general(key, true)
     }
 
-    pub fn get_to_back(&self, key: usize) -> Option<T> {
+    pub fn get_to_back(&self, key: &K) -> Option<V> {
         self.get_to_general(key, false)
     }
 
     #[inline(always)]
-    pub fn get_to_general(&self, key: usize, forwarding: bool) -> Option<T> {
+    pub fn get_to_general(&self, key: &K, forwarding: bool) -> Option<V> {
         self.map
             .write(key)
             .and_then(|mut l| {
@@ -68,29 +72,29 @@ impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
                 let old_ref = l.clone();
                 *l = new_ref;
                 unsafe {
-                    old_ref.remove().map(|(_, v)| v)
+                    old_ref.remove().map(|KVPair(_, v)| v)
                 }
             })
     }
 
-    pub fn remove(&self, key: usize) -> Option<T> {
+    pub fn remove(&self, key: &K) -> Option<V> {
         self.map
             .write(key)
             .and_then(|l| unsafe {
-                ObjectMapWriteGuard::remove(l).remove().map(|(_, v)| v) 
+                HashMapWriteGuard::remove(l).remove().map(|KVPair(_, v)| v) 
             })
     }
 
-    pub fn pop_front(&self) -> Option<(usize, T)> {
+    pub fn pop_front(&self) -> Option<KVPair<K, V>> {
         self.pop_general(true)
     }
 
-    pub fn pop_back(&self) -> Option<(usize, T)> {
+    pub fn pop_back(&self) -> Option<KVPair<K, V>> {
         self.pop_general(false)
     }
 
     #[inline(always)]
-    fn pop_general(&self, forwarding: bool) -> Option<(usize, T)> {
+    fn pop_general(&self, forwarding: bool) -> Option<KVPair<K, V>> {
         loop {
             let list_item = if forwarding {
                 self.list.peek_front()
@@ -98,11 +102,11 @@ impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
                 self.list.peek_back()
             };
             if let Some(pair) = list_item {
-                if let Some((k, v)) = pair.deref() {
-                    if let Some(l) = self.map.write(k) {
+                if let Some(KVPair(k, v)) = pair.deref() {
+                    if let Some(l) = self.map.write(&k) {
                         unsafe {
-                            ObjectMapWriteGuard::remove(l).remove();
-                            return Some((k, v));
+                            HashMapWriteGuard::remove(l).remove();
+                            return Some(KVPair(k, v));
                         }
                     }
                 }
@@ -116,56 +120,66 @@ impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
         self.map.len()
     }
 
-    pub fn contains_key(&self, key: &usize) -> bool {
+    pub fn contains_key(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
-    pub fn iter_front(&self) -> ListIter<(usize, T), N> {
+    pub fn iter_front(&self) -> ListIter<KVPair<K, V>, N> {
         self.list.iter_front()
     }
 
-    pub fn iter_back(&self) -> ListIter<(usize, T), N> {
+    pub fn iter_back(&self) -> ListIter<KVPair<K, V>, N> {
         self.list.iter_back()
     }
 
-    pub fn iter_front_keys(&self) -> KeyIter<T, N> {
+    pub fn iter_front_keys(&self) -> KeyIter<K, V, N> {
         KeyIter { iter: self.iter_front() }
     }
 
-    pub fn iter_back_keys(&self) -> KeyIter<T, N> {
+    pub fn iter_back_keys(&self) -> KeyIter<K, V, N> {
         KeyIter { iter: self.iter_back() }
     }
 
-    pub fn iter_front_values(&self) -> ValueIter<T, N> {
+    pub fn iter_front_values(&self) -> ValueIter<K, V, N> {
         ValueIter { iter: self.iter_front() }
     }
 
-    pub fn iter_back_values(&self) -> ValueIter<T, N> {
+    pub fn iter_back_values(&self) -> ValueIter<K, V, N> {
         ValueIter { iter: self.iter_back() }
     }
 }
 
-pub struct KeyIter<'a, T: Clone + Default, const N: usize> {
-    iter: ListIter<'a, (usize, T), N>
+pub struct KeyIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
+    iter: ListIter<'a, KVPair<K, V>, N>
 }
 
-impl <'a, T: Clone + Default, const N: usize> Iterator for KeyIter<'a, T, N> {
-    type Item = usize;
+impl <'a, K: Clone + Hash+ Default, V: Clone + Default, const N: usize> Iterator for KeyIter<'a, K, V, N> {
+    type Item = K;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().and_then(|i| i.deref()).map(|(k, _)| k)
+        self.iter.next().and_then(|i| i.deref()).map(|KVPair(k, _)| k)
     }
 }
 
-pub struct ValueIter<'a, T: Clone + Default, const N: usize> {
-    iter: ListIter<'a, (usize, T), N>
+pub struct ValueIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
+    iter: ListIter<'a, KVPair<K, V>, N>
 }
 
-impl <'a, T: Clone + Default, const N: usize> Iterator for ValueIter<'a, T, N> {
-    type Item = T;
+impl <'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator for ValueIter<'a, K, V, N> {
+    type Item = V;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().and_then(|i| i.deref()).map(|(_, v)| v)
+        self.iter.next().and_then(|i| i.deref()).map(|KVPair(_, v)| v)
+    }
+}
+
+impl <K: Clone + Default, V: Clone + Default> KVPair<K, V> {
+    pub fn key(&self) -> &K {
+        &self.0
+    }
+
+    pub fn value(&self) -> &V {
+        &self.1
     }
 }
 
@@ -180,7 +194,7 @@ mod test {
 
     #[test]
     pub fn linked_map_serial() {
-        let map = LinkedObjectMap::<_, CAP>::with_capacity(16);
+        let map = LinkedHashMap::<_, _, CAP>::with_capacity(16);
         for i in 0..1024 {
             map.insert_front(i, i);
         }
@@ -192,7 +206,7 @@ mod test {
     #[test]
     pub fn linked_map_insertions() {
         let _ = env_logger::try_init();
-        let linked_map = Arc::new(LinkedObjectMap::<_, CAP>::with_capacity(16));
+        let linked_map = Arc::new(LinkedHashMap::<_, _, CAP>::with_capacity(16));
         let num_threads = num_cpus::get();
         let mut threads = vec![];
         let num_data = 999;
@@ -222,7 +236,7 @@ mod test {
         }
         let mut num_set = HashSet::new();
         for pair in linked_map.iter_front() {
-            let (key, node) = pair.deref().unwrap();
+            let KVPair(key, node) = pair.deref().unwrap();
             let value = node;
             assert_eq!(key, value);
             num_set.insert(key);
