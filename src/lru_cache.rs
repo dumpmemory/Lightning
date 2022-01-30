@@ -1,22 +1,28 @@
-use crate::{linked_map::{LinkedHashMap, KVPair}, list::ListIter};
+use crate::{
+    linked_map::{KVPair, LinkedHashMap},
+    list::ListIter,
+};
 use std::hash::Hash;
 
 pub struct LRUCache<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
     map: LinkedHashMap<K, V, N>,
-    capacity: usize
+    capacity: usize,
 }
 
-impl <K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LRUCache<K, V, N> {
-    pub fn new<FF: Fn(&K) -> Option<V> + 'static, EF: Fn(K, V) + 'static>(
-        capacity: usize,
-    ) -> LRUCache<K, V, N> {
+impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LRUCache<K, V, N> {
+    pub fn new(capacity: usize) -> LRUCache<K, V, N> {
         Self {
             map: LinkedHashMap::with_capacity(capacity),
             capacity,
         }
     }
 
-    pub fn get<FF: Fn(&K) -> Option<V> + Send, EF: Fn(K, V) + Send>(&self, key: &K, fetch_fn: FF, evict_fn: EF) -> Option<V> {
+    pub fn get<FF: Fn(&K) -> Option<V> + Send, EF: Fn(K, V) + Send>(
+        &self,
+        key: &K,
+        fetch_fn: FF,
+        evict_fn: EF,
+    ) -> Option<V> {
         let res = self.map.get_to_front(key);
         if res.is_none() {
             if let Some(v) = fetch_fn(key) {
