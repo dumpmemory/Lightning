@@ -16,7 +16,7 @@ impl <K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LRUCac
         }
     }
 
-    pub fn get<FF: Fn(&K) -> Option<V>, EF: Fn(K, V)>(&self, key: &K, fetch_fn: FF, evict_fn: EF) -> Option<V> {
+    pub fn get<FF: Fn(&K) -> Option<V> + Send, EF: Fn(K, V) + Send>(&self, key: &K, fetch_fn: FF, evict_fn: EF) -> Option<V> {
         let res = self.map.get_to_front(key);
         if res.is_none() {
             if let Some(v) = fetch_fn(key) {
