@@ -16,23 +16,27 @@ impl<T: Clone + Default, const N: usize> LinkedObjectMap<T, N> {
         }
     }
 
-    pub fn insert_front(&self, key: usize, value: T) {
+    pub fn insert_front(&self, key: usize, value: T) -> Option<T> {
         let pair = (key, value);
         let list_ref = self.list.push_front(pair);
         if let Some(old) = self.map.insert(&key, list_ref) {
             unsafe {
-                old.remove();
+                old.remove().map(|(_, v)| v)
             }
+        } else {
+            None
         }
     }
 
-    pub fn insert_back(&self, key: usize, value: T) {
+    pub fn insert_back(&self, key: usize, value: T) -> Option<T> {
         let pair = (key, value);
         let list_ref = self.list.push_back(pair);
         if let Some(old) = self.map.insert(&key, list_ref) {
             unsafe {
-                old.remove();
+                old.remove().map(|(_, v)| v)
             }
+        } else {
+            None
         }
     }
 
