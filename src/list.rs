@@ -1,7 +1,7 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::ring_buffer::{ItemIter, ItemRef, RingBuffer, ItemPtr};
+use crate::ring_buffer::{ItemIter, ItemPtr, ItemRef, RingBuffer};
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering::*;
 
@@ -42,7 +42,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             match head_node.buffer.push_front(val) {
                 Ok(r) => {
                     return r.to_ptr();
-                },
+                }
                 Err(v) => {
                     let head_lock = head_node.lock.try_lock();
                     if head_lock.is_some() && head_node.prev.load(Acquire, &guard).is_null() {
@@ -401,6 +401,8 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ListIter<'a, T, N> {
         }
     }
 }
+
+unsafe impl<T: Clone + Default, const N: usize> Send for LinkedRingBufferList<T, N> {}
 
 #[cfg(test)]
 mod test {

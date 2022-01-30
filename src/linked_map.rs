@@ -1,6 +1,6 @@
 // A concurrent linked hash map, fast and lock-free on iterate
 use crate::list::{LinkedRingBufferList, ListIter};
-use crate::map::{Map, HashMap, HashMapWriteGuard};
+use crate::map::{HashMap, HashMapWriteGuard, Map};
 use crate::ring_buffer::ItemPtr;
 use std::hash::Hash;
 
@@ -24,9 +24,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
         let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_front(pair);
         if let Some(old) = self.map.insert(&key, list_ref) {
-            unsafe {
-                old.remove().map(|KVPair(_, v)| v)
-            }
+            unsafe { old.remove().map(|KVPair(_, v)| v) }
         } else {
             None
         }
@@ -36,9 +34,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
         let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_back(pair);
         if let Some(old) = self.map.insert(&key, list_ref) {
-            unsafe {
-                old.remove().map(|KVPair(_, v)| v)
-            }
+            unsafe { old.remove().map(|KVPair(_, v)| v) }
         } else {
             None
         }
@@ -60,29 +56,23 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     #[inline(always)]
     pub fn get_to_general(&self, key: &K, forwarding: bool) -> Option<V> {
-        self.map
-            .write(key)
-            .and_then(|mut l| {
-                let pair = unsafe { l.deref() }.clone();
-                let new_ref = if forwarding {
-                    self.list.push_front(pair)
-                } else {
-                    self.list.push_back(pair)
-                };
-                let old_ref = l.clone();
-                *l = new_ref;
-                unsafe {
-                    old_ref.remove().map(|KVPair(_, v)| v)
-                }
-            })
+        self.map.write(key).and_then(|mut l| {
+            let pair = unsafe { l.deref() }.clone();
+            let new_ref = if forwarding {
+                self.list.push_front(pair)
+            } else {
+                self.list.push_back(pair)
+            };
+            let old_ref = l.clone();
+            *l = new_ref;
+            unsafe { old_ref.remove().map(|KVPair(_, v)| v) }
+        })
     }
 
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map
             .write(key)
-            .and_then(|l| unsafe {
-                HashMapWriteGuard::remove(l).remove().map(|KVPair(_, v)| v) 
-            })
+            .and_then(|l| unsafe { HashMapWriteGuard::remove(l).remove().map(|KVPair(_, v)| v) })
     }
 
     pub fn pop_front(&self) -> Option<KVPair<K, V>> {
@@ -133,47 +123,65 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn iter_front_keys(&self) -> KeyIter<K, V, N> {
-        KeyIter { iter: self.iter_front() }
+        KeyIter {
+            iter: self.iter_front(),
+        }
     }
 
     pub fn iter_back_keys(&self) -> KeyIter<K, V, N> {
-        KeyIter { iter: self.iter_back() }
+        KeyIter {
+            iter: self.iter_back(),
+        }
     }
 
     pub fn iter_front_values(&self) -> ValueIter<K, V, N> {
-        ValueIter { iter: self.iter_front() }
+        ValueIter {
+            iter: self.iter_front(),
+        }
     }
 
     pub fn iter_back_values(&self) -> ValueIter<K, V, N> {
-        ValueIter { iter: self.iter_back() }
+        ValueIter {
+            iter: self.iter_back(),
+        }
     }
 }
 
 pub struct KeyIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
-    iter: ListIter<'a, KVPair<K, V>, N>
+    iter: ListIter<'a, KVPair<K, V>, N>,
 }
 
-impl <'a, K: Clone + Hash+ Default, V: Clone + Default, const N: usize> Iterator for KeyIter<'a, K, V, N> {
+impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
+    for KeyIter<'a, K, V, N>
+{
     type Item = K;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().and_then(|i| i.deref()).map(|KVPair(k, _)| k)
+        self.iter
+            .next()
+            .and_then(|i| i.deref())
+            .map(|KVPair(k, _)| k)
     }
 }
 
 pub struct ValueIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
-    iter: ListIter<'a, KVPair<K, V>, N>
+    iter: ListIter<'a, KVPair<K, V>, N>,
 }
 
-impl <'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator for ValueIter<'a, K, V, N> {
+impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
+    for ValueIter<'a, K, V, N>
+{
     type Item = V;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().and_then(|i| i.deref()).map(|KVPair(_, v)| v)
+        self.iter
+            .next()
+            .and_then(|i| i.deref())
+            .map(|KVPair(_, v)| v)
     }
 }
 
-impl <K: Clone + Default, V: Clone + Default> KVPair<K, V> {
+impl<K: Clone + Default, V: Clone + Default> KVPair<K, V> {
     pub fn key(&self) -> &K {
         &self.0
     }
@@ -181,6 +189,11 @@ impl <K: Clone + Default, V: Clone + Default> KVPair<K, V> {
     pub fn value(&self) -> &V {
         &self.1
     }
+}
+
+unsafe impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> Send
+    for LinkedHashMap<K, V, N>
+{
 }
 
 #[cfg(test)]

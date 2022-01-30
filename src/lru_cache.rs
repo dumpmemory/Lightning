@@ -48,3 +48,8 @@ impl <K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LRUCac
         self.map.iter_front()
     }
 }
+
+unsafe impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> Send
+    for LRUCache<K, V, N>
+{
+}
