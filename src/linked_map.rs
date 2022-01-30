@@ -189,6 +189,10 @@ impl<K: Clone + Default, V: Clone + Default> KVPair<K, V> {
     pub fn value(&self) -> &V {
         &self.1
     }
+
+    pub fn pair(&self) -> (&K, &V) {
+        (&self.0, &self.1)
+    }
 }
 
 unsafe impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> Send
