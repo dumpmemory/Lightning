@@ -1298,7 +1298,7 @@ impl Value {
 
     #[inline(always)]
     const fn next_version<K, V, A: Attachment<K, V>>(old: usize, new: usize) -> usize {
-        debug_assert!(!can_attach::<K, V, A>());
+        debug_assert!(can_attach::<K, V, A>());
         let old_ver = Value::raw_to_version(old);
         // 31 bits wrapping add (one bit reserved for prime flag)
         let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1; 
