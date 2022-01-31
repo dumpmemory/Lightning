@@ -1301,6 +1301,7 @@ impl Value {
         let old_ver = Value::raw_to_version(old);
         // 31 bits wrapping add (one bit reserved for prime flag)
         let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1; 
+        debug_assert!(new_ver <= FVAL_MAX_VERSION);
         new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
     }
  }
