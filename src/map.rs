@@ -1014,7 +1014,7 @@ impl<
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_sentinel)
         };
-        done || val == SENTINEL_VALUE
+        done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
     /// Failed return old shared
@@ -2789,9 +2789,9 @@ mod tests {
     #[test]
     fn parallel_word_map_multi_mutex() {
         let _ = env_logger::try_init();
-        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        let map = Arc::new(WordMap::<System>::with_capacity(16));
         let mut threads = vec![];
-        let num_threads = num_cpus::get();
+        let num_threads = 16;
         let test_load = 4096;
         let update_load = 128;
         for thread_id in 0..num_threads {
