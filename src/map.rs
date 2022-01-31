@@ -973,7 +973,7 @@ impl<
     fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
         let new_tombstone = if Self::CAN_ATTACH {
-            Value::next_version(original, TOMBSTONE_VALUE)
+            Value::next_version::<K, V, A>(original, TOMBSTONE_VALUE)
         } else {
             TOMBSTONE_VALUE
         };
@@ -985,7 +985,7 @@ impl<
         debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
-            Value::next_version(original, value)
+            Value::next_version::<K, V, A>(original, value)
         } else {
             value
         };
@@ -1010,7 +1010,7 @@ impl<
         }
         let addr = entry_addr + mem::size_of::<usize>();
         let new_sentinel = if Self::CAN_ATTACH {
-            Value::next_version(original, SENTINEL_VALUE)
+            Value::next_version::<K, V, A>(original, SENTINEL_VALUE)
         } else {
             SENTINEL_VALUE
         };
@@ -1297,7 +1297,8 @@ impl Value {
 
 
     #[inline(always)]
-    const fn next_version(old: usize, new: usize) -> usize {
+    const fn next_version<K, V, A: Attachment<K, V>>(old: usize, new: usize) -> usize {
+        debug_assert!(!can_attach::<K, V, A>());
         let old_ver = Value::raw_to_version(old);
         // 31 bits wrapping add (one bit reserved for prime flag)
         let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1; 
