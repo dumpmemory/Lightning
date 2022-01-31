@@ -844,7 +844,7 @@ impl<
                     }
                 }
             } else if k == EMPTY_KEY {
-                let empty_val_orig = v.raw_with_val(EMPTY_VALUE);
+                let empty_val_orig = v.raw_with_val::<K, V, A>(EMPTY_VALUE);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
@@ -1281,8 +1281,12 @@ impl Value {
         }
     }
 
-    pub fn raw_with_val(&self, val: usize) -> usize {
-        (self.raw & FVAL_VER_BIT_MASK) | (val & FVAL_VAL_BIT_MASK)
+    pub fn raw_with_val<K, V, A: Attachment<K, V>>(&self, val: usize) -> usize {
+        if can_attach::<K, V, A>() {
+            (self.raw & FVAL_VER_BIT_MASK) | (val & FVAL_VAL_BIT_MASK)
+        } else {
+            val
+        }
     }
 
     #[inline(always)]
