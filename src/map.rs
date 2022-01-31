@@ -27,6 +27,12 @@ const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
 const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 
+const FVAL_BITS: usize = mem::size_of::<usize>() * 8;
+const FVAL_VER_POS: usize = FVAL_BITS / 2;
+const FVAL_VER_BIT_MASK: usize = !0 << FVAL_VER_POS & VAL_BIT_MASK;
+const FVAL_VAL_BIT_MASK: usize = !FVAL_VER_BIT_MASK;
+const FVAL_MAX_VERSION: u32 = !0 >> 1;
+
 struct Value {
     raw: usize,
     parsed: ParsedValue,
@@ -141,6 +147,7 @@ impl<
             Prime,
             None,
             Sentinel,
+            Outdated
         }
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
@@ -157,17 +164,26 @@ impl<
                     let (val, idx, addr) = self.get_from_chunk(&*chunk, hash, key, fkey, migrating);
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
-                        ParsedValue::Val(v) => FromChunkRes::Value(
-                            v,
-                            val,
-                            if Self::can_attach() && read_attachment {
-                                Some(chunk.attachment.get(idx).1)
+                        ParsedValue::Val(v) => {
+                            let attachment = if Self::can_attach() && read_attachment {
+                                let content = chunk.attachment.get(idx).1;
+                                let new_val = self.get_fast_value(addr);
+                                if new_val.raw != val.raw {
+                                    return FromChunkRes::Outdated
+                                } else {
+                                    Some(content)
+                                }
                             } else {
                                 None
-                            },
-                            idx,
-                            addr,
-                        ),
+                            };
+                            FromChunkRes::Value(
+                                v,
+                                val,
+                                attachment,
+                                idx,
+                                addr,
+                            )
+                        },
                         ParsedValue::Prime(_) => FromChunkRes::Prime,
                         ParsedValue::Sentinel => FromChunkRes::Sentinel,
                     }
@@ -197,7 +213,7 @@ impl<
                                 );
                                 None
                             }
-                            FromChunkRes::Prime => {
+                            FromChunkRes::Prime | FromChunkRes::Outdated => {
                                 backoff.spin();
                                 continue;
                             }
@@ -232,7 +248,7 @@ impl<
                                 );
                                 None
                             }
-                            FromChunkRes::Prime => {
+                            FromChunkRes::Prime | FromChunkRes::Outdated => {
                                 backoff.spin();
                                 continue;
                             }
@@ -241,10 +257,10 @@ impl<
                         None
                     }
                 }
-                FromChunkRes::Prime => {
+                FromChunkRes::Prime | FromChunkRes::Outdated => {
                     backoff.spin();
                     continue;
-                }
+                },
             };
         }
     }
@@ -670,8 +686,8 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
+                                let (_, value) = chunk.attachment.get(idx);
                                 if self.cas_sentinel(addr, val.raw) {
-                                    let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
@@ -687,22 +703,22 @@ impl<
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
-                                if !self.cas_tombstone(addr, val.raw).1 {
+                                let (_, value) = chunk.attachment.get(idx);
+                                if !self.cas_tombstone(addr, val.raw).is_ok() {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
                                     // should fail
                                     return ModResult::Fail;
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
-                                    let (_, value) = chunk.attachment.get(idx);
                                     chunk.attachment.erase(idx);
                                     chunk.empty_entries.fetch_add(1, Relaxed);
                                     return ModResult::Replaced(*v, value, idx);
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
-                                if self.cas_value(addr, val.raw, *fv).1 {
-                                    let (_, value) = chunk.attachment.get(idx);
+                                let (_, value) = chunk.attachment.get(idx);
+                                if self.cas_value(addr, val.raw, *fv).is_ok() {
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
                                     } else {
@@ -720,20 +736,25 @@ impl<
                                     } else {
                                         fval
                                     };
-                                    let (act_val, replaced) =
-                                        self.cas_value(addr, val.raw, primed_fval);
-                                    if replaced {
-                                        let (_, prev_val) = chunk.attachment.get(idx);
-                                        if Self::can_attach() {
-                                            chunk.attachment.set(idx, key.clone(), (*oval).clone());
-                                            let stripped_prime =
-                                                self.cas_value(addr, primed_fval, fval).1;
-                                            debug_assert!(stripped_prime);
+                                    let (_, prev_val) = chunk.attachment.get(idx);
+                                    match self.cas_value(addr, val.raw, primed_fval) {
+                                        Ok(cas_fval) => {
+                                            if Self::can_attach() {
+                                                chunk.attachment.set(idx, key.clone(), (*oval).clone());
+                                                let stripped_prime =
+                                                    self.cas_value(addr, cas_fval, fval).is_ok();
+                                                debug_assert!(stripped_prime);
+                                            }
+                                            return ModResult::Replaced(val.raw, prev_val, idx);
+                                        },
+                                        Err(act_val) => {
+                                            if Self::can_attach() {
+                                                // Fast value changed, cannot obtain stable fat value
+                                                backoff.spin();
+                                                continue;
+                                            }
+                                            return ModResult::Existed(act_val, prev_val)
                                         }
-                                        return ModResult::Replaced(val.raw, prev_val, idx);
-                                    } else {
-                                        let (_, value) = chunk.attachment.get(idx);
-                                        return ModResult::Existed(act_val, value);
                                     }
                                 } else {
                                     trace!(
@@ -743,6 +764,10 @@ impl<
                                         v
                                     );
                                     let (_, value) = chunk.attachment.get(idx);
+                                    if Self::can_attach() && self.get_fast_value(addr).raw != val.raw {
+                                        backoff.spin();
+                                        continue;
+                                    }
                                     return ModResult::Existed(*v, value);
                                 }
                             }
@@ -760,7 +785,7 @@ impl<
                                         }
                                         let aval = chunk.attachment.get(idx).1;
                                         if let Some(v) = swap(pval) {
-                                            if self.cas_value(addr, pval, v).1 {
+                                            if self.cas_value(addr, val.raw, v).is_ok() {
                                                 // swap success
                                                 return ModResult::Replaced(val.raw, aval, idx);
                                             } else {
@@ -784,18 +809,21 @@ impl<
                                 } else {
                                     fval
                                 };
-                                if self.cas_value(addr, val.raw, primed_fval).1 {
-                                    let (_, prev_val) = chunk.attachment.get(idx);
-                                    if Self::can_attach() {
-                                        chunk.attachment.set(idx, key.clone(), (*v).clone());
-                                        let stripped_prime =
-                                            self.cas_value(addr, primed_fval, fval).1;
-                                        debug_assert!(stripped_prime);
+                                let (_, prev_val) = chunk.attachment.get(idx);
+                                match self.cas_value(addr, val.raw, primed_fval) {
+                                    Ok(cas_fval) => {
+                                        if Self::can_attach() {
+                                            chunk.attachment.set(idx, key.clone(), (*v).clone());
+                                            let stripped_prime =
+                                                self.cas_value(addr, cas_fval, fval).is_ok();
+                                            debug_assert!(stripped_prime);
+                                        }
+                                        return ModResult::Replaced(val.raw, prev_val, idx);
+                                    },
+                                    Err(_) => {
+                                        trace!("Cannot insert in place for {}", fkey);
+                                        return ModResult::Fail;
                                     }
-                                    return ModResult::Replaced(val.raw, prev_val, idx);
-                                } else {
-                                    trace!("Cannot insert in place for {}", fkey);
-                                    return ModResult::Fail;
                                 }
                             }
                         }
@@ -816,6 +844,7 @@ impl<
                     }
                 }
             } else if k == EMPTY_KEY {
+                let empty_val_orig = v.raw_with_val::<K, V, A>(EMPTY_VALUE);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
@@ -825,7 +854,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval).1 {
+                        if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -843,7 +872,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval).1 {
+                        if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -852,7 +881,7 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_sentinel(addr, 0) {
+                        if self.cas_sentinel(addr, empty_val_orig) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
@@ -938,16 +967,31 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> (usize, bool) {
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
-        self.cas_value(entry_addr, original, TOMBSTONE_VALUE)
+        let new_tombstone = if Self::can_attach() {
+            Value::next_version(original, TOMBSTONE_VALUE)
+        } else {
+            TOMBSTONE_VALUE
+        };
+        self.cas_value(entry_addr, original, new_tombstone)
     }
     #[inline(always)]
-    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> (usize, bool) {
+    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
         debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, value) }
+        let new_value = if Self::can_attach() {
+            Value::next_version(original, value)
+        } else {
+            value
+        };
+        let (old, succ) = unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_value) };
+        if succ {
+            Ok(new_value)
+        } else {
+            Err(old)
+        }
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
@@ -962,10 +1006,15 @@ impl<
             assert!(entry_addr < chunk_ref.base + chunk_ref.total_size);
         }
         let addr = entry_addr + mem::size_of::<usize>();
-        let (val, done) = unsafe {
-            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
+        let new_sentinel = if Self::can_attach() {
+            Value::next_version(original, SENTINEL_VALUE)
+        } else {
+            SENTINEL_VALUE
         };
-        done || val == SENTINEL_VALUE
+        let (val, done) = unsafe {
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_sentinel)
+        };
+        done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
     /// Failed return old shared
@@ -1159,8 +1208,7 @@ impl<
                     break;
                 } else if k == EMPTY_KEY {
                     // Try insert to this slot
-                    let (val, done) = self.cas_value(addr, EMPTY_VALUE, fvalue.raw);
-                    debug_assert_ne!(val & VAL_BIT_MASK, SENTINEL_VALUE);
+                    let done = self.cas_value(addr, EMPTY_VALUE, fvalue.raw).is_ok();
                     if done {
                         new_chunk_ins.attachment.set(idx, key, value);
                         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -1202,6 +1250,12 @@ impl Value {
     pub fn new<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
         val: usize,
     ) -> Self {
+        let raw = val;
+        let val = if can_attach::<K, V, A>() {
+            val & FVAL_VAL_BIT_MASK
+        } else {
+            val
+        };
         let res = {
             if val == EMPTY_VALUE {
                 ParsedValue::Empty
@@ -1222,11 +1276,45 @@ impl Value {
             }
         };
         Value {
-            raw: val,
+            raw,
             parsed: res,
         }
     }
-}
+
+    #[inline(always)]
+    pub const fn raw_with_val<K, V, A: Attachment<K, V>>(&self, val: usize) -> usize {
+        if can_attach::<K, V, A>() {
+            (self.raw & FVAL_VER_BIT_MASK) | (val & FVAL_VAL_BIT_MASK)
+        } else {
+            val
+        }
+    }
+
+    #[inline(always)]
+    const fn  raw_to_version(raw: usize) -> u32 {
+        let masked = raw & FVAL_VER_BIT_MASK;
+        let shifted = masked  >> FVAL_VER_POS;
+        shifted as u32
+    }
+
+
+    #[inline(always)]
+    const fn next_version(old: usize, new: usize) -> usize {
+        let old_ver = Value::raw_to_version(old);
+        let mut new_ver = old_ver + 1;
+        if new_ver > FVAL_MAX_VERSION {
+            new_ver = 0;
+        }
+        new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
+    }
+
+    const fn is_empty(&self) -> bool {
+        match self.parsed {
+            ParsedValue::Empty => true,
+            _ => false
+        }
+    }
+ }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
@@ -2706,9 +2794,9 @@ mod tests {
     #[test]
     fn parallel_word_map_multi_mutex() {
         let _ = env_logger::try_init();
-        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        let map = Arc::new(WordMap::<System>::with_capacity(16));
         let mut threads = vec![];
-        let num_threads = num_cpus::get();
+        let num_threads = 16;
         let test_load = 4096;
         let update_load = 128;
         for thread_id in 0..num_threads {
@@ -2796,7 +2884,7 @@ mod tests {
         let map = Arc::new(map_cont);
         map.insert(&1, Obj::new(0));
         let mut threads = vec![];
-        let num_threads = 256;
+        let num_threads = 16;
         for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
@@ -2929,6 +3017,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    pub fn versioning() {
+        let init = 0;
+        assert_eq!(Value::raw_to_version(init), 0);
+        let v1 = Value::next_version(init, init);
+        assert_eq!(Value::raw_to_version(v1), 1);
     }
 
     #[test]
