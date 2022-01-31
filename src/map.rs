@@ -1281,7 +1281,8 @@ impl Value {
         }
     }
 
-    pub fn raw_with_val<K, V, A: Attachment<K, V>>(&self, val: usize) -> usize {
+    #[inline(always)]
+    pub const fn raw_with_val<K, V, A: Attachment<K, V>>(&self, val: usize) -> usize {
         if can_attach::<K, V, A>() {
             (self.raw & FVAL_VER_BIT_MASK) | (val & FVAL_VAL_BIT_MASK)
         } else {
@@ -1290,7 +1291,7 @@ impl Value {
     }
 
     #[inline(always)]
-    fn raw_to_version(raw: usize) -> u32 {
+    const fn  raw_to_version(raw: usize) -> u32 {
         let masked = raw & FVAL_VER_BIT_MASK;
         let shifted = masked  >> FVAL_VER_POS;
         shifted as u32
@@ -1298,7 +1299,7 @@ impl Value {
 
 
     #[inline(always)]
-    fn next_version(old: usize, new: usize) -> usize {
+    const fn next_version(old: usize, new: usize) -> usize {
         let old_ver = Value::raw_to_version(old);
         let mut new_ver = old_ver + 1;
         if new_ver > FVAL_MAX_VERSION {
@@ -1307,7 +1308,7 @@ impl Value {
         new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
     }
 
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         match self.parsed {
             ParsedValue::Empty => true,
             _ => false
