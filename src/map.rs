@@ -704,7 +704,7 @@ impl<
                                     return ModResult::NotFound;
                                 }
                                 let (_, value) = chunk.attachment.get(idx);
-                                if !self.cas_tombstone(addr, val.raw).1 {
+                                if !self.cas_tombstone(addr, val.raw).is_ok() {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
                                     // should fail
@@ -718,7 +718,7 @@ impl<
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
                                 let (_, value) = chunk.attachment.get(idx);
-                                if self.cas_value(addr, val.raw, *fv).1 {
+                                if self.cas_value(addr, val.raw, *fv).is_ok() {
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
                                     } else {
@@ -737,23 +737,24 @@ impl<
                                         fval
                                     };
                                     let (_, prev_val) = chunk.attachment.get(idx);
-                                    let (act_val, replaced) =
-                                        self.cas_value(addr, val.raw, primed_fval);
-                                    if replaced {
-                                        if Self::can_attach() {
-                                            chunk.attachment.set(idx, key.clone(), (*oval).clone());
-                                            let stripped_prime =
-                                                self.cas_value(addr, primed_fval, fval).1;
-                                            debug_assert!(stripped_prime);
+                                    match self.cas_value(addr, val.raw, primed_fval) {
+                                        Ok(cas_fval) => {
+                                            if Self::can_attach() {
+                                                chunk.attachment.set(idx, key.clone(), (*oval).clone());
+                                                let stripped_prime =
+                                                    self.cas_value(addr, cas_fval, fval).is_ok();
+                                                debug_assert!(stripped_prime);
+                                            }
+                                            return ModResult::Replaced(val.raw, prev_val, idx);
+                                        },
+                                        Err(act_val) => {
+                                            if Self::can_attach() {
+                                                // Fast value changed, cannot obtain stable fat value
+                                                backoff.spin();
+                                                continue;
+                                            }
+                                            return ModResult::Existed(act_val, prev_val)
                                         }
-                                        return ModResult::Replaced(val.raw, prev_val, idx);
-                                    } else {
-                                        if Self::can_attach() {
-                                            // Fast value changed, cannot obtain stable fat value
-                                            backoff.spin();
-                                            continue;
-                                        }
-                                        return ModResult::Existed(act_val, prev_val)
                                     }
                                 } else {
                                     trace!(
@@ -784,7 +785,7 @@ impl<
                                         }
                                         let aval = chunk.attachment.get(idx).1;
                                         if let Some(v) = swap(pval) {
-                                            if self.cas_value(addr, val.raw, v).1 {
+                                            if self.cas_value(addr, val.raw, v).is_ok() {
                                                 // swap success
                                                 return ModResult::Replaced(val.raw, aval, idx);
                                             } else {
@@ -809,17 +810,20 @@ impl<
                                     fval
                                 };
                                 let (_, prev_val) = chunk.attachment.get(idx);
-                                if self.cas_value(addr, val.raw, primed_fval).1 {
-                                    if Self::can_attach() {
-                                        chunk.attachment.set(idx, key.clone(), (*v).clone());
-                                        let stripped_prime =
-                                            self.cas_value(addr, primed_fval, fval).1;
-                                        debug_assert!(stripped_prime);
+                                match self.cas_value(addr, val.raw, primed_fval) {
+                                    Ok(cas_fval) => {
+                                        if Self::can_attach() {
+                                            chunk.attachment.set(idx, key.clone(), (*v).clone());
+                                            let stripped_prime =
+                                                self.cas_value(addr, cas_fval, fval).is_ok();
+                                            debug_assert!(stripped_prime);
+                                        }
+                                        return ModResult::Replaced(val.raw, prev_val, idx);
+                                    },
+                                    Err(_) => {
+                                        trace!("Cannot insert in place for {}", fkey);
+                                        return ModResult::Fail;
                                     }
-                                    return ModResult::Replaced(val.raw, prev_val, idx);
-                                } else {
-                                    trace!("Cannot insert in place for {}", fkey);
-                                    return ModResult::Fail;
                                 }
                             }
                         }
@@ -839,7 +843,7 @@ impl<
                         continue;
                     }
                 }
-            } else if k == EMPTY_KEY {
+            } else if k == EMPTY_KEY && v.is_empty() {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
@@ -849,7 +853,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval).1 {
+                        if self.cas_value(addr, v.raw, fval).is_ok() {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -867,7 +871,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval).1 {
+                        if self.cas_value(addr, v.raw, fval).is_ok() {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -876,7 +880,7 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_sentinel(addr, 0) {
+                        if self.cas_sentinel(addr, v.raw) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
@@ -962,7 +966,7 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> (usize, bool) {
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
         let new_tombstone = if Self::can_attach() {
             Value::next_version(original, TOMBSTONE_VALUE)
@@ -972,7 +976,7 @@ impl<
         self.cas_value(entry_addr, original, new_tombstone)
     }
     #[inline(always)]
-    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> (usize, bool) {
+    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
         debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
@@ -981,7 +985,12 @@ impl<
         } else {
             value
         };
-        unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_value) }
+        let (old, succ) = unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_value) };
+        if succ {
+            Ok(new_value)
+        } else {
+            Err(old)
+        }
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
@@ -1198,8 +1207,7 @@ impl<
                     break;
                 } else if k == EMPTY_KEY {
                     // Try insert to this slot
-                    let (val, done) = self.cas_value(addr, EMPTY_VALUE, fvalue.raw);
-                    debug_assert_ne!(val & VAL_BIT_MASK, SENTINEL_VALUE);
+                    let done = self.cas_value(addr, EMPTY_VALUE, fvalue.raw).is_ok();
                     if done {
                         new_chunk_ins.attachment.set(idx, key, value);
                         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -1288,6 +1296,13 @@ impl Value {
             new_ver = 0;
         }
         new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
+    }
+
+    fn is_empty(&self) -> bool {
+        match self.parsed {
+            ParsedValue::Empty => true,
+            _ => false
+        }
     }
  }
 
