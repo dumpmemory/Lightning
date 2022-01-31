@@ -3014,7 +3014,7 @@ mod tests {
     pub fn versioning() {
         let init = 0;
         assert_eq!(Value::raw_to_version(init), 0);
-        let v1 = Value::next_version(init, init);
+        let v1 = Value::next_version::<_, _, WordObjectAttachment<usize, System>>(init, init);
         assert_eq!(Value::raw_to_version(v1), 1);
     }
 
