@@ -226,7 +226,7 @@ mod test {
         let linked_map = Arc::new(LinkedHashMap::<_, _, CAP>::with_capacity(16));
         let num_threads = num_cpus::get();
         let mut threads = vec![];
-        let num_data = 999;
+        let num_data = 256;
         for i in 0..num_threads {
             let map = linked_map.clone();
             threads.push(thread::spawn(move || {
