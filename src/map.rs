@@ -843,7 +843,8 @@ impl<
                         continue;
                     }
                 }
-            } else if k == EMPTY_KEY && v.is_empty() {
+            } else if k == EMPTY_KEY {
+                let empty_val_orig = v.raw_with_val(EMPTY_VALUE);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
@@ -853,7 +854,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, v.raw, fval).is_ok() {
+                        if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -871,7 +872,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, v.raw, fval).is_ok() {
+                        if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -880,7 +881,7 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_sentinel(addr, v.raw) {
+                        if self.cas_sentinel(addr, empty_val_orig) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
@@ -1278,6 +1279,10 @@ impl Value {
             raw,
             parsed: res,
         }
+    }
+
+    pub fn raw_with_val(&self, val: usize) -> usize {
+        (self.raw & FVAL_VER_BIT_MASK) | (val & FVAL_VAL_BIT_MASK)
     }
 
     #[inline(always)]
