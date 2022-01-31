@@ -1299,18 +1299,9 @@ impl Value {
     #[inline(always)]
     const fn next_version(old: usize, new: usize) -> usize {
         let old_ver = Value::raw_to_version(old);
-        let mut new_ver = old_ver + 1;
-        if new_ver > FVAL_MAX_VERSION {
-            new_ver = 0;
-        }
+        // 31 bits wrapping add (one bit reserved for prime flag)
+        let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1; 
         new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
-    }
-
-    const fn is_empty(&self) -> bool {
-        match self.parsed {
-            ParsedValue::Empty => true,
-            _ => false
-        }
     }
  }
 
