@@ -119,6 +119,9 @@ impl<
         H: Hasher + Default,
     > Table<K, V, A, ALLOC, H>
 {
+
+    const CAN_ATTACH: bool = can_attach::<K, V, A>();
+
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
             panic!("capacity is not power of 2");
@@ -165,7 +168,7 @@ impl<
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
                         ParsedValue::Val(v) => {
-                            let attachment = if Self::can_attach() && read_attachment {
+                            let attachment = if Self::CAN_ATTACH && read_attachment {
                                 let content = chunk.attachment.get(idx).1;
                                 let new_val = self.get_fast_value(addr);
                                 if new_val.raw != val.raw {
@@ -731,7 +734,7 @@ impl<
                             }
                             &ModOp::AttemptInsert(fval, oval) => {
                                 if *v == 0 {
-                                    let primed_fval = if Self::can_attach() {
+                                    let primed_fval = if Self::CAN_ATTACH {
                                         fval | INV_VAL_BIT_MASK
                                     } else {
                                         fval
@@ -739,7 +742,7 @@ impl<
                                     let (_, prev_val) = chunk.attachment.get(idx);
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
-                                            if Self::can_attach() {
+                                            if Self::CAN_ATTACH {
                                                 chunk.attachment.set(idx, key.clone(), (*oval).clone());
                                                 let stripped_prime =
                                                     self.cas_value(addr, cas_fval, fval).is_ok();
@@ -748,7 +751,7 @@ impl<
                                             return ModResult::Replaced(val.raw, prev_val, idx);
                                         },
                                         Err(act_val) => {
-                                            if Self::can_attach() {
+                                            if Self::CAN_ATTACH {
                                                 // Fast value changed, cannot obtain stable fat value
                                                 backoff.spin();
                                                 continue;
@@ -764,7 +767,7 @@ impl<
                                         v
                                     );
                                     let (_, value) = chunk.attachment.get(idx);
-                                    if Self::can_attach() && self.get_fast_value(addr).raw != val.raw {
+                                    if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw {
                                         backoff.spin();
                                         continue;
                                     }
@@ -804,7 +807,7 @@ impl<
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
                                 debug!("Inserting in place for {}", fkey);
-                                let primed_fval = if Self::can_attach() {
+                                let primed_fval = if Self::CAN_ATTACH {
                                     fval | INV_VAL_BIT_MASK
                                 } else {
                                     fval
@@ -812,7 +815,7 @@ impl<
                                 let (_, prev_val) = chunk.attachment.get(idx);
                                 match self.cas_value(addr, val.raw, primed_fval) {
                                     Ok(cas_fval) => {
-                                        if Self::can_attach() {
+                                        if Self::CAN_ATTACH {
                                             chunk.attachment.set(idx, key.clone(), (*v).clone());
                                             let stripped_prime =
                                                 self.cas_value(addr, cas_fval, fval).is_ok();
@@ -969,7 +972,7 @@ impl<
     #[inline(always)]
     fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
-        let new_tombstone = if Self::can_attach() {
+        let new_tombstone = if Self::CAN_ATTACH {
             Value::next_version(original, TOMBSTONE_VALUE)
         } else {
             TOMBSTONE_VALUE
@@ -981,7 +984,7 @@ impl<
         debug_assert!(entry_addr > 0);
         debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
-        let new_value = if Self::can_attach() {
+        let new_value = if Self::CAN_ATTACH {
             Value::next_version(original, value)
         } else {
             value
@@ -1006,7 +1009,7 @@ impl<
             assert!(entry_addr < chunk_ref.base + chunk_ref.total_size);
         }
         let addr = entry_addr + mem::size_of::<usize>();
-        let new_sentinel = if Self::can_attach() {
+        let new_sentinel = if Self::CAN_ATTACH {
             Value::next_version(original, SENTINEL_VALUE)
         } else {
             SENTINEL_VALUE
@@ -1238,11 +1241,6 @@ impl<
 
     pub fn map_is_copying(&self) -> bool {
         Self::is_copying(self.now_epoch())
-    }
-
-    #[inline(always)]
-    fn can_attach() -> bool {
-        can_attach::<K, V, A>()
     }
 }
 
