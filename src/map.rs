@@ -2549,10 +2549,30 @@ mod fat_tests {
     use crate::map::*;
     use std::sync::Arc;
     use std::thread;
+    use rayon::prelude::*;
 
     pub type Key = [u8; 128];
     pub type Value = [u8; 4096];
     pub type FatHashMap = HashMap<Key, Value, System>;
+
+    #[test]
+    fn resize() {
+        let _ = env_logger::try_init();
+        let map = FatHashMap::with_capacity(16);
+        for i in 5..2048 {
+            let k = key_from(i);
+            let v = val_from(i * 2);
+            map.insert(&k, v);
+        }
+        for i in 5..2048 {
+            let k = key_from(i);
+            let v = val_from(i * 2);
+            match map.get(&k) {
+                Some(r) => assert_eq!(r, v),
+                None => panic!("{}", i),
+            }
+        }
+    }
 
     #[test]
     fn parallel_no_resize() {
@@ -2596,6 +2616,111 @@ mod fat_tests {
                 assert!(map.get(&k).is_none())
             }
         }
+    }  
+
+    #[test]
+    fn parallel_with_resize() {
+        let _ = env_logger::try_init();
+        let num_threads = num_cpus::get();
+        let test_load = 4096;
+        let repeat_load = 16;
+        let map = Arc::new(FatHashMap::with_capacity(32));
+        let mut threads = vec![];
+        for i in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..test_load {
+                    let key = key_from(i * 10000000 + j);
+                    let value_prefix = i * j * 100;
+                    for k in 1..repeat_load {
+                        let value_num = value_prefix + k;
+                        if k != 1 {
+                            assert_eq!(map.get(&key), Some(val_from(value_num - 1)));
+                        }
+                        let value = val_from(value_num);
+                        let pre_insert_epoch = map.table.now_epoch();
+                        map.insert(&key, value.clone());
+                        let post_insert_epoch = map.table.now_epoch();
+                        for l in 1..128 {
+                            let pre_fail_get_epoch = map.table.now_epoch();
+                            let left = map.get(&key);
+                            let post_fail_get_epoch = map.table.now_epoch();
+                            let right = Some(value);
+                            if left != right {
+                                for m in 1..1024 {
+                                    let left = map.get(&key);
+                                    let right = Some(value);
+                                    if left == right {
+                                        panic!(
+                                            "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Migration problem!!!", 
+                                            m, 
+                                            key, 
+                                            map.table.map_is_copying(),
+                                            pre_fail_get_epoch,
+                                            post_fail_get_epoch,
+                                            map.table.now_epoch(),
+                                            pre_insert_epoch, 
+                                            post_insert_epoch
+                                        );
+                                    }
+                                }
+                                panic!("Unable to recover for {:?}, round {}, copying {}", key, l , map.table.map_is_copying());
+                            }
+                        }
+                        if j % 7 == 0 {
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                            map.insert(&key, value);
+                        }
+                        if j % 3 == 0 {
+                            let new_value = val_from(value_num + 7);
+                            let pre_insert_epoch = map.table.now_epoch();
+                            map.insert(&key, new_value);
+                            let post_insert_epoch = map.table.now_epoch();
+                            assert_eq!(
+                                map.get(&key), 
+                                Some(new_value), 
+                                "Checking immediate update, key {:?}, epoch {} to {}",
+                                key, pre_insert_epoch, post_insert_epoch
+                            );
+                            map.insert(&key, value);
+                        }
+                    }
+                }
+            }));
+        }
+        info!("Waiting for intensive insertion to finish");
+        for thread in threads {
+            let _ = thread.join();
+        }
+        info!("Checking final value");
+        (0..num_threads)
+            .collect::<Vec<_>>()
+            .par_iter()
+            .for_each(|i| {
+                for j in 5..test_load {
+                    let k = key_from(i * 10000000 + j);
+                    let value = val_from(i * j * 100 + repeat_load - 1);
+                    let get_res = map.get(&k);
+                    assert_eq!(
+                        get_res,
+                        Some(value),
+                        "New k {:?}, i {}, j {}, epoch {}",
+                        k,
+                        i,
+                        j,
+                        map.table.now_epoch()
+                    );
+                }
+            });
     }
 
     fn key_from(num: usize) -> Key {
