@@ -2545,7 +2545,78 @@ fn timestamp() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+mod fat_tests {
+    use crate::map::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    pub type Key = [u8; 128];
+    pub type Value = [u8; 4096];
+    pub type FatHashMap = HashMap<Key, Value, System>;
+
+    #[test]
+    fn parallel_no_resize() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(FatHashMap::with_capacity(65536));
+        let mut threads = vec![];
+        for i in 5..99 {
+            let k = key_from(i);
+            let v = val_from(i * 10);
+            map.insert(&k, v);
+        }
+        for i in 100..900 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..60 {
+                    let k = key_from(i * 100 + j);
+                    let v = val_from(i * j);
+                    map.insert(&k, v);
+                }
+            }));
+        }
+        for i in 5..9 {
+            for j in 1..10 {
+                let k = key_from(i * j);
+                map.remove(&k);
+            }
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        for i in 100..900 {
+            for j in 5..60 {
+                let k = key_from(i * 100 + j);
+                let v = val_from(i * j);
+                assert_eq!(map.get(&k), Some(v))
+            }
+        }
+        for i in 5..9 {
+            for j in 1..10 {
+                let k = key_from(i * j);
+                assert!(map.get(&k).is_none())
+            }
+        }
+    }
+
+    fn key_from(num: usize) -> Key {
+        let mut r = [0u8; 128];
+        for (i, b) in num.to_be_bytes().iter().enumerate() {
+            r[i] = *b
+        }
+        r
+    }
+
+    fn val_from(num: usize) -> Value {
+        let mut r = [0u8; 4096];
+        for (i, b) in num.to_be_bytes().iter().enumerate() {
+            r[i] = *b
+        }
+        r
+    }
+}
+
+#[cfg(test)]
+mod word_tests {
     use crate::map::*;
     use alloc::sync::Arc;
     use chashmap::CHashMap;
