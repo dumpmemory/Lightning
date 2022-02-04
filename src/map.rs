@@ -237,7 +237,7 @@ impl<
                                 continue;
                             }
                             FromChunkRes::None => {
-                                trace!(
+                                warn!(
                                     "Got non from new chunk for {} at epoch {}",
                                     fkey - 5,
                                     epoch
@@ -419,6 +419,10 @@ impl<
                 let (old_parsed_val, old_index, _) =
                     self.get_from_chunk(chunk, hash, key, fkey, Some(new_chunk));
                 let old_fval = old_parsed_val.raw;
+                if old_parsed_val.is_primed() {
+                    backoff.spin();
+                    continue;
+                }
                 if old_fval != SENTINEL_VALUE
                     && old_fval != EMPTY_VALUE
                     && old_fval != TOMBSTONE_VALUE
@@ -833,7 +837,7 @@ impl<
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel,
                     ParsedValue::Prime(v) => {
-                        debug!(
+                        trace!(
                             "Discovered prime for key {} with value {:#064b}, retry",
                             fkey,
                             v
@@ -1154,8 +1158,8 @@ impl<
                 }
                 ParsedValue::Prime(v) => {
                     if *v != SENTINEL_VALUE {
-                        error!("Discovered valued prime on migration, key {}", fkey);
-                        unreachable!();
+                        warn!("Discovered valued prime on migration, key {}, value {:#b}", fkey, fvalue.raw);
+                        continue;
                     }
                 }
                 ParsedValue::Sentinel => {
@@ -1187,7 +1191,7 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
-        if fkey == EMPTY_KEY {
+        if fkey == EMPTY_KEY || fvalue.is_primed() {
             // Value have no key, insertion in progress
             return false;
         }
@@ -1196,18 +1200,16 @@ impl<
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
         let mut old_orig = fvalue.raw;
-        if Self::CAN_ATTACH {
-            let orig = fvalue.raw;
-            let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
-            match self.cas_value(old_address, orig, primed) {
-                Ok(n) => {
-                    debug!("Primed value for getting attachment: {}", fkey);
-                    old_orig = n;
-                },
-                Err(_) => {
-                    debug!("Value changed on getting attachment for key {}", fkey);
-                    return false;
-                }
+        let orig = fvalue.raw;
+        let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
+        match self.cas_value(old_address, orig, primed) {
+            Ok(n) => {
+                trace!("Primed value for getting attachment: {}", fkey);
+                old_orig = n;
+            },
+            Err(_) => {
+                debug!("Value changed on getting attachment for key {}", fkey);
+                return false;
             }
         }
         // Make insertion for migration inlined, hopefully the ordering will be right
@@ -1284,6 +1286,13 @@ impl Value {
             }
         };
         Value { raw, parsed: res }
+    }
+
+    fn is_primed(&self) -> bool {
+        match &self.parsed {
+            &ParsedValue::Prime(_) => true,
+            _ => false
+        }
     }
 
     #[inline(always)]
@@ -1928,7 +1937,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 }
 
-const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
+const  WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
 pub struct WordMutexGuard<
     'a,
