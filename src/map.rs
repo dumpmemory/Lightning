@@ -281,7 +281,7 @@ impl<
             if new_chunk.is_none() {
                 match self.check_migration(chunk_ptr, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
-                        debug!("Retry insert due to resize");
+                        trace!("Retry insert due to resize");
                         backoff.spin();
                         continue;
                     }
@@ -802,7 +802,7 @@ impl<
                             &ModOp::Insert(fval, ref v) => {
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
-                                debug!("Inserting in place for {}", fkey);
+                                trace!("Inserting in place for {}", fkey);
                                 let primed_fval = if Self::CAN_ATTACH {
                                     fval | INV_VAL_BIT_MASK
                                 } else {
@@ -833,7 +833,7 @@ impl<
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel,
                     ParsedValue::Prime(v) => {
-                        trace!(
+                        debug!(
                             "Discovered prime for key {} with value {:#064b}, retry",
                             fkey,
                             v
@@ -977,7 +977,6 @@ impl<
     #[inline(always)]
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> Result<usize, usize> {
         debug_assert!(entry_addr > 0);
-        debug_assert_ne!(value & VAL_BIT_MASK, SENTINEL_VALUE);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
             Value::next_version::<K, V, A>(original, value)
@@ -1052,7 +1051,7 @@ impl<
             }
             cap
         };
-        debug!(
+        trace!(
             "New size for {:?} is {}, was {}",
             old_chunk_ptr, new_cap, old_cap
         );
@@ -1118,6 +1117,7 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
+        debug!("Migrating entries from {:?} to {:?}", old_chunk_ins.base, new_chunk_ins.base);
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
         let mut effective_copy = 0;
@@ -1127,6 +1127,7 @@ impl<
             // iterate the old chunk to extract entries that is NOT empty
             let fvalue = self.get_fast_value(old_address);
             let fkey = self.get_fast_key(old_address);
+            debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
             match &fvalue.parsed {
                 ParsedValue::Empty | ParsedValue::Val(0) => {
@@ -1137,6 +1138,7 @@ impl<
                     }
                 }
                 ParsedValue::Val(_) => {
+                    // debug!("Migrating entry {:?}", fkey);
                     if !self.migrate_entry(
                         fkey,
                         idx,
@@ -1146,11 +1148,15 @@ impl<
                         old_address,
                         &mut effective_copy,
                     ) {
+                        debug!("Migration failed for entry {:?}", fkey);
                         continue;
                     }
                 }
-                ParsedValue::Prime(_) => {
-                    unreachable!("Shall not have prime in old table");
+                ParsedValue::Prime(v) => {
+                    if *v != SENTINEL_VALUE {
+                        error!("Discovered valued prime on migration, key {}", fkey);
+                        unreachable!();
+                    }
                 }
                 ParsedValue::Sentinel => {
                     // Sentinel, skip
@@ -1189,13 +1195,20 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let stale_value = || {
-            Self::CAN_ATTACH
-                && self.get_fast_value(old_chunk_ins.entry_addr(old_idx)).raw != fvalue.raw
-        };
-        if stale_value() {
-            // Ensure key and value integrity
-            return false;
+        let mut old_orig = fvalue.raw;
+        if Self::CAN_ATTACH {
+            let orig = fvalue.raw;
+            let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
+            match self.cas_value(old_address, orig, primed) {
+                Ok(n) => {
+                    debug!("Primed value for getting attachment: {}", fkey);
+                    old_orig = n;
+                },
+                Err(_) => {
+                    debug!("Value changed on getting attachment for key {}", fkey);
+                    return false;
+                }
+            }
         }
         // Make insertion for migration inlined, hopefully the ordering will be right
         let cap = new_chunk_ins.capacity;
@@ -1212,10 +1225,6 @@ impl<
             } else if k == EMPTY_KEY {
                 // Try insert to this slot
                 let val_to_write = fvalue.raw;
-                if stale_value() {
-                    // one more check
-                    return false;
-                }
                 if self.cas_value(addr, EMPTY_VALUE, val_to_write).is_ok() {
                     new_chunk_ins.attachment.set(idx, key, value);
                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
@@ -1229,12 +1238,13 @@ impl<
         // Use CAS for old threads may working on this one
         dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
         trace!("Copied key {} to new chunk", fkey);
-        if self.cas_sentinel(old_address, fvalue.raw) {
+        if self.cas_sentinel(old_address, old_orig) {
             dfence();
             old_chunk_ins.attachment.erase(old_idx);
             *effective_copy += 1;
             return true;
         } else {
+            error!("Unexpected");
             panic!();
         }
     }
@@ -2103,7 +2113,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     continue;
                 }
                 SwapResult::NotFound => {
-                    debug!("Cannot found hash key {} to lock", hash);
+                    trace!("Cannot found hash key {} to lock", hash);
                     return None;
                 }
             }
@@ -2552,8 +2562,10 @@ mod fat_tests {
     use std::sync::Arc;
     use std::thread;
 
+    const VAL_SIZE: usize = 256;
+
     pub type Key = [u8; 128];
-    pub type Value = [u8; 4096];
+    pub type Value = [u8; VAL_SIZE];
     pub type FatHashMap = HashMap<Key, Value, System>;
 
     #[test]
@@ -2649,11 +2661,11 @@ mod fat_tests {
                             let right = Some(value);
                             if left != right {
                                 for m in 1..1024 {
-                                    let left = map.get(&key);
-                                    let right = Some(value);
-                                    if left == right {
+                                    let mleft = map.get(&key);
+                                    let mright = Some(value);
+                                    if mleft == mright {
                                         panic!(
-                                            "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Migration problem!!!", 
+                                            "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
                                             m, 
                                             key, 
                                             map.table.map_is_copying(),
@@ -2661,11 +2673,12 @@ mod fat_tests {
                                             post_fail_get_epoch,
                                             map.table.now_epoch(),
                                             pre_insert_epoch, 
-                                            post_insert_epoch
+                                            post_insert_epoch,
+                                            right, left
                                         );
                                     }
                                 }
-                                panic!("Unable to recover for {:?}, round {}, copying {}", key, l , map.table.map_is_copying());
+                                panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", key, l , map.table.map_is_copying(), right, left);
                             }
                         }
                         if j % 7 == 0 {
@@ -2732,7 +2745,7 @@ mod fat_tests {
     }
 
     fn val_from(num: usize) -> Value {
-        let mut r = [0u8; 4096];
+        let mut r = [0u8; VAL_SIZE];
         for (i, b) in num.to_be_bytes().iter().enumerate() {
             r[i] = *b
         }
