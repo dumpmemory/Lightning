@@ -443,7 +443,7 @@ impl<
                         ) {
                             ModResult::Done(_, _, new_index)
                             | ModResult::Replaced(_, _, new_index) => {
-                                let old_addr = chunk.base + old_index * ENTRY_SIZE;
+                                let old_addr = chunk.entry_addr(old_index);
                                 if self.cas_sentinel(old_addr, old_fval) {
                                     // Put a sentinel in the old chunk
                                     return SwapResult::Succeed(
@@ -455,7 +455,7 @@ impl<
                                     // If fail, we may have some problem here
                                     // The best strategy can be CAS a tombstone to the new index and try everything again
                                     // Note that we use attempt insert, it will be safe to just `remove` it
-                                    let new_addr = new_chunk.base + new_index * ENTRY_SIZE;
+                                    let new_addr = new_chunk.entry_addr(new_index);
                                     self.cas_tombstone(new_addr, new_val);
                                     continue;
                                 }
@@ -615,12 +615,11 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
-        let base = chunk.base;
         let cap_mask = chunk.cap_mask();
         let mut counter = 0;
         while counter < cap {
             idx &= cap_mask;
-            let addr = base + idx * ENTRY_SIZE;
+            let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
             if k == fkey && chunk.attachment.probe(idx, key) {
                 let val_res = self.get_fast_value(addr);
@@ -657,14 +656,13 @@ impl<
         _guard: &'a Guard,
     ) -> ModResult<V> {
         let cap = chunk.capacity;
-        let base = chunk.base;
         let mut idx = hash;
         let mut count = 0;
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
         while count <= cap {
             idx &= cap_mask;
-            let addr = base + idx * ENTRY_SIZE;
+            let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
             let v = self.get_fast_value(addr);
             {
@@ -914,13 +912,12 @@ impl<
     fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(usize, usize, K, V)> {
         let mut idx = 0;
         let cap = chunk.capacity;
-        let base = chunk.base;
         let mut counter = 0;
         let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed));
         let cap_mask = chunk.cap_mask();
         while counter < cap {
             idx &= cap_mask;
-            let addr = base + idx * ENTRY_SIZE;
+            let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
             if k != EMPTY_KEY {
                 let val_res = self.get_fast_value(addr);
@@ -1197,14 +1194,13 @@ impl<
         let inserted_addr = {
             // Make insertion for migration inlined, hopefully the ordering will be right
             let cap = new_chunk_ins.capacity;
-            let base = new_chunk_ins.base;
             let mut idx = hash::<H>(fkey);
             let cap_mask = new_chunk_ins.cap_mask();
             let mut count = 0;
             let mut res = None;
             while count < cap {
                 idx &= cap_mask;
-                let addr = base + idx * ENTRY_SIZE;
+                let addr = new_chunk_ins.entry_addr(idx);
                 let k = self.get_fast_key(addr);
                 if k == fkey && new_chunk_ins.attachment.probe(idx, &key) {
                     // New value existed, skip with None result
@@ -1343,6 +1339,11 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let chunk = &*ptr;
         chunk.attachment.dealloc();
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
+    }
+
+    #[inline(always)]
+    fn entry_addr(&self, idx: usize) -> usize {
+        self.base + idx * ENTRY_SIZE
     }
 
     #[inline]
