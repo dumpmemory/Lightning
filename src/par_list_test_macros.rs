@@ -3,8 +3,7 @@ macro_rules! par_list_tests {
     (
         $list_init: block,
         $num: expr
-    ) => 
-    {
+    ) => {
         use itertools::Itertools;
         use std::{collections::HashSet, sync::Arc, thread};
         #[test]

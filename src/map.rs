@@ -119,7 +119,6 @@ impl<
         H: Hasher + Default,
     > Table<K, V, A, ALLOC, H>
 {
-
     const CAN_ATTACH: bool = can_attach::<K, V, A>();
 
     pub fn with_capacity(cap: usize) -> Self {
@@ -150,7 +149,7 @@ impl<
             Prime,
             None,
             Sentinel,
-            Outdated
+            Outdated,
         }
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
@@ -172,21 +171,15 @@ impl<
                                 let content = chunk.attachment.get(idx).1;
                                 let new_val = self.get_fast_value(addr);
                                 if new_val.raw != val.raw {
-                                    return FromChunkRes::Outdated
+                                    return FromChunkRes::Outdated;
                                 } else {
                                     Some(content)
                                 }
                             } else {
                                 None
                             };
-                            FromChunkRes::Value(
-                                v,
-                                val,
-                                attachment,
-                                idx,
-                                addr,
-                            )
-                        },
+                            FromChunkRes::Value(v, val, attachment, idx, addr)
+                        }
                         ParsedValue::Prime(_) => FromChunkRes::Prime,
                         ParsedValue::Sentinel => FromChunkRes::Sentinel,
                     }
@@ -263,7 +256,7 @@ impl<
                 FromChunkRes::Prime | FromChunkRes::Outdated => {
                     backoff.spin();
                     continue;
-                },
+                }
             };
         }
     }
@@ -741,20 +734,24 @@ impl<
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
-                                                chunk.attachment.set(idx, key.clone(), (*oval).clone());
+                                                chunk.attachment.set(
+                                                    idx,
+                                                    key.clone(),
+                                                    (*oval).clone(),
+                                                );
                                                 let stripped_prime =
                                                     self.cas_value(addr, cas_fval, fval).is_ok();
                                                 debug_assert!(stripped_prime);
                                             }
                                             return ModResult::Replaced(val.raw, prev_val, idx);
-                                        },
+                                        }
                                         Err(act_val) => {
                                             if Self::CAN_ATTACH {
                                                 // Fast value changed, cannot obtain stable fat value
                                                 backoff.spin();
                                                 continue;
                                             }
-                                            return ModResult::Existed(act_val, prev_val)
+                                            return ModResult::Existed(act_val, prev_val);
                                         }
                                     }
                                 } else {
@@ -765,7 +762,8 @@ impl<
                                         v
                                     );
                                     let (_, value) = chunk.attachment.get(idx);
-                                    if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw {
+                                    if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw
+                                    {
                                         backoff.spin();
                                         continue;
                                     }
@@ -820,7 +818,7 @@ impl<
                                             debug_assert!(stripped_prime);
                                         }
                                         return ModResult::Replaced(val.raw, prev_val, idx);
-                                    },
+                                    }
                                     Err(_) => {
                                         trace!("Cannot insert in place for {}", fkey);
                                         return ModResult::Fail;
@@ -986,7 +984,8 @@ impl<
         } else {
             value
         };
-        let (old, succ) = unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_value) };
+        let (old, succ) =
+            unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_value) };
         if succ {
             Ok(new_value)
         } else {
@@ -1011,9 +1010,8 @@ impl<
         } else {
             SENTINEL_VALUE
         };
-        let (val, done) = unsafe {
-            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_sentinel)
-        };
+        let (val, done) =
+            unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_sentinel) };
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
@@ -1059,9 +1057,9 @@ impl<
             old_chunk_ptr, new_cap, old_cap
         );
         // Swap in old chunk as placeholder for the lock
-        if let Err(_) = self
-            .new_chunk
-            .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
+        if let Err(_) =
+            self.new_chunk
+                .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
@@ -1191,48 +1189,54 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let inserted_addr = {
-            // Make insertion for migration inlined, hopefully the ordering will be right
-            let cap = new_chunk_ins.capacity;
-            let mut idx = hash::<H>(fkey);
-            let cap_mask = new_chunk_ins.cap_mask();
-            let mut count = 0;
-            let mut res = None;
-            while count < cap {
-                idx &= cap_mask;
-                let addr = new_chunk_ins.entry_addr(idx);
-                let k = self.get_fast_key(addr);
-                if k == fkey && new_chunk_ins.attachment.probe(idx, &key) {
-                    // New value existed, skip with None result
-                    break;
-                } else if k == EMPTY_KEY {
-                    // Try insert to this slot
-                    let done = self.cas_value(addr, EMPTY_VALUE, fvalue.raw).is_ok();
-                    if done {
-                        new_chunk_ins.attachment.set(idx, key, value);
-                        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
-                        res = Some(addr);
-                        break;
-                    }
-                }
-                idx += 1; // reprobe
-                count += 1;
-            }
-            res
+        let stale_value = || {
+            Self::CAN_ATTACH
+                && self.get_fast_value(old_chunk_ins.entry_addr(old_idx)).raw != fvalue.raw
         };
+        if stale_value() {
+            // Ensure key and value integrity
+            return false;
+        }
+        // Make insertion for migration inlined, hopefully the ordering will be right
+        let cap = new_chunk_ins.capacity;
+        let mut idx = hash::<H>(fkey);
+        let cap_mask = new_chunk_ins.cap_mask();
+        let mut count = 0;
+        while count < cap {
+            idx &= cap_mask;
+            let addr = new_chunk_ins.entry_addr(idx);
+            let k = self.get_fast_key(addr);
+            if k == fkey && new_chunk_ins.attachment.probe(idx, &key) {
+                // New value existed, skip with None result
+                break;
+            } else if k == EMPTY_KEY {
+                // Try insert to this slot
+                let val_to_write = fvalue.raw;
+                if stale_value() {
+                    // one more check
+                    return false;
+                }
+                if self.cas_value(addr, EMPTY_VALUE, val_to_write).is_ok() {
+                    new_chunk_ins.attachment.set(idx, key, value);
+                    unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
+                    break;
+                }
+            }
+            idx += 1; // reprobe
+            count += 1;
+        }
         // CAS to ensure sentinel into old chunk (spec)
         // Use CAS for old threads may working on this one
         dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
         trace!("Copied key {} to new chunk", fkey);
         if self.cas_sentinel(old_address, fvalue.raw) {
             dfence();
-            if let Some(_new_entry_addr) = inserted_addr {
-                old_chunk_ins.attachment.erase(old_idx);
-                *effective_copy += 1;
-                return true;
-            }
+            old_chunk_ins.attachment.erase(old_idx);
+            *effective_copy += 1;
+            return true;
+        } else {
+            panic!();
         }
-        false
     }
 
     pub fn map_is_copying(&self) -> bool {
@@ -1269,10 +1273,7 @@ impl Value {
                 }
             }
         };
-        Value {
-            raw,
-            parsed: res,
-        }
+        Value { raw, parsed: res }
     }
 
     #[inline(always)]
@@ -1285,23 +1286,22 @@ impl Value {
     }
 
     #[inline(always)]
-    const fn  raw_to_version(raw: usize) -> u32 {
+    const fn raw_to_version(raw: usize) -> u32 {
         let masked = raw & FVAL_VER_BIT_MASK;
-        let shifted = masked  >> FVAL_VER_POS;
+        let shifted = masked >> FVAL_VER_POS;
         shifted as u32
     }
-
 
     #[inline(always)]
     const fn next_version<K, V, A: Attachment<K, V>>(old: usize, new: usize) -> usize {
         debug_assert!(can_attach::<K, V, A>());
         let old_ver = Value::raw_to_version(old);
         // 31 bits wrapping add (one bit reserved for prime flag)
-        let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1; 
+        let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1;
         debug_assert!(new_ver <= FVAL_MAX_VERSION);
         new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
     }
- }
+}
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
@@ -2548,9 +2548,9 @@ fn timestamp() -> u64 {
 #[cfg(test)]
 mod fat_tests {
     use crate::map::*;
+    use rayon::prelude::*;
     use std::sync::Arc;
     use std::thread;
-    use rayon::prelude::*;
 
     pub type Key = [u8; 128];
     pub type Value = [u8; 4096];
@@ -2617,13 +2617,13 @@ mod fat_tests {
                 assert!(map.get(&k).is_none())
             }
         }
-    }  
+    }
 
     #[test]
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
         let num_threads = num_cpus::get();
-        let test_load = 4096;
+        let test_load = 512;
         let repeat_load = 16;
         let map = Arc::new(FatHashMap::with_capacity(32));
         let mut threads = vec![];
@@ -2703,25 +2703,24 @@ mod fat_tests {
             let _ = thread.join();
         }
         info!("Checking final value");
-        (0..num_threads)
-            .collect::<Vec<_>>()
-            .par_iter()
-            .for_each(|i| {
-                for j in 5..test_load {
-                    let k = key_from(i * 10000000 + j);
-                    let value = val_from(i * j * 100 + repeat_load - 1);
-                    let get_res = map.get(&k);
-                    assert_eq!(
-                        get_res,
-                        Some(value),
-                        "New k {:?}, i {}, j {}, epoch {}",
-                        k,
-                        i,
-                        j,
-                        map.table.now_epoch()
-                    );
-                }
-            });
+        (0..num_threads).for_each(|i| {
+            for j in 5..test_load {
+                let k_num = i * 10000000 + j;
+                let v_num = i * j * 100 + repeat_load - 1;
+                let k = key_from(k_num);
+                let v = val_from(v_num);
+                let get_res = map.get(&k);
+                assert_eq!(
+                    get_res,
+                    Some(v),
+                    "New k {:?}, i {}, j {}, epoch {}",
+                    k,
+                    i,
+                    j,
+                    map.table.now_epoch()
+                );
+            }
+        });
     }
 
     fn key_from(num: usize) -> Key {

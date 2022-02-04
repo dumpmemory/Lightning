@@ -10,11 +10,11 @@ extern crate test;
 // pub mod deque;
 pub mod linked_map;
 pub mod list;
+pub mod lru_cache;
 pub mod map;
+pub mod ring_buffer;
 pub mod spin;
 pub mod ttl_cache;
-pub mod ring_buffer;
-pub mod lru_cache;
 
 pub mod rand;
 
