@@ -511,7 +511,7 @@ impl<
         old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
         new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
     ) -> Option<&'a ChunkPtr<K, V, A, ALLOC>> {
-        if (Self::is_copying(epoch)) && (!old_chunk_ptr.eq(new_chunk_ptr)) {
+        if (Self::is_copying(epoch)) && new_chunk_ptr.tag() != 0 && (!old_chunk_ptr.eq(new_chunk_ptr)) {
             unsafe { new_chunk_ptr.as_ref() }
         } else {
             None
@@ -532,7 +532,7 @@ impl<
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
-            if copying && (new_chunk_ptr.is_null() || new_chunk_ptr == old_chunk_ptr) {
+            if copying && (new_chunk_ptr.is_null() || new_chunk_ptr.tag() == 1) {
                 continue;
             }
             let new_chunk = unsafe { new_chunk_ptr.deref() };
@@ -1064,16 +1064,17 @@ impl<
             old_chunk_ptr, new_cap, old_cap
         );
         // Swap in old chunk as placeholder for the lock
+        let lock_ptr = Shared::null().with_tag(1);
         if let Err(_) =
             self.new_chunk
-                .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
+                .compare_exchange(Shared::null(), lock_ptr, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
         dfence();
-        if self.chunk.load(Acquire, guard) != old_chunk_ptr {
+        if self.new_chunk.load(Acquire, guard) != lock_ptr {
             warn!(
                 "Give up on resize due to old chunk changed after lock obtained, epoch {} to {}",
                 epoch,
@@ -1089,7 +1090,7 @@ impl<
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
-        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.new_chunk.store(new_chunk_ptr.with_tag(0), Release); // Stump becasue we have the lock already
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 0);
@@ -1111,7 +1112,7 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
             guard.flush();
         }
-        self.new_chunk.store(Shared::null(), Release);
+        self.new_chunk.store(Shared::null().with_tag(0), Release);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
@@ -2650,8 +2651,8 @@ mod fat_tests {
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
         let num_threads = num_cpus::get();
-        let test_load = 512;
-        let repeat_load = 16;
+        let test_load = 2048;
+        let repeat_load = 32;
         let map = Arc::new(FatHashMap::with_capacity(32));
         let mut threads = vec![];
         for i in 0..num_threads {
@@ -2697,17 +2698,17 @@ mod fat_tests {
                             }
                         }
                         if j % 7 == 0 {
-                            // assert_eq!(
-                            //     map.remove(&key),
-                            //     Some(value),
-                            //     "Remove result, get {:?}, copying {}, round {}",
-                            //     map.get(&key),
-                            //     map.table.map_is_copying(),
-                            //     k
-                            // );
-                            // assert_eq!(map.get(&key), None, "Remove recursion");
-                            // assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                            // map.insert(&key, value);
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                            map.insert(&key, value);
                         }
                         if j % 3 == 0 {
                             let new_value = val_from(value_num + 7);
