@@ -453,7 +453,7 @@ impl<
                                     // The best strategy can be CAS a tombstone to the new index and try everything again
                                     // Note that we use attempt insert, it will be safe to just `remove` it
                                     let new_addr = new_chunk.entry_addr(new_index);
-                                    self.cas_tombstone(new_addr, new_val);
+                                    let _ = self.cas_tombstone(new_addr, new_val);
                                     continue;
                                 }
                             }
@@ -539,7 +539,7 @@ impl<
             let old_chunk = unsafe { old_chunk_ptr.deref() };
             let mut retr = None;
             if copying {
-                // Put sentinel to the old before putting tombstone to the new
+                // Put sentinel to the old beformodify_entrye putting tombstone to the new
                 // If not migration might put the old value back
                 trace!("Put sentinel in old chunk for removal");
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
@@ -837,11 +837,15 @@ impl<
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel,
                     ParsedValue::Prime(v) => {
-                        trace!(
-                            "Discovered prime for key {} with value {:#064b}, retry",
-                            fkey,
-                            v
-                        );
+                        if *v == SENTINEL_VALUE {
+                            debug!("Found primed sentinel at {}", k);
+                        } else {
+                            debug!(
+                                "Discovered prime for key {} with value {:#064b}, retry",
+                                fkey,
+                                v
+                            );
+                        }
                         backoff.spin();
                         continue;
                     }
@@ -1199,7 +1203,7 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let mut old_orig = fvalue.raw;
+        let old_orig;
         let orig = fvalue.raw;
         let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
         match self.cas_value(old_address, orig, primed) {
@@ -1228,7 +1232,9 @@ impl<
                 // Try insert to this slot
                 let val_to_write = fvalue.raw;
                 if self.cas_value(addr, EMPTY_VALUE, val_to_write).is_ok() {
+                    dfence();
                     new_chunk_ins.attachment.set(idx, key, value);
+                    dfence();
                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
                     break;
                 }
@@ -2691,17 +2697,17 @@ mod fat_tests {
                             }
                         }
                         if j % 7 == 0 {
-                            assert_eq!(
-                                map.remove(&key),
-                                Some(value),
-                                "Remove result, get {:?}, copying {}, round {}",
-                                map.get(&key),
-                                map.table.map_is_copying(),
-                                k
-                            );
-                            assert_eq!(map.get(&key), None, "Remove recursion");
-                            assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                            map.insert(&key, value);
+                            // assert_eq!(
+                            //     map.remove(&key),
+                            //     Some(value),
+                            //     "Remove result, get {:?}, copying {}, round {}",
+                            //     map.get(&key),
+                            //     map.table.map_is_copying(),
+                            //     k
+                            // );
+                            // assert_eq!(map.get(&key), None, "Remove recursion");
+                            // assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                            // map.insert(&key, value);
                         }
                         if j % 3 == 0 {
                             let new_value = val_from(value_num + 7);
@@ -2733,9 +2739,9 @@ mod fat_tests {
                 let v = val_from(v_num);
                 let get_res = map.get(&k);
                 assert_eq!(
-                    get_res,
                     Some(v),
-                    "New k {:?}, i {}, j {}, epoch {}",
+                    get_res,
+                    "Final val mismatch. k {:?}, i {}, j {}, epoch {}",
                     k,
                     i,
                     j,
