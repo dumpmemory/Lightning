@@ -1204,8 +1204,8 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let old_orig;
-        let orig = fvalue.raw;
+        let mut old_orig = fvalue.raw;
+        let orig = old_orig;
         let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
         match self.cas_value(old_address, orig, primed) {
             Ok(n) => {
