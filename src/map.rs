@@ -839,15 +839,16 @@ impl<
                     ParsedValue::Prime(v) => {
                         if *v == SENTINEL_VALUE {
                             debug!("Found primed sentinel at {}", k);
+                            return ModResult::Sentinel;
                         } else {
                             debug!(
                                 "Discovered prime for key {} with value {:#064b}, retry",
                                 fkey,
                                 v
                             );
+                            backoff.spin();
+                            continue;
                         }
-                        backoff.spin();
-                        continue;
                     }
                 }
             } else if k == EMPTY_KEY {
