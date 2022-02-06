@@ -1182,7 +1182,6 @@ impl<
             }
             old_address += ENTRY_SIZE;
             idx += 1;
-            dfence();
         }
         // resize finished, make changes on the numbers
         debug!("Migrated {} entries to new chunk", effective_copy);
@@ -1243,9 +1242,7 @@ impl<
                     }
                 }
                 if self.cas_value(addr, EMPTY_VALUE, orig).is_ok() {
-                    dfence();
                     new_chunk_ins.attachment.set(idx, key, value);
-                    dfence();
                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
                     break;
                 }
@@ -1258,7 +1255,6 @@ impl<
         dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
         trace!("Copied key {} to new chunk", fkey);
         if self.cas_sentinel(old_address, curr_orig) {
-            dfence();
             old_chunk_ins.attachment.erase(old_idx);
             *effective_copy += 1;
             return true;
