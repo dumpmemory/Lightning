@@ -2586,7 +2586,7 @@ mod fat_tests {
     use std::sync::Arc;
     use std::thread;
 
-    const VAL_SIZE: usize = 256;
+    const VAL_SIZE: usize = 2048;
 
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];
