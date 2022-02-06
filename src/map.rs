@@ -1208,8 +1208,8 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let mut old_orig = fvalue.raw;
-        let orig = old_orig;
+        let mut curr_orig = fvalue.raw;
+        let orig = curr_orig;
         if self.get_fast_value(old_address).raw != orig {
             // Value changed during attachment fetching
             return false;
@@ -1228,18 +1228,19 @@ impl<
                 break;
             } else if k == EMPTY_KEY {
                 // Try insert to this slot
-                let val_to_write = fvalue.raw;
-                match self.cas_value(old_address, orig, PRIMED_SENTINEL) {
-                    Ok(n) => {
-                        trace!("Primed value for migration: {}", fkey);
-                        old_orig = n;
-                    },
-                    Err(_) => {
-                        debug!("Value changed on locating new slot, key {}", fkey);
-                        return false;
+                if curr_orig == orig {
+                    match self.cas_value(old_address, orig, PRIMED_SENTINEL) {
+                        Ok(n) => {
+                            trace!("Primed value for migration: {}", fkey);
+                            curr_orig = n;
+                        },
+                        Err(_) => {
+                            debug!("Value changed on locating new slot, key {}", fkey);
+                            return false;
+                        }
                     }
                 }
-                if self.cas_value(addr, EMPTY_VALUE, val_to_write).is_ok() {
+                if self.cas_value(addr, EMPTY_VALUE, orig).is_ok() {
                     dfence();
                     new_chunk_ins.attachment.set(idx, key, value);
                     dfence();
@@ -1254,7 +1255,7 @@ impl<
         // Use CAS for old threads may working on this one
         dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
         trace!("Copied key {} to new chunk", fkey);
-        if self.cas_sentinel(old_address, old_orig) {
+        if self.cas_sentinel(old_address, curr_orig) {
             dfence();
             old_chunk_ins.attachment.erase(old_idx);
             *effective_copy += 1;
