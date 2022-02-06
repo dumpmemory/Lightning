@@ -1088,10 +1088,10 @@ impl<
         }
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
-            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
+            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard).with_tag(0);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
-        self.new_chunk.store(new_chunk_ptr.with_tag(0), Release); // Stump becasue we have the lock already
+        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 0);
@@ -1110,8 +1110,7 @@ impl<
         self.timestamp.store(timestamp(), Release);
         dfence();
         unsafe {
-            guard.defer_destroy(old_chunk_ptr);
-            guard.flush();
+            guard.defer_destroy(old_chunk_ptr.with_tag(0));
         }
         self.new_chunk.store(Shared::null().with_tag(0), Release);
         debug!(
@@ -1438,9 +1437,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
-            guard.defer_destroy(self.chunk.load(Acquire, &guard));
+            let chunk_ptr = self.chunk.load(Acquire, &guard);
+            if !chunk_ptr.is_null() {
+                guard.defer_destroy(chunk_ptr);
+            }
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-            if new_chunk_ptr != Shared::null() {
+            if !new_chunk_ptr.is_null() {
                 guard.defer_destroy(new_chunk_ptr);
             }
             guard.flush();
@@ -2028,11 +2030,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         Some(Self { table, key, value })
     }
 
-    pub fn remove(self) -> usize {
+    pub fn remove(self) -> Option<usize> {
         trace!("Removing {}", self.key);
-        let res = self.table.remove(&(), self.key).unwrap().0;
+        let res = self.table.remove(&(), self.key)?.0;
         mem::forget(self);
-        res | MUTEX_BIT_MASK
+        Some(res | MUTEX_BIT_MASK)
     }
 }
 
