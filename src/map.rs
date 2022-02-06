@@ -33,6 +33,8 @@ const FVAL_VER_BIT_MASK: usize = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 const FVAL_VAL_BIT_MASK: usize = !FVAL_VER_BIT_MASK;
 const FVAL_MAX_VERSION: u32 = !0 >> 1;
 
+const PRIMED_SENTINEL: usize = SENTINEL_VALUE | INV_VAL_BIT_MASK;
+
 struct Value {
     raw: usize,
     parsed: ParsedValue,
@@ -1206,18 +1208,11 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let old_orig;
-        let orig = fvalue.raw;
-        let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
-        match self.cas_value(old_address, orig, primed) {
-            Ok(n) => {
-                trace!("Primed value for getting attachment: {}", fkey);
-                old_orig = n;
-            },
-            Err(_) => {
-                debug!("Value changed on getting attachment for key {}", fkey);
-                return false;
-            }
+        let mut old_orig = fvalue.raw;
+        let orig = old_orig;
+        if self.get_fast_value(old_address).raw != orig {
+            // Value changed during attachment fetching
+            return false;
         }
         // Make insertion for migration inlined, hopefully the ordering will be right
         let cap = new_chunk_ins.capacity;
@@ -1234,6 +1229,16 @@ impl<
             } else if k == EMPTY_KEY {
                 // Try insert to this slot
                 let val_to_write = fvalue.raw;
+                match self.cas_value(old_address, orig, PRIMED_SENTINEL) {
+                    Ok(n) => {
+                        trace!("Primed value for getting attachment: {}", fkey);
+                        old_orig = n;
+                    },
+                    Err(_) => {
+                        debug!("Value changed on locating new slot, key {}", fkey);
+                        return false;
+                    }
+                }
                 if self.cas_value(addr, EMPTY_VALUE, val_to_write).is_ok() {
                     dfence();
                     new_chunk_ins.attachment.set(idx, key, value);
