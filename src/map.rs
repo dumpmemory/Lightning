@@ -1117,6 +1117,7 @@ impl<
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
+        guard.flush();
         ResizeResult::Done
     }
 
