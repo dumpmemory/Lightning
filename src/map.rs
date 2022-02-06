@@ -840,7 +840,7 @@ impl<
                         if *v == SENTINEL_VALUE {
                             debug!("Found primed sentinel at {}", k);
                             // Must not return sentinel at this point
-                            // Entry migration is not ready, read op will get none
+                            // Entry migration is not completed, sentinel will leads to non value
                         } else {
                             debug!(
                                 "Discovered prime for key {} with value {:#064b}, retry",
@@ -1089,10 +1089,10 @@ impl<
         }
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
-            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard).with_tag(0);
+            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
-        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.new_chunk.store(new_chunk_ptr.with_tag(0), Release); // Stump becasue we have the lock already
         dfence();
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 0);
@@ -1111,14 +1111,14 @@ impl<
         self.timestamp.store(timestamp(), Release);
         dfence();
         unsafe {
-            guard.defer_destroy(old_chunk_ptr.with_tag(0));
+            guard.defer_destroy(old_chunk_ptr);
+            guard.flush();
         }
         self.new_chunk.store(Shared::null().with_tag(0), Release);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
-        guard.flush();
         ResizeResult::Done
     }
 
@@ -1206,8 +1206,8 @@ impl<
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let (key, value) = old_chunk_ins.attachment.get(old_idx);
-        let mut old_orig = fvalue.raw;
-        let orig = old_orig;
+        let old_orig;
+        let orig = fvalue.raw;
         let primed = SENTINEL_VALUE | INV_VAL_BIT_MASK;
         match self.cas_value(old_address, orig, primed) {
             Ok(n) => {
@@ -1439,10 +1439,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
-            let chunk_ptr = self.chunk.load(Acquire, &guard);
-            if !chunk_ptr.is_null() {
-                guard.defer_destroy(chunk_ptr);
-            }
+            guard.defer_destroy(self.chunk.load(Acquire, &guard));
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             if !new_chunk_ptr.is_null() {
                 guard.defer_destroy(new_chunk_ptr);
@@ -2032,11 +2029,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         Some(Self { table, key, value })
     }
 
-    pub fn remove(self) -> Option<usize> {
+    pub fn remove(self) -> usize {
         trace!("Removing {}", self.key);
-        let res = self.table.remove(&(), self.key)?.0;
+        let res = self.table.remove(&(), self.key).unwrap().0;
         mem::forget(self);
-        Some(res | MUTEX_BIT_MASK)
+        res | MUTEX_BIT_MASK
     }
 }
 
@@ -2583,7 +2580,7 @@ mod fat_tests {
     use std::sync::Arc;
     use std::thread;
 
-    const VAL_SIZE: usize = 1024;
+    const VAL_SIZE: usize = 256;
 
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];
