@@ -839,16 +839,17 @@ impl<
                     ParsedValue::Prime(v) => {
                         if *v == SENTINEL_VALUE {
                             debug!("Found primed sentinel at {}", k);
-                            return ModResult::Sentinel;
+                            // Must not return sentinel at this point
+                            // Entry migration is not ready, read op will get none
                         } else {
                             debug!(
                                 "Discovered prime for key {} with value {:#064b}, retry",
                                 fkey,
                                 v
                             );
-                            backoff.spin();
-                            continue;
                         }
+                        backoff.spin();
+                        continue;
                     }
                 }
             } else if k == EMPTY_KEY {
