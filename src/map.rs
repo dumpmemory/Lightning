@@ -1162,12 +1162,14 @@ impl<
                         &mut effective_copy,
                     ) {
                         debug!("Migration failed for entry {:?}", fkey);
+                        backoff.spin();
                         continue;
                     }
                 }
                 ParsedValue::Prime(v) => {
                     if *v != SENTINEL_VALUE {
                         warn!("Discovered valued prime on migration, key {}, value {:#b}", fkey, fvalue.raw);
+                        backoff.spin();
                         continue;
                     }
                 }
