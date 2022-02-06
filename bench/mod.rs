@@ -22,6 +22,7 @@ mod contrie;
 mod dashmap;
 mod flurry;
 mod lfmap;
+mod fat_lfmap;
 mod lockfree;
 mod scc;
 
@@ -47,14 +48,14 @@ fn main() {
                     Arg::new(CONTENTION)
                         .short('c')
                         .long("contention")
-                        .about("Sets whether to run benchmarks under different contentions"),
+                        // .about("Sets whether to run benchmarks under different contentions"),
                 )
                 .arg(
                     Arg::new(LOAD)
                         .short('l')
                         .long("load")
                         .value_name(LOAD)
-                        .about("Sets the load factor of the benchamrk, default 26")
+                        // .about("Sets the load factor of the benchamrk, default 26")
                         .default_value("26"),
                 )
                 .arg(
@@ -62,7 +63,7 @@ fn main() {
                         .short('s')
                         .long("stride")
                         .value_name(STRIDE)
-                        .about("Sets the stride of the benchamrk, default 4")
+                        // .about("Sets the stride of the benchamrk, default 4")
                         .default_value("4"),
                 ),
         )
@@ -74,7 +75,7 @@ fn main() {
                         .short('d')
                         .long("data-structure")
                         .value_name(DATA_STRUCTURE)
-                        .about("Define the data structure want to observe")
+                        // .about("Define the data structure want to observe")
                         .required(true),
                 ),
         )
@@ -86,7 +87,7 @@ fn main() {
                         .short('d')
                         .long("data-structure")
                         .value_name(DATA_STRUCTURE)
-                        .about("Specify the data structure want to test")
+                        // .about("Specify the data structure want to test")
                         .required(true),
                 )
                 .arg(
@@ -94,7 +95,7 @@ fn main() {
                         .short('t')
                         .long("threads")
                         .value_name(THREADS)
-                        .about("Specify the threads to run")
+                        // .about("Specify the threads to run")
                         .required(true),
                 )
                 .arg(
@@ -102,7 +103,7 @@ fn main() {
                         .short('l')
                         .long("load")
                         .value_name(LOAD)
-                        .about("Load factor of the hashmap")
+                        // .about("Load factor of the hashmap")
                         .required(true),
                 )
                 .arg(
@@ -110,7 +111,7 @@ fn main() {
                         .short('c')
                         .long("contention")
                         .value_name(CONTENTION)
-                        .about("Contention factor of the test")
+                        // .about("Contention factor of the test")
                         .required(true),
                 )
                 .arg(
@@ -118,7 +119,7 @@ fn main() {
                         .short('w')
                         .long("workload")
                         .value_name(WORKLOAD)
-                        .about("Worload type of the test")
+                        // .about("Worload type of the test")
                         .required(true),
                 ),
         )
@@ -127,7 +128,7 @@ fn main() {
                 .short('f')
                 .long("file")
                 .value_name(FILE)
-                .about("Sets the output file name for reports")
+                // .about("Sets the output file name for reports")
                 .required(true),
         )
         .get_matches();
@@ -255,6 +256,7 @@ pub type PerfPlotData = Vec<(
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
         run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load, contention, stride),
+        run_perf_test_set::<fat_lfmap::TestTable>(file_name, "lightning - fat", load, contention, stride),
         run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
         run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
         run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),

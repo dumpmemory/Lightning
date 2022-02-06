@@ -1,6 +1,5 @@
 use super::PerfPlotData;
-use bustle::*;
-use humansize::FileSize;
+use humansize::{FileSize, file_size_opts::CONVENTIONAL};
 use plotters::prelude::*;
 use std::collections::HashMap;
 
@@ -37,7 +36,7 @@ pub fn draw_perf_plots(data: PerfPlotData) {
 
 pub fn plot_throughput(
     title: &String,
-    data: &Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
+    data: &Vec<(&'static str, &Vec<(usize, Option<bustle::Measurement>, usize)>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
@@ -98,7 +97,7 @@ pub fn plot_throughput(
 
 pub fn plot_max_mem(
     title: &String,
-    data: &Vec<(&'static str, &Vec<(usize, Option<Measurement>, usize)>)>,
+    data: &Vec<(&'static str, &Vec<(usize, Option<bustle::Measurement>, usize)>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
@@ -120,16 +119,16 @@ pub fn plot_max_mem(
     let root_area = BitMapBackend::new(file_name, (1024, 768)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root_area)
-        .margin(20)
+        .margin::<u32>(20)
         .caption(title, ("sans-serif", 40).into_font())
-        .x_label_area_size(30)
-        .y_label_area_size(30)
+        .x_label_area_size::<u32>(30)
+        .y_label_area_size::<u32>(30)
         .build_cartesian_2d(1..*x_scale, 0..y_scale)?;
     chart
         .configure_mesh()
         .x_desc("Threads")
         .y_desc("Max Memory")
-        .y_label_formatter(&|y| y.file_size(options::CONVENTIONAL).unwrap())
+        .y_label_formatter(&|y| y.file_size(CONVENTIONAL).unwrap())
         .draw()?;
     for (i, (title, data)) in data.iter().enumerate() {
         let color = Palette99::pick(i).mix(0.9);

@@ -11,21 +11,21 @@ categories = ["data-structures", "lock-free", "wait-free"]
 
 [dependencies]
 lightning-containers = {path = "../"}
-tracing-subscriber = {version = "0.2"}
+tracing-subscriber = {version = "0.3"}
 bustle = {path = "../../bustle" }
 num_cpus = "1"
 chashmap = "2.2.2"
 chrono = "0.4"
 perfcnt_bench = { git = "https://github.com/shisoft/perfcnt-bench.git" }
 perfcnt = "0.7"
-cht = "0.4.1"
+cht = "0.5"
 clap = "3.0.0-beta.2"
 plotters = "^0.3.1"
 contrie = "0.1"
 dashmap = "4"
 flurry = "0.3"
 lockfree = "0.5"
-scc = "0.4"
+scc = "0.5"
 ipc-channel = "0.15.0"
 libc = "*"
 procinfo = "0.4"
