@@ -1231,7 +1231,7 @@ impl<
                 let val_to_write = fvalue.raw;
                 match self.cas_value(old_address, orig, PRIMED_SENTINEL) {
                     Ok(n) => {
-                        trace!("Primed value for getting attachment: {}", fkey);
+                        trace!("Primed value for migration: {}", fkey);
                         old_orig = n;
                     },
                     Err(_) => {
