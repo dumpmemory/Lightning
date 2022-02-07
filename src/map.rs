@@ -147,13 +147,6 @@ impl<
     }
 
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
-        enum FromChunkRes<V> {
-            Value(usize, Value, Option<V>, usize, usize), // Last one is idx
-            Prime(usize, usize),
-            None,
-            Sentinel,
-            Outdated(usize, usize),
-        }
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = hash::<H>(fkey);
@@ -169,7 +162,12 @@ impl<
                         self.get_from_chunk(&*chunk, hash, key, fkey, new_chunk)
             {
                 match val.parsed {
-                    ParsedValue::Empty | ParsedValue::Val(0) => {},
+                    ParsedValue::Empty => {
+                        debug!("Found empty for key {}", fkey);
+                    },
+                    ParsedValue::Val(0) => {
+                        debug!("Found Val(0) for key {}", fkey);
+                    },
                     ParsedValue::Val(fval) => {
                         let mut attachment = None;
                         if Self::CAN_ATTACH && read_attachment {
@@ -187,12 +185,18 @@ impl<
                     },
                     ParsedValue::Sentinel => {
                         if new_chunk.is_none() {
+                            warn!("Discovered sentinel but new chunk is null for key {}", fkey);
                             backoff.spin();
                             continue;
                         }
+                        debug!("Found sentinel, moving to new chunk for key {}", fkey);
                     },
                 }
+            } else if new_chunk.is_some() {
+                debug!("Found nothing from old chunk for {}, trying new chunk", fkey);
             }
+
+            dfence();
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
@@ -220,6 +224,10 @@ impl<
                     }
                 }
             }
+            debug!(
+                "Find nothing for key {}, rt new chunk {:?}, now {:?}",
+                fkey, new_chunk_ptr, self.new_chunk.load(Acquire, &guard)
+            );
             return None;
         }
     }
@@ -328,7 +336,7 @@ impl<
                 let old_sent =
                     self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, new_chunk, &guard);
                 dfence();
-                debug!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
+                trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
@@ -1181,7 +1189,6 @@ impl<
         }
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be primed
-        debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
         let key = old_chunk_ins.attachment.get_key(old_idx);
         let value = old_chunk_ins.attachment.get_value(old_idx);
         let mut curr_orig = fvalue.raw;
