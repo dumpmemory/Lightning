@@ -41,6 +41,7 @@ struct Value {
     parsed: ParsedValue,
 }
 
+#[derive(Debug)]
 enum ParsedValue {
     Val(usize), // None for tombstone
     Prime(usize),
@@ -167,7 +168,10 @@ impl<
                 |chunk: &Chunk<K, V, A, ALLOC>, migrating: Option<&ChunkPtr<K, V, A, ALLOC>>| {
                     let (val, idx, addr) = self.get_from_chunk(&*chunk, hash, key, fkey, migrating);
                     match val.parsed {
-                        ParsedValue::Empty | ParsedValue::Val(0) => FromChunkRes::None,
+                        ParsedValue::Empty | ParsedValue::Val(0) => {
+                            debug!("Found empty in chunk {}, key {}, val {:?}", chunk.base, fkey, val.parsed);
+                            FromChunkRes::None
+                        },
                         ParsedValue::Val(v) => {
                             let attachment = if Self::CAN_ATTACH && read_attachment {
                                 let content = chunk.attachment.get(idx).1;
@@ -917,6 +921,9 @@ impl<
                         if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             // CAS value succeed, shall store key
                             chunk.attachment.set(idx, key.clone(), (*val).clone());
+                            if Self::CAN_ATTACH {
+                                dfence();
+                            }
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
