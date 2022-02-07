@@ -11,11 +11,11 @@ use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::fmt::Debug;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -166,27 +166,33 @@ impl<
             debug_assert!(!chunk_ptr.is_null());
             let get_from =
                 |chunk: &Chunk<K, V, A, ALLOC>, migrating: Option<&ChunkPtr<K, V, A, ALLOC>>| {
-                    let (val, idx, addr) = self.get_from_chunk(&*chunk, hash, key, fkey, migrating);
-                    match val.parsed {
-                        ParsedValue::Empty | ParsedValue::Val(0) => {
-                            FromChunkRes::None
-                        },
-                        ParsedValue::Val(v) => {
-                            let attachment = if Self::CAN_ATTACH && read_attachment {
-                                let content = chunk.attachment.get_value(idx);
-                                let new_val = self.get_fast_value(addr);
-                                if new_val.raw != val.raw {
-                                    return FromChunkRes::Outdated(idx, addr);
+                    if let Some((val, idx, addr)) =
+                        self.get_from_chunk(&*chunk, hash, key, fkey, migrating)
+                    {
+                        match val.parsed {
+                            ParsedValue::Empty | ParsedValue::Val(0) => {
+                                debug!("Found tombstone for {}", fkey);
+                                FromChunkRes::None
+                            }
+                            ParsedValue::Val(v) => {
+                                let attachment = if Self::CAN_ATTACH && read_attachment {
+                                    let content = chunk.attachment.get_value(idx);
+                                    let new_val = self.get_fast_value(addr);
+                                    if new_val.raw != val.raw {
+                                        return FromChunkRes::Outdated(idx, addr);
+                                    } else {
+                                        Some(content)
+                                    }
                                 } else {
-                                    Some(content)
-                                }
-                            } else {
-                                None
-                            };
-                            FromChunkRes::Value(v, val, attachment, idx, addr)
+                                    None
+                                };
+                                FromChunkRes::Value(v, val, attachment, idx, addr)
+                            }
+                            ParsedValue::Prime(_) => FromChunkRes::Prime(idx, addr),
+                            ParsedValue::Sentinel => FromChunkRes::Sentinel,
                         }
-                        ParsedValue::Prime(_) => FromChunkRes::Prime(idx, addr),
-                        ParsedValue::Sentinel => FromChunkRes::Sentinel,
+                    } else {
+                        FromChunkRes::None
                     }
                 };
             return match get_from(&chunk, new_chunk) {
@@ -216,7 +222,10 @@ impl<
                             }
                             FromChunkRes::Prime(_, _) | FromChunkRes::Outdated(_, _) => {
                                 // Prime or outdated record in new chunk, should retry
-                                debug!("Got prime or outdated in new chunk for {} after sentinel", fkey - NUM_FIX);
+                                debug!(
+                                    "Got prime or outdated in new chunk for {} after sentinel",
+                                    fkey - NUM_FIX
+                                );
                                 backoff.spin();
                                 continue;
                             }
@@ -241,7 +250,10 @@ impl<
                             FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
                             FromChunkRes::Sentinel => {
                                 // Sentinel in new chunk, should retry
-                                debug!("Got sentinel in new chunk for {} after sentinel", fkey - NUM_FIX);
+                                debug!(
+                                    "Got sentinel in new chunk for {} after sentinel",
+                                    fkey - NUM_FIX
+                                );
                                 backoff.spin();
                                 continue;
                             }
@@ -381,7 +393,9 @@ impl<
                     fkey,
                     fvalue
                 );
-                let old_sent = self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, new_chunk, &guard);
+                let old_sent =
+                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, new_chunk, &guard);
+                dfence();
                 debug!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
@@ -436,48 +450,50 @@ impl<
             if let Some(new_chunk) = new_chunk {
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                let (old_parsed_val, old_index, _) =
-                    self.get_from_chunk(chunk, hash, key, fkey, Some(new_chunk));
-                let old_fval = old_parsed_val.raw;
-                if old_parsed_val.is_primed() {
-                    backoff.spin();
-                    continue;
-                }
-                if old_fval != SENTINEL_VALUE
-                    && old_fval != EMPTY_VALUE
-                    && old_fval != TOMBSTONE_VALUE
+                if let Some((old_parsed_val, old_index, _)) =
+                    self.get_from_chunk(chunk, hash, key, fkey, Some(new_chunk))
                 {
-                    if let Some(new_val) = func(old_fval) {
-                        let val = chunk.attachment.get_value(old_index);
-                        match self.modify_entry(
-                            new_chunk,
-                            hash,
-                            key,
-                            fkey,
-                            ModOp::AttemptInsert(new_val, &val),
-                            None,
-                            guard,
-                        ) {
-                            ModResult::Done(_, _, new_index)
-                            | ModResult::Replaced(_, _, new_index) => {
-                                let old_addr = chunk.entry_addr(old_index);
-                                if self.cas_sentinel(old_addr, old_fval) {
-                                    // Put a sentinel in the old chunk
-                                    return SwapResult::Succeed(
-                                        old_fval & VAL_BIT_MASK,
-                                        new_index,
-                                        new_chunk_ptr,
-                                    );
-                                } else {
-                                    // If fail, we may have some problem here
-                                    // The best strategy can be CAS a tombstone to the new index and try everything again
-                                    // Note that we use attempt insert, it will be safe to just `remove` it
-                                    let new_addr = new_chunk.entry_addr(new_index);
-                                    let _ = self.cas_tombstone(new_addr, new_val);
-                                    continue;
+                    let old_fval = old_parsed_val.raw;
+                    if old_parsed_val.is_primed() {
+                        backoff.spin();
+                        continue;
+                    }
+                    if old_fval != SENTINEL_VALUE
+                        && old_fval != EMPTY_VALUE
+                        && old_fval != TOMBSTONE_VALUE
+                    {
+                        if let Some(new_val) = func(old_fval) {
+                            let val = chunk.attachment.get_value(old_index);
+                            match self.modify_entry(
+                                new_chunk,
+                                hash,
+                                key,
+                                fkey,
+                                ModOp::AttemptInsert(new_val, &val),
+                                None,
+                                guard,
+                            ) {
+                                ModResult::Done(_, _, new_index)
+                                | ModResult::Replaced(_, _, new_index) => {
+                                    let old_addr = chunk.entry_addr(old_index);
+                                    if self.cas_sentinel(old_addr, old_fval) {
+                                        // Put a sentinel in the old chunk
+                                        return SwapResult::Succeed(
+                                            old_fval & VAL_BIT_MASK,
+                                            new_index,
+                                            new_chunk_ptr,
+                                        );
+                                    } else {
+                                        // If fail, we may have some problem here
+                                        // The best strategy can be CAS a tombstone to the new index and try everything again
+                                        // Note that we use attempt insert, it will be safe to just `remove` it
+                                        let new_addr = new_chunk.entry_addr(new_index);
+                                        let _ = self.cas_tombstone(new_addr, new_val);
+                                        continue;
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -628,7 +644,7 @@ impl<
         key: &K,
         fkey: usize,
         migrating: Option<&ChunkPtr<K, V, A, ALLOC>>,
-    ) -> (Value, usize, usize) {
+    ) -> Option<(Value, usize, usize)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -642,10 +658,10 @@ impl<
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
                     ParsedValue::Empty => {}
-                    _ => return (val_res, idx, addr),
+                    _ => return Some((val_res, idx, addr)),
                 }
             } else if k == EMPTY_KEY {
-                return (Value::new::<K, V, A, ALLOC, H>(0), 0, addr);
+                return None;
             } else if let Some(new_chunk_ins) = migrating {
                 debug_assert!(new_chunk_ins.base != chunk.base);
                 let val_res = self.get_fast_value(addr);
@@ -658,7 +674,7 @@ impl<
         }
 
         // not found
-        return (Value::new::<K, V, A, ALLOC, H>(0), 0, 0);
+        return None;
     }
 
     #[inline(always)]
@@ -758,10 +774,7 @@ impl<
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
-                                                chunk.attachment.set_value(
-                                                    idx,
-                                                    (*oval).clone(),
-                                                );
+                                                chunk.attachment.set_value(idx, (*oval).clone());
                                                 let stripped_prime =
                                                     self.cas_value(addr, cas_fval, fval).is_ok();
                                                 debug_assert!(stripped_prime);
@@ -863,8 +876,7 @@ impl<
                         } else {
                             debug!(
                                 "Discovered prime for key {} with value {:#064b}, retry",
-                                fkey,
-                                v
+                                fkey, v
                             );
                         }
                         backoff.spin();
@@ -1087,7 +1099,9 @@ impl<
         };
         trace!(
             "New size for {:?} is {}, was {}",
-            old_chunk_ptr, new_cap, old_cap
+            old_chunk_ptr,
+            new_cap,
+            old_cap
         );
         // Swap in old chunk as placeholder for the lock
         let lock_ptr = Shared::null().with_tag(1);
@@ -1152,7 +1166,10 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
-        debug!("Migrating entries from {:?} to {:?}", old_chunk_ins.base, new_chunk_ins.base);
+        debug!(
+            "Migrating entries from {:?} to {:?}",
+            old_chunk_ins.base, new_chunk_ins.base
+        );
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
         let mut effective_copy = 0;
@@ -1190,7 +1207,10 @@ impl<
                 }
                 ParsedValue::Prime(v) => {
                     if *v != SENTINEL_VALUE {
-                        warn!("Discovered valued prime on migration, key {}, value {:#b}", fkey, fvalue.raw);
+                        warn!(
+                            "Discovered valued prime on migration, key {}, value {:#b}",
+                            fkey, fvalue.raw
+                        );
                         backoff.spin();
                         continue;
                     }
@@ -1253,7 +1273,7 @@ impl<
                         Ok(n) => {
                             trace!("Primed value for migration: {}", fkey);
                             curr_orig = n;
-                        },
+                        }
                         Err(_) => {
                             debug!("Value changed on locating new slot, key {}", fkey);
                             return false;
@@ -1328,7 +1348,7 @@ impl Value {
     fn is_primed(&self) -> bool {
         match &self.parsed {
             &ParsedValue::Prime(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -2021,7 +2041,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 }
 
-const  WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
+const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
 pub struct WordMutexGuard<
     'a,
@@ -2648,10 +2668,12 @@ fn timestamp() -> u64 {
     since_the_epoch.as_millis() as u64
 }
 
-impl <V> Debug for ModResult<V> {
+impl<V> Debug for ModResult<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Replaced(arg0, _arg1, arg2) => f.debug_tuple("Replaced").field(arg0).field(arg2).finish(),
+            Self::Replaced(arg0, _arg1, arg2) => {
+                f.debug_tuple("Replaced").field(arg0).field(arg2).finish()
+            }
             Self::Existed(arg0, _arg1) => f.debug_tuple("Existed").field(arg0).finish(),
             Self::Fail => write!(f, "Fail"),
             Self::Sentinel => write!(f, "Sentinel"),
@@ -2692,7 +2714,7 @@ mod fat_tests {
                 Some(r) => assert_eq!(r, v),
                 None => panic!("{}", i),
             }
-        } 
+        }
     }
 
     #[test]
