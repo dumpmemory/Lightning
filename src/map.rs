@@ -513,7 +513,7 @@ impl<
         old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
         new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
     ) -> Option<&'a ChunkPtr<K, V, A, ALLOC>> {
-        if (Self::is_copying(epoch)) && new_chunk_ptr.tag() != 0 && (!old_chunk_ptr.eq(new_chunk_ptr)) {
+        if (Self::is_copying(epoch)) && new_chunk_ptr.tag() == 0 && (!old_chunk_ptr.eq(new_chunk_ptr)) {
             unsafe { new_chunk_ptr.as_ref() }
         } else {
             None
