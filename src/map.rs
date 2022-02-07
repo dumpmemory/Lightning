@@ -158,16 +158,15 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &chunk_ptr, &new_chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
 
-            if let Some((val, idx, addr)) =
-                        self.get_from_chunk(&*chunk, hash, key, fkey, new_chunk)
+            if let Some((val, idx, addr)) = self.get_from_chunk(&*chunk, hash, key, fkey, new_chunk)
             {
                 match val.parsed {
                     ParsedValue::Empty => {
                         debug!("Found empty for key {}", fkey);
-                    },
+                    }
                     ParsedValue::Val(0) => {
                         debug!("Found Val(0) for key {}", fkey);
-                    },
+                    }
                     ParsedValue::Val(fval) => {
                         let mut attachment = None;
                         if Self::CAN_ATTACH && read_attachment {
@@ -178,11 +177,11 @@ impl<
                             }
                         }
                         return Some((fval, attachment));
-                    },
+                    }
                     ParsedValue::Prime(_) => {
                         backoff.spin();
                         continue;
-                    },
+                    }
                     ParsedValue::Sentinel => {
                         if new_chunk.is_none() {
                             warn!("Discovered sentinel but new chunk is null for key {}", fkey);
@@ -190,17 +189,22 @@ impl<
                             continue;
                         }
                         trace!("Found sentinel, moving to new chunk for key {}", fkey);
-                    },
+                    }
                 }
             } else if new_chunk.is_some() {
-                trace!("Found nothing from old chunk for {}, trying new chunk", fkey);
+                trace!(
+                    "Found nothing from old chunk for {}, trying new chunk",
+                    fkey
+                );
             }
-            
+
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                if let Some((val, idx, addr)) = self.get_from_chunk(&*new_chunk, hash, key, fkey, None) {
+                if let Some((val, idx, addr)) =
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey, None)
+                {
                     match val.parsed {
-                        ParsedValue::Empty | ParsedValue::Val(0) => {},
+                        ParsedValue::Empty | ParsedValue::Val(0) => {}
                         ParsedValue::Val(fval) => {
                             let mut attachment = None;
                             if Self::CAN_ATTACH && read_attachment {
@@ -211,20 +215,22 @@ impl<
                                 }
                             }
                             return Some((fval, attachment));
-                        },
+                        }
                         ParsedValue::Prime(_) => {
                             backoff.spin();
                             continue;
-                        },
+                        }
                         ParsedValue::Sentinel => {
                             warn!("Found sentinel in new chunks for key {}", fkey);
-                        },
+                        }
                     }
                 }
             }
             debug!(
                 "Find nothing for key {}, rt new chunk {:?}, now {:?}",
-                fkey, new_chunk_ptr, self.new_chunk.load(Acquire, &guard)
+                fkey,
+                new_chunk_ptr,
+                self.new_chunk.load(Acquire, &guard)
             );
             return None;
         }
@@ -789,7 +795,7 @@ impl<
                                             chunk.attachment.set_value(idx, (*v).clone());
                                             let stripped_prime =
                                                 self.cas_value(addr, cas_fval, fval).is_ok();
-                                                // debug!("Set value for {} to {}", fkey, fval);
+                                            // debug!("Set value for {} to {}", fkey, fval);
                                             debug_assert!(stripped_prime);
                                         }
                                         return ModResult::Replaced(val.raw, prev_val, idx);
@@ -1694,8 +1700,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     #[inline(always)]
     fn probe(&self, index: usize, key: &K) -> bool {
         let addr = self.addr_by_index(index);
-        let pos_key = unsafe { 
-            // &*(addr as *mut K) 
+        let pos_key = unsafe {
+            // &*(addr as *mut K)
             ptr::read_volatile(addr as *mut K)
         };
         pos_key.eq(key)
