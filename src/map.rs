@@ -148,10 +148,10 @@ impl<
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         enum FromChunkRes<V> {
             Value(usize, Value, Option<V>, usize, usize), // Last one is idx
-            Prime,
+            Prime(usize, usize),
             None,
             Sentinel,
-            Outdated,
+            Outdated(usize, usize),
         }
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
@@ -173,7 +173,7 @@ impl<
                                 let content = chunk.attachment.get(idx).1;
                                 let new_val = self.get_fast_value(addr);
                                 if new_val.raw != val.raw {
-                                    return FromChunkRes::Outdated;
+                                    return FromChunkRes::Outdated(idx, addr);
                                 } else {
                                     Some(content)
                                 }
@@ -182,7 +182,7 @@ impl<
                             };
                             FromChunkRes::Value(v, val, attachment, idx, addr)
                         }
-                        ParsedValue::Prime(_) => FromChunkRes::Prime,
+                        ParsedValue::Prime(_) => FromChunkRes::Prime(idx, addr),
                         ParsedValue::Sentinel => FromChunkRes::Sentinel,
                     }
                 };
@@ -211,7 +211,8 @@ impl<
                                 );
                                 None
                             }
-                            FromChunkRes::Prime | FromChunkRes::Outdated => {
+                            FromChunkRes::Prime(_, _) | FromChunkRes::Outdated(_, _) => {
+                                // Prime or outdated record in new chunk, should retry
                                 backoff.spin();
                                 continue;
                             }
@@ -246,7 +247,7 @@ impl<
                                 );
                                 None
                             }
-                            FromChunkRes::Prime | FromChunkRes::Outdated => {
+                            FromChunkRes::Prime(_, _) | FromChunkRes::Outdated(_, _) => {
                                 backoff.spin();
                                 continue;
                             }
@@ -255,7 +256,36 @@ impl<
                         None
                     }
                 }
-                FromChunkRes::Prime | FromChunkRes::Outdated => {
+                FromChunkRes::Prime(idx, addr) | FromChunkRes::Outdated(idx, addr) => {
+                    // Spin loop on the slot to get the terminal state
+                    loop {
+                        let new_key = self.get_fast_key(addr);
+                        let new_val = self.get_fast_value(addr);
+                        match new_val.parsed {
+                            ParsedValue::Val(fval) => {
+                                let (k, v) = chunk.attachment.get(idx);
+                                if Self::CAN_ATTACH && new_val.raw != self.get_fast_value(addr).raw {
+                                    // Attachment may changed, retry
+                                    backoff.spin();
+                                }
+                                if new_key != fkey || !chunk.attachment.probe(idx, key) {
+                                    // Key changed, 
+                                    break;
+                                }
+                                return Some((fval, if Self::CAN_ATTACH {
+                                    Some(v)
+                                } else {
+                                    None
+                                }));
+                            },
+                            ParsedValue::Prime(_) => {
+                                backoff.spin();
+                            },
+                            _ => {
+                                break;
+                            },
+                        }
+                    }
                     backoff.spin();
                     continue;
                 }
