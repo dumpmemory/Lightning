@@ -169,7 +169,11 @@ impl<
                     let (val, idx, addr) = self.get_from_chunk(&*chunk, hash, key, fkey, migrating);
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {
-                            debug!("Found empty in chunk {}, key {}, val {:?}", chunk.base, fkey, val.parsed);
+                            if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw {
+                                // This validation is important
+                                // Key in attachment may changed on probing
+                                return FromChunkRes::Outdated(idx, addr);
+                            }
                             FromChunkRes::None
                         },
                         ParsedValue::Val(v) => {
