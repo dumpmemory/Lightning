@@ -164,131 +164,63 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &chunk_ptr, &new_chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            let get_from =
-                |chunk: &Chunk<K, V, A, ALLOC>, migrating: Option<&ChunkPtr<K, V, A, ALLOC>>| {
-                    if let Some((val, idx, addr)) =
-                        self.get_from_chunk(&*chunk, hash, key, fkey, migrating)
-                    {
-                        match val.parsed {
-                            ParsedValue::Empty | ParsedValue::Val(0) => {
-                                debug!("Found tombstone for {}", fkey);
-                                FromChunkRes::None
-                            }
-                            ParsedValue::Val(v) => {
-                                let attachment = if Self::CAN_ATTACH && read_attachment {
-                                    let content = chunk.attachment.get_value(idx);
-                                    let new_val = self.get_fast_value(addr);
-                                    if new_val.raw != val.raw {
-                                        return FromChunkRes::Outdated(idx, addr);
-                                    } else {
-                                        Some(content)
-                                    }
-                                } else {
-                                    None
-                                };
-                                FromChunkRes::Value(v, val, attachment, idx, addr)
-                            }
-                            ParsedValue::Prime(_) => FromChunkRes::Prime(idx, addr),
-                            ParsedValue::Sentinel => FromChunkRes::Sentinel,
-                        }
-                    } else {
-                        FromChunkRes::None
-                    }
-                };
-            return match get_from(&chunk, new_chunk) {
-                FromChunkRes::Value(fval, val, attach_val, idx, addr) => {
-                    if let Some(new_chunk) = new_chunk {
-                        self.migrate_entry(fkey, idx, val, chunk, new_chunk, addr, &mut 0);
-                    }
-                    Some((fval, attach_val))
-                }
-                FromChunkRes::Sentinel => {
-                    if let Some(new_chunk) = new_chunk {
-                        dfence();
-                        match get_from(&new_chunk, None) {
-                            FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
-                            FromChunkRes::Sentinel => {
-                                // Sentinel in new chunk, should retry
-                                backoff.spin();
-                                continue;
-                            }
-                            FromChunkRes::None => {
-                                debug!(
-                                    "Got non from new chunk for {} at epoch {} for none",
-                                    fkey - NUM_FIX,
-                                    epoch
-                                );
-                                None
-                            }
-                            FromChunkRes::Prime(_, _) | FromChunkRes::Outdated(_, _) => {
-                                // Prime or outdated record in new chunk, should retry
-                                debug!(
-                                    "Got prime or outdated in new chunk for {} after sentinel",
-                                    fkey - NUM_FIX
-                                );
+
+            if let Some((val, idx, addr)) =
+                        self.get_from_chunk(&*chunk, hash, key, fkey, new_chunk)
+            {
+                match val.parsed {
+                    ParsedValue::Empty | ParsedValue::Val(0) => {},
+                    ParsedValue::Val(fval) => {
+                        let mut attachment = None;
+                        if Self::CAN_ATTACH && read_attachment {
+                            attachment = Some(chunk.attachment.get_value(idx));
+                            if self.get_fast_value(addr).raw != val.raw {
                                 backoff.spin();
                                 continue;
                             }
                         }
-                    } else {
-                        warn!(
-                            "Got sentinel on get but new chunk is null for {}, retry. Copying {}, epoch {}, now epoch {}, reload new {:?}",
-                            fkey,
-                            new_chunk.is_some(),
-                            epoch,
-                            self.epoch.load(Acquire),
-                            self.new_chunk.load(Acquire, &guard)
-                        );
+                        return Some((fval, attachment));
+                    },
+                    ParsedValue::Prime(_) => {
                         backoff.spin();
                         continue;
-                    }
-                }
-                FromChunkRes::None => {
-                    if let Some(chunk) = new_chunk {
-                        dfence();
-                        match get_from(chunk, None) {
-                            FromChunkRes::Value(fval, _, val, _, _) => Some((fval, val)),
-                            FromChunkRes::Sentinel => {
-                                // Sentinel in new chunk, should retry
-                                debug!(
-                                    "Got sentinel in new chunk for {} after sentinel",
-                                    fkey - NUM_FIX
-                                );
-                                backoff.spin();
-                                continue;
-                            }
-                            FromChunkRes::None => {
-                                warn!(
-                                    "Got non from new chunk for {} at epoch {}",
-                                    fkey - NUM_FIX,
-                                    epoch
-                                );
-                                None
-                            }
-                            FromChunkRes::Prime(_, _) | FromChunkRes::Outdated(_, _) => {
-                                debug!(
-                                    "Got prime or outdated from new chunk for {} at epoch {}",
-                                    fkey - NUM_FIX,
-                                    epoch
-                                );
-                                backoff.spin();
-                                continue;
-                            }
+                    },
+                    ParsedValue::Sentinel => {
+                        if new_chunk.is_none() {
+                            backoff.spin();
+                            continue;
                         }
-                    } else {
-                        // if Self::CAN_ATTACH && !self.new_chunk.load(Acquire, &guard).is_null() {
-                        //     backoff.spin();
-                        //     continue;
-                        // }
-                        debug!("Got none for {}, no new chunk", fkey - NUM_FIX);
-                        None
+                    },
+                }
+            }
+
+            // Looking into new chunk
+            if let Some(new_chunk) = new_chunk {
+                if let Some((val, idx, addr)) = self.get_from_chunk(&*new_chunk, hash, key, fkey, None) {
+                    match val.parsed {
+                        ParsedValue::Empty | ParsedValue::Val(0) => {},
+                        ParsedValue::Val(fval) => {
+                            let mut attachment = None;
+                            if Self::CAN_ATTACH && read_attachment {
+                                attachment = Some(new_chunk.attachment.get_value(idx));
+                                if self.get_fast_value(addr).raw != val.raw {
+                                    backoff.spin();
+                                    continue;
+                                }
+                            }
+                            return Some((fval, attachment));
+                        },
+                        ParsedValue::Prime(_) => {
+                            backoff.spin();
+                            continue;
+                        },
+                        ParsedValue::Sentinel => {
+                            warn!("Found sentinel in new chunks for key {}", fkey);
+                        },
                     }
                 }
-                FromChunkRes::Prime(idx, addr) | FromChunkRes::Outdated(idx, addr) => {
-                    backoff.spin();
-                    continue;
-                }
-            };
+            }
+            return None;
         }
     }
 
