@@ -169,16 +169,11 @@ impl<
                     let (val, idx, addr) = self.get_from_chunk(&*chunk, hash, key, fkey, migrating);
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {
-                            if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw {
-                                // This validation is important
-                                // Key in attachment may changed on probing
-                                return FromChunkRes::Outdated(idx, addr);
-                            }
                             FromChunkRes::None
                         },
                         ParsedValue::Val(v) => {
                             let attachment = if Self::CAN_ATTACH && read_attachment {
-                                let content = chunk.attachment.get(idx).1;
+                                let content = chunk.attachment.get_value(idx);
                                 let new_val = self.get_fast_value(addr);
                                 if new_val.raw != val.raw {
                                     return FromChunkRes::Outdated(idx, addr);
@@ -278,40 +273,6 @@ impl<
                     }
                 }
                 FromChunkRes::Prime(idx, addr) | FromChunkRes::Outdated(idx, addr) => {
-                    debug!(
-                        "Got prime or outdated from old chunk for {} at epoch {}",
-                        fkey - NUM_FIX,
-                        epoch
-                    );
-                    // Spin loop on the slot to get the terminal state
-                    loop {
-                        let new_key = self.get_fast_key(addr);
-                        let new_val = self.get_fast_value(addr);
-                        match new_val.parsed {
-                            ParsedValue::Val(fval) => {
-                                let (_, v) = chunk.attachment.get(idx);
-                                if Self::CAN_ATTACH && new_val.raw != self.get_fast_value(addr).raw {
-                                    // Attachment may changed, retry
-                                    backoff.spin();
-                                }
-                                if new_key != fkey || !chunk.attachment.probe(idx, key) {
-                                    // Key changed, 
-                                    break;
-                                }
-                                return Some((fval, if Self::CAN_ATTACH {
-                                    Some(v)
-                                } else {
-                                    None
-                                }));
-                            },
-                            ParsedValue::Prime(_) => {
-                                backoff.spin();
-                            },
-                            _ => {
-                                break;
-                            },
-                        }
-                    }
                     backoff.spin();
                     continue;
                 }
@@ -487,7 +448,7 @@ impl<
                     && old_fval != TOMBSTONE_VALUE
                 {
                     if let Some(new_val) = func(old_fval) {
-                        let val = chunk.attachment.get(old_index).1;
+                        let val = chunk.attachment.get_value(old_index);
                         match self.modify_entry(
                             new_chunk,
                             hash,
@@ -743,7 +704,7 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
-                                let (_, value) = chunk.attachment.get(idx);
+                                let value = chunk.attachment.get_value(idx);
                                 if self.cas_sentinel(addr, val.raw) {
                                     chunk.attachment.erase(idx);
                                     if *v == 0 {
@@ -760,7 +721,7 @@ impl<
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
-                                let (_, value) = chunk.attachment.get(idx);
+                                let value = chunk.attachment.get_value(idx);
                                 if !self.cas_tombstone(addr, val.raw).is_ok() {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
@@ -774,7 +735,7 @@ impl<
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
-                                let (_, value) = chunk.attachment.get(idx);
+                                let value = chunk.attachment.get_value(idx);
                                 if self.cas_value(addr, val.raw, *fv).is_ok() {
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
@@ -793,13 +754,12 @@ impl<
                                     } else {
                                         fval
                                     };
-                                    let (_, prev_val) = chunk.attachment.get(idx);
+                                    let prev_val = chunk.attachment.get_value(idx);
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
-                                                chunk.attachment.set(
+                                                chunk.attachment.set_value(
                                                     idx,
-                                                    key.clone(),
                                                     (*oval).clone(),
                                                 );
                                                 let stripped_prime =
@@ -824,7 +784,7 @@ impl<
                                         fval,
                                         v
                                     );
-                                    let (_, value) = chunk.attachment.get(idx);
+                                    let value = chunk.attachment.get_value(idx);
                                     if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw
                                     {
                                         backoff.spin();
@@ -845,7 +805,7 @@ impl<
                                         if pval == 0 {
                                             return ModResult::NotFound;
                                         }
-                                        let aval = chunk.attachment.get(idx).1;
+                                        let aval = chunk.attachment.get_value(idx);
                                         if let Some(v) = swap(pval) {
                                             if self.cas_value(addr, val.raw, v).is_ok() {
                                                 // swap success
@@ -871,11 +831,11 @@ impl<
                                 } else {
                                     fval
                                 };
-                                let (_, prev_val) = chunk.attachment.get(idx);
+                                let prev_val = chunk.attachment.get_value(idx);
                                 match self.cas_value(addr, val.raw, primed_fval) {
                                     Ok(cas_fval) => {
                                         if Self::CAN_ATTACH {
-                                            chunk.attachment.set(idx, key.clone(), (*v).clone());
+                                            chunk.attachment.set_value(idx, (*v).clone());
                                             let stripped_prime =
                                                 self.cas_value(addr, cas_fval, fval).is_ok();
                                             debug_assert!(stripped_prime);
@@ -924,7 +884,8 @@ impl<
                         );
                         if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             // CAS value succeed, shall store key
-                            chunk.attachment.set(idx, key.clone(), (*val).clone());
+                            chunk.attachment.set_key(idx, key.clone());
+                            chunk.attachment.set_value(idx, (*val).clone());
                             if Self::CAN_ATTACH {
                                 dfence();
                             }
@@ -994,7 +955,8 @@ impl<
                 match val_res.parsed {
                     ParsedValue::Val(0) => {}
                     ParsedValue::Val(v) => {
-                        let (key, value) = chunk.attachment.get(idx);
+                        let key = chunk.attachment.get_key(idx);
+                        let value = chunk.attachment.get_value(idx);
                         res.push((k, v, key, value))
                     }
                     ParsedValue::Prime(_) => {
@@ -1268,13 +1230,10 @@ impl<
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be primed
         debug_assert_ne!(fvalue.raw & VAL_BIT_MASK, SENTINEL_VALUE);
-        let (key, value) = old_chunk_ins.attachment.get(old_idx);
+        let key = old_chunk_ins.attachment.get_key(old_idx);
+        let value = old_chunk_ins.attachment.get_value(old_idx);
         let mut curr_orig = fvalue.raw;
         let orig = curr_orig;
-        if self.get_fast_value(old_address).raw != orig {
-            // Value changed during attachment fetching
-            return false;
-        }
         // Make insertion for migration inlined, hopefully the ordering will be right
         let cap = new_chunk_ins.capacity;
         let mut idx = hash::<H>(fkey);
@@ -1302,7 +1261,8 @@ impl<
                     }
                 }
                 if self.cas_value(addr, EMPTY_VALUE, orig).is_ok() {
-                    new_chunk_ins.attachment.set(idx, key, value);
+                    new_chunk_ins.attachment.set_key(idx, key);
+                    new_chunk_ins.attachment.set_value(idx, value);
                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
@@ -1594,8 +1554,10 @@ const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
 pub trait Attachment<K, V> {
     fn heap_size_of(cap: usize) -> usize;
     fn new(cap: usize, heap_ptr: usize, heap_size: usize) -> Self;
-    fn get(&self, index: usize) -> (K, V);
-    fn set(&self, index: usize, key: K, value: V);
+    fn get_key(&self, index: usize) -> K;
+    fn get_value(&self, index: usize) -> V;
+    fn set_key(&self, index: usize, key: K);
+    fn set_value(&self, index: usize, value: V);
     fn erase(&self, index: usize);
     fn dealloc(&self);
     fn probe(&self, index: usize, probe_key: &K) -> bool;
@@ -1614,12 +1576,20 @@ impl Attachment<(), ()> for WordAttachment {
     }
 
     #[inline(always)]
-    fn get(&self, _index: usize) -> ((), ()) {
-        ((), ())
+    fn get_key(&self, _index: usize) -> () {
+        ()
     }
 
     #[inline(always)]
-    fn set(&self, _index: usize, _key: (), _value: ()) {}
+    fn get_value(&self, _index: usize) -> () {
+        ()
+    }
+
+    #[inline(always)]
+    fn set_key(&self, _index: usize, _key: ()) {}
+
+    #[inline(always)]
+    fn set_value(&self, _index: usize, _value: ()) {}
 
     #[inline(always)]
     fn erase(&self, _index: usize) {}
@@ -1656,16 +1626,16 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     }
 
     #[inline(always)]
-    fn get(&self, index: usize) -> ((), T) {
+    fn get_value(&self, index: usize) -> T {
         let addr = self.addr_by_index(index);
         let v = unsafe { (*(addr as *mut T)).clone() };
-        ((), v)
+        v
     }
 
     #[inline(always)]
-    fn set(&self, index: usize, _key: (), val: T) {
+    fn set_value(&self, index: usize, value: T) {
         let addr = self.addr_by_index(index);
-        unsafe { ptr::write(addr as *mut T, val) }
+        unsafe { ptr::write(addr as *mut T, value) }
     }
 
     #[inline(always)]
@@ -1679,6 +1649,12 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     fn probe(&self, _index: usize, _value: &()) -> bool {
         true
     }
+
+    fn get_key(&self, _index: usize) -> () {
+        ()
+    }
+
+    fn set_key(&self, _index: usize, _key: ()) {}
 }
 
 pub type HashTable<K, V, ALLOC> =
@@ -1686,41 +1662,72 @@ pub type HashTable<K, V, ALLOC> =
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     obj_chunk: usize,
-    obj_size: usize,
     shadow: PhantomData<(K, V, A)>,
+}
+
+impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
+    const KEY_SIZE: usize = mem::size_of::<K>();
+    const VAL_SIZE: usize = mem::size_of::<V>();
+    const VAL_OFFSET: usize = Self::value_offset();
+    const PAIR_SIZE: usize = Self::pair_size();
+
+    const fn value_offset() -> usize {
+        let padding = align_padding(Self::KEY_SIZE, 2);
+        Self::KEY_SIZE + padding
+    }
+
+    const fn pair_size() -> usize {
+        let raw_size = Self::value_offset() + Self::VAL_SIZE;
+        let pair_padding = align_padding(raw_size, 2);
+        raw_size + pair_padding
+    }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     for HashKVAttachment<K, V, A>
 {
     fn heap_size_of(cap: usize) -> usize {
-        let obj_size = mem::size_of::<(K, V)>();
-        cap * obj_size
+        cap * Self::PAIR_SIZE
     }
 
     fn new(_cap: usize, heap_ptr: usize, _heap_size: usize) -> Self {
         Self {
             obj_chunk: heap_ptr,
-            obj_size: mem::size_of::<(K, V)>(),
             shadow: PhantomData,
         }
     }
 
     #[inline(always)]
-    fn get(&self, index: usize) -> (K, V) {
+    fn get_key(&self, index: usize) -> K {
         let addr = self.addr_by_index(index);
-        unsafe { (*(addr as *mut (K, V))).clone() }
+        unsafe { (*(addr as *mut K)).clone() }
     }
 
     #[inline(always)]
-    fn set(&self, index: usize, key: K, val: V) {
+    fn set_key(&self, index: usize, key: K) {
         let addr = self.addr_by_index(index);
-        unsafe { ptr::write(addr as *mut (K, V), (key, val)) }
+        unsafe { ptr::write(addr as *mut K, key) }
+    }
+
+    #[inline(always)]
+    fn get_value(&self, index: usize) -> V {
+        let addr = self.addr_by_index(index);
+        let val_addr = addr + Self::VAL_OFFSET;
+        unsafe { (*(val_addr as *mut V)).clone() }
+    }
+
+    #[inline(always)]
+    fn set_value(&self, index: usize, value: V) {
+        let addr = self.addr_by_index(index);
+        let val_addr = addr + Self::VAL_OFFSET;
+        unsafe { ptr::write(val_addr as *mut V, value) }
     }
 
     #[inline(always)]
     fn erase(&self, index: usize) {
-        drop(self.addr_by_index(index) as *mut (K, V))
+        let addr = self.addr_by_index(index);
+        // drop(addr as *mut K);
+        drop((addr + Self::VAL_OFFSET) as *mut V);
     }
 
     #[inline(always)]
@@ -1767,7 +1774,7 @@ const PLACEHOLDER_VAL: usize = NUM_FIX + 1;
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
     fn addr_by_index(&self, index: usize) -> usize {
-        self.obj_chunk + index * self.obj_size
+        self.obj_chunk + index * Self::PAIR_SIZE
     }
 }
 
@@ -2189,7 +2196,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             match swap_res {
                 SwapResult::Succeed(_, idx, chunk) => {
                     let chunk_ref = unsafe { chunk.deref() };
-                    let (_, v) = chunk_ref.attachment.get(idx);
+                    let v = chunk_ref.attachment.get_value(idx);
                     value = v;
                     break;
                 }
@@ -2283,7 +2290,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             match swap_res {
                 SwapResult::Succeed(_, idx, chunk) => {
                     let chunk_ref = unsafe { chunk.deref() };
-                    let (_, v) = chunk_ref.attachment.get(idx);
+                    let v = chunk_ref.attachment.get_value(idx);
                     value = v;
                     break;
                 }
@@ -2387,7 +2394,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
             match swap_res {
                 SwapResult::Succeed(_, idx, chunk) => {
                     let chunk_ref = unsafe { chunk.deref() };
-                    let (_, v) = chunk_ref.attachment.get(idx);
+                    let v = chunk_ref.attachment.get_value(idx);
                     value = v;
                     break;
                 }
@@ -2478,7 +2485,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
             match swap_res {
                 SwapResult::Succeed(_, idx, chunk) => {
                     let chunk_ref = unsafe { chunk.deref() };
-                    let (_, v) = chunk_ref.attachment.get(idx);
+                    let v = chunk_ref.attachment.get_value(idx);
                     value = v;
                     break;
                 }
@@ -2668,6 +2675,25 @@ mod fat_tests {
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];
     pub type FatHashMap = HashMap<Key, Value, System>;
+
+    #[test]
+    fn no_resize() {
+        let _ = env_logger::try_init();
+        let map = FatHashMap::with_capacity(4096);
+        for i in 5..2048 {
+            let k = key_from(i);
+            let v = val_from(i * 2);
+            map.insert(&k, v);
+        }
+        for i in 5..2048 {
+            let k = key_from(i);
+            let v = val_from(i * 2);
+            match map.get(&k) {
+                Some(r) => assert_eq!(r, v),
+                None => panic!("{}", i),
+            }
+        } 
+    }
 
     #[test]
     fn resize() {

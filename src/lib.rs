@@ -21,7 +21,7 @@ pub mod rand;
 #[macro_use]
 mod par_list_test_macros;
 
-pub fn align_padding(len: usize, align: usize) -> usize {
+pub const fn align_padding(len: usize, align: usize) -> usize {
     let len_rounded_up = len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1);
     len_rounded_up.wrapping_sub(len)
 }
