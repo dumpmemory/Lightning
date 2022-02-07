@@ -263,7 +263,7 @@ impl<
                         let new_val = self.get_fast_value(addr);
                         match new_val.parsed {
                             ParsedValue::Val(fval) => {
-                                let (k, v) = chunk.attachment.get(idx);
+                                let (_, v) = chunk.attachment.get(idx);
                                 if Self::CAN_ATTACH && new_val.raw != self.get_fast_value(addr).raw {
                                     // Attachment may changed, retry
                                     backoff.spin();
