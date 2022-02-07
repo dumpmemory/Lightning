@@ -261,10 +261,10 @@ impl<
                             }
                         }
                     } else {
-                        if Self::CAN_ATTACH && !self.new_chunk.load(Acquire, &guard).is_null() {
-                            backoff.spin();
-                            continue;
-                        }
+                        // if Self::CAN_ATTACH && !self.new_chunk.load(Acquire, &guard).is_null() {
+                        //     backoff.spin();
+                        //     continue;
+                        // }
                         debug!("Got none for {}, no new chunk", fkey - NUM_FIX);
                         None
                     }
@@ -2758,19 +2758,19 @@ mod fat_tests {
                                 panic!("Unrecoverable valye change for {:?}", key);
                             }
                         }
-                        // if j % 7 == 0 {
-                        //     assert_eq!(
-                        //         map.remove(&key),
-                        //         Some(value),
-                        //         "Remove result, get {:?}, copying {}, round {}",
-                        //         map.get(&key),
-                        //         map.table.map_is_copying(),
-                        //         k
-                        //     );
-                        //     assert_eq!(map.get(&key), None, "Remove recursion");
-                        //     assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                        //     map.insert(&key, value);
-                        // }
+                        if j % 7 == 0 {
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                            map.insert(&key, value);
+                        }
                         if j % 3 == 0 {
                             let new_value = val_from(value_num + 7);
                             let pre_insert_epoch = map.table.now_epoch();
