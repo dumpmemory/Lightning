@@ -1061,11 +1061,10 @@ impl<
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard).with_tag(0);
-            dfence();
-        let prev_epoch = self.epoch.fetch_add(1, AcqRel); 
+        dfence();
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-        debug_assert_eq!(prev_epoch % 2, 0);
+        dfence();
+        self.epoch.fetch_add(1, AcqRel); self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         dfence();
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
@@ -1077,8 +1076,8 @@ impl<
         dfence();
         self.new_chunk.store(Shared::null(), Release);
         dfence();
-        let prev_epoch = self.epoch.fetch_add(1, AcqRel);
-        debug_assert_eq!(prev_epoch % 2, 1);
+        self.epoch.fetch_add(1, AcqRel);
+        dfence();
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
