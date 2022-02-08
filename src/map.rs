@@ -109,7 +109,6 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
     chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     count: AtomicUsize,
     epoch: AtomicUsize,
-    timestamp: AtomicU64,
     init_cap: usize,
     mark: PhantomData<H>,
 }
@@ -136,7 +135,6 @@ impl<
             new_chunk: Atomic::null(),
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
-            timestamp: AtomicU64::new(timestamp()),
             init_cap: cap,
             mark: PhantomData,
         }
@@ -1052,24 +1050,14 @@ impl<
         let lock_ptr = Shared::null().with_tag(1);
         if let Err(_) =
             self.new_chunk
-                .compare_exchange(Shared::null(), lock_ptr, AcqRel, Relaxed, guard)
+                .compare_exchange(Shared::null().with_tag(0), lock_ptr, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
         dfence();
-        if self.new_chunk.load(Acquire, guard) != lock_ptr {
-            warn!(
-                "Give up on resize due to old chunk changed after lock obtained, epoch {} to {}",
-                epoch,
-                self.now_epoch()
-            );
-            self.new_chunk.store(Shared::null(), Release);
-            dfence();
-            debug_assert_eq!(self.now_epoch() % 2, 0);
-            return ResizeResult::ChunkChanged;
-        }
+        debug_assert_eq!(self.new_chunk.load(Acquire, guard), lock_ptr);
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
             Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
@@ -1090,18 +1078,20 @@ impl<
         let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
         debug_assert_eq!(prev_epoch % 2, 1);
         dfence();
-        self.chunk.store(new_chunk_ptr, Release);
-        self.timestamp.store(timestamp(), Release);
-        dfence();
-        unsafe {
-            guard.defer_destroy(old_chunk_ptr);
-            guard.flush();
+        let swap_chunk = self.chunk.compare_exchange(old_chunk_ptr, new_chunk_ptr, AcqRel, Relaxed, &guard);
+        if let Err(ec) = swap_chunk {
+            panic!("Must swap chunk, got {:?}, expecting {:?}", ec, old_chunk_ptr);
         }
+        dfence();
         self.new_chunk.store(Shared::null().with_tag(0), Release);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
+        unsafe {
+            guard.defer_destroy(old_chunk_ptr);
+            guard.flush();
+        }
         ResizeResult::Done
     }
 
@@ -1381,7 +1371,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             new_chunk: Default::default(),
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
-            timestamp: AtomicU64::new(timestamp()),
             init_cap: self.init_cap,
             mark: PhantomData,
         };
