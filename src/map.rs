@@ -78,7 +78,6 @@ pub enum InsertOp {
 enum ResizeResult {
     NoNeed,
     SwapFailed,
-    ChunkChanged,
     Done,
 }
 
@@ -153,7 +152,7 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk = Self::new_chunk_ref(epoch, &chunk_ptr, &new_chunk_ptr);
+            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
 
             if let Some((val, idx, addr)) = self.get_from_chunk(&*chunk, hash, key, fkey, new_chunk)
@@ -189,11 +188,6 @@ impl<
                         trace!("Found sentinel, moving to new chunk for key {}", fkey);
                     }
                 }
-            } else if new_chunk.is_some() {
-                trace!(
-                    "Found nothing from old chunk for {}, trying new chunk",
-                    fkey
-                );
             }
 
             // Looking into new chunk
@@ -224,11 +218,16 @@ impl<
                     }
                 }
             }
+            let new_epoch = self.now_epoch();
+            if new_epoch != epoch {
+                backoff.spin();
+                continue;
+            }
             debug!(
-                "Find nothing for key {}, rt new chunk {:?}, now {:?}",
+                "Find nothing for key {}, rt new chunk {:?}, now {:?}. Epoch {} to {}",
                 fkey,
                 new_chunk_ptr,
-                self.new_chunk.load(Acquire, &guard)
+                self.new_chunk.load(Acquire, &guard), epoch, new_epoch
             );
             return None;
         }
@@ -250,10 +249,10 @@ impl<
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-            let new_chunk = Self::new_chunk_ref(epoch, &chunk_ptr, &new_chunk_ptr);
+            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             if new_chunk.is_none() {
                 match self.check_migration(chunk_ptr, &guard) {
-                    ResizeResult::Done | ResizeResult::SwapFailed | ResizeResult::ChunkChanged => {
+                    ResizeResult::Done | ResizeResult::SwapFailed => {
                         trace!("Retry insert due to resize");
                         backoff.spin();
                         continue;
@@ -388,7 +387,7 @@ impl<
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk = Self::new_chunk_ref(epoch, &chunk_ptr, &new_chunk_ptr);
+            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
@@ -486,10 +485,10 @@ impl<
     #[inline(always)]
     fn new_chunk_ref<'a>(
         epoch: usize,
-        old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
         new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
+        old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
     ) -> Option<&'a ChunkPtr<K, V, A, ALLOC>> {
-        if Self::is_copying(epoch) && (!old_chunk_ptr.eq(new_chunk_ptr)) {
+        if Self::is_copying(epoch) && !old_chunk_ptr.with_tag(0).eq(new_chunk_ptr)  {
             unsafe { new_chunk_ptr.as_ref() } // null ptr will be handled by as_ref
         } else {
             None
@@ -605,7 +604,6 @@ impl<
             } else if k == EMPTY_KEY {
                 return None;
             } else if let Some(new_chunk_ins) = migrating {
-                debug_assert!(new_chunk_ins.base != chunk.base);
                 let val_res = self.get_fast_value(addr);
                 if let &ParsedValue::Val(_) = &val_res.parsed {
                     // self.migrate_entry(k, idx, val_res, chunk, new_chunk_ins, addr, &mut 0);
@@ -1009,6 +1007,9 @@ impl<
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
+        if old_chunk_ptr.tag() == 1 {
+            return ResizeResult::SwapFailed;
+        }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let occupation = old_chunk_ins.occupation.load(Relaxed);
         let occu_limit = old_chunk_ins.occu_limit;
@@ -1047,43 +1048,37 @@ impl<
             old_cap
         );
         // Swap in old chunk as placeholder for the lock
-        let lock_ptr = Shared::null().with_tag(1);
+        let old_chunk_lock = old_chunk_ptr.with_tag(1);
         if let Err(_) =
-            self.new_chunk
-                .compare_exchange(Shared::null().with_tag(0), lock_ptr, AcqRel, Relaxed, guard)
+            self.chunk
+                .compare_exchange(old_chunk_ptr, old_chunk_lock, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
         dfence();
-        debug_assert_eq!(self.new_chunk.load(Acquire, guard), lock_ptr);
         debug!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr =
-            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard);
+            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard).with_tag(0);
+            dfence();
+        let prev_epoch = self.epoch.fetch_add(1, AcqRel); 
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
-        self.new_chunk.store(new_chunk_ptr.with_tag(0), Release); // Stump becasue we have the lock already
-        dfence();
-        let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
+        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         debug_assert_eq!(prev_epoch % 2, 0);
         dfence();
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
-        // Assertion check
-        debug_assert_ne!(old_chunk_ins.ptr as usize, new_chunk_ins.base);
-        debug_assert_ne!(old_chunk_ins.ptr, unsafe { new_chunk_ptr.deref().ptr });
-        debug_assert!(!new_chunk_ptr.is_null());
         dfence();
-        let prev_epoch = self.epoch.fetch_add(1, AcqRel); // Increase epoch by one
-        debug_assert_eq!(prev_epoch % 2, 1);
-        dfence();
-        let swap_chunk = self.chunk.compare_exchange(old_chunk_ptr, new_chunk_ptr, AcqRel, Relaxed, &guard);
+        let swap_chunk = self.chunk.compare_exchange(old_chunk_lock, new_chunk_ptr.with_tag(0), AcqRel, Relaxed, &guard);
         if let Err(ec) = swap_chunk {
             panic!("Must swap chunk, got {:?}, expecting {:?}", ec, old_chunk_ptr);
         }
         dfence();
-        self.new_chunk.store(Shared::null().with_tag(0), Release);
+        self.new_chunk.store(Shared::null(), Release);
+        dfence();
+        let prev_epoch = self.epoch.fetch_add(1, AcqRel);
+        debug_assert_eq!(prev_epoch % 2, 1);
         debug!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
@@ -1760,7 +1755,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
     pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
         HashMapReadGuard::new(&self.table, key)
-    }
+    }    
+    
+    #[inline(always)]
+    fn hash(key: &K) -> usize {
+        hash_key::<K, H>(key)
+    } 
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
@@ -1775,7 +1775,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let hash = hash_key::<K, H>(key);
+        let hash = Self::hash(key);
         self.table.get(key, hash, true).map(|v| v.1.unwrap())
     }
 
@@ -1791,7 +1791,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let hash = hash_key::<K, H>(&key);
+        let hash = Self::hash(key);
         self.table.remove(key, hash).map(|(_, v)| v)
     }
 
@@ -1806,7 +1806,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let hash = hash_key::<K, H>(&key);
+        let hash = Self::hash(key);
         self.table.get(key, hash, false).is_some()
     }
 
@@ -2746,15 +2746,15 @@ mod fat_tests {
                             let post_fail_get_epoch = map.table.now_epoch();
                             let right = Some(value);
                             if left != right {
-                                error!("Discovered mismatch key {:?}, analyzing", key);
+                                error!("Discovered mismatch key {:?}, analyzing", FatHashMap::hash(&key));
                                 for m in 1..1024 {
                                     let mleft = map.get(&key);
                                     let mright = Some(value);
                                     if mleft == mright {
-                                        error!(
+                                        panic!(
                                             "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
                                             m, 
-                                            key, 
+                                            FatHashMap::hash(&key), 
                                             map.table.map_is_copying(),
                                             pre_fail_get_epoch,
                                             post_fail_get_epoch,
@@ -2766,7 +2766,7 @@ mod fat_tests {
                                         // panic!("Late value change on {:?}", key);
                                     }
                                 }
-                                error!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", key, l , map.table.map_is_copying(), right, left);
+                                panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", FatHashMap::hash(&key), l , map.table.map_is_copying(), right, left);
                                 // panic!("Unrecoverable value change for {:?}", key);
                             }
                         }
