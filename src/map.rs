@@ -6,7 +6,7 @@ use core::hash::Hasher;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
-use core::sync::atomic::{compiler_fence, fence, AtomicU64, AtomicUsize};
+use core::sync::atomic::{compiler_fence, fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use std::alloc::System;
@@ -823,9 +823,6 @@ impl<
                             // CAS value succeed, shall store key
                             chunk.attachment.set_key(idx, key.clone());
                             chunk.attachment.set_value(idx, (*val).clone());
-                            if Self::CAN_ATTACH {
-                                dfence();
-                            }
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
