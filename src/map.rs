@@ -800,17 +800,7 @@ impl<
                         // because other thread is trying to write value into it
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel,
-                    ParsedValue::Prime(v) => {
-                        if *v == SENTINEL_VALUE {
-                            debug!("Found primed sentinel at {}", k);
-                            // Must not return sentinel at this point
-                            // Entry migration is not completed, sentinel will leads to non value
-                        } else {
-                            debug!(
-                                "Discovered prime for key {} with value {:#064b}, retry",
-                                fkey, v
-                            );
-                        }
+                    ParsedValue::Prime(_) => {
                         backoff.spin();
                         continue;
                     }
