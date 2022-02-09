@@ -715,9 +715,7 @@ impl<
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
                                                 chunk.attachment.set_value(idx, (*oval).clone());
-                                                let stripped_prime =
-                                                    self.cas_value(addr, cas_fval, fval).is_ok();
-                                                debug_assert!(stripped_prime);
+                                                self.store_value(addr, cas_fval, fval);
                                             }
                                             return ModResult::Replaced(val.raw, prev_val, idx);
                                         }
@@ -789,10 +787,7 @@ impl<
                                     Ok(cas_fval) => {
                                         if Self::CAN_ATTACH {
                                             chunk.attachment.set_value(idx, (*v).clone());
-                                            let stripped_prime =
-                                                self.cas_value(addr, cas_fval, fval).is_ok();
-                                            // debug!("Set value for {} to {}", fkey, fval);
-                                            debug_assert!(stripped_prime);
+                                            self.store_value(addr, cas_fval, fval);
                                         }
                                         return ModResult::Replaced(val.raw, prev_val, idx);
                                     }
@@ -977,6 +972,17 @@ impl<
         } else {
             Err(old)
         }
+    }
+    #[inline(always)]
+    fn store_value(&self, entry_addr: usize, original: usize, value: usize) {
+        debug_assert!(entry_addr > 0);
+        let addr = entry_addr + mem::size_of::<usize>();
+        let new_value = if Self::CAN_ATTACH {
+            Value::next_version::<K, V, A>(original, value)
+        } else {
+            value
+        };
+        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, new_value) };
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
