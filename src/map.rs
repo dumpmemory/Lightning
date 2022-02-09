@@ -155,8 +155,7 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
 
-            if let Some((val, idx, addr)) = self.get_from_chunk(&*chunk, hash, key, fkey)
-            {
+            if let Some((val, idx, addr)) = self.get_from_chunk(&*chunk, hash, key, fkey) {
                 match val.parsed {
                     ParsedValue::Empty => {
                         debug!("Found empty for key {}", fkey);
@@ -192,9 +191,7 @@ impl<
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                if let Some((val, idx, addr)) =
-                    self.get_from_chunk(&*new_chunk, hash, key, fkey)
-                {
+                if let Some((val, idx, addr)) = self.get_from_chunk(&*new_chunk, hash, key, fkey) {
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {}
                         ParsedValue::Val(fval) => {
@@ -227,7 +224,9 @@ impl<
                 "Find nothing for key {}, rt new chunk {:?}, now {:?}. Epoch {} to {}",
                 fkey,
                 new_chunk_ptr,
-                self.new_chunk.load(Acquire, &guard), epoch, new_epoch
+                self.new_chunk.load(Acquire, &guard),
+                epoch,
+                new_epoch
             );
             return None;
         }
@@ -284,7 +283,9 @@ impl<
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, Relaxed);
                 }
-                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v.unwrap())),
+                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => {
+                    result = Some((fv, v.unwrap()))
+                }
                 ModResult::Fail => {
                     // If fail insertion then retry
                     warn!(
@@ -488,7 +489,7 @@ impl<
         new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
         old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
     ) -> Option<&'a ChunkPtr<K, V, A, ALLOC>> {
-        if Self::is_copying(epoch) && !old_chunk_ptr.with_tag(0).eq(new_chunk_ptr)  {
+        if Self::is_copying(epoch) && !old_chunk_ptr.with_tag(0).eq(new_chunk_ptr) {
             unsafe { new_chunk_ptr.as_ref() } // null ptr will be handled by as_ref
         } else {
             None
@@ -520,18 +521,10 @@ impl<
                 // If not migration might put the old value back
                 trace!("Put sentinel in old chunk for removal");
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
-                let remove_from_old = self.modify_entry(
-                    &*old_chunk,
-                    hash,
-                    key,
-                    fkey,
-                    ModOp::Sentinel,
-                    true,
-                    &guard,
-                );
+                let remove_from_old =
+                    self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, true, &guard);
                 match remove_from_old {
-                    ModResult::Done(fvalue, value, _)
-                    | ModResult::Replaced(fvalue, value, _) => {
+                    ModResult::Done(fvalue, value, _) | ModResult::Replaced(fvalue, value, _) => {
                         trace!("Sentinal placed");
                         retr = Some((fvalue, value.unwrap()));
                     }
@@ -654,7 +647,8 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
-                                let value = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                let value =
+                                    read_attachment.then(|| chunk.attachment.get_value(idx));
                                 if self.cas_sentinel(addr, val.raw) {
                                     chunk.attachment.erase(idx);
                                     if *v == 0 {
@@ -671,7 +665,8 @@ impl<
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
-                                let value = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                let value =
+                                    read_attachment.then(|| chunk.attachment.get_value(idx));
                                 if !self.cas_tombstone(addr, val.raw).is_ok() {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
@@ -685,7 +680,8 @@ impl<
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
-                                let value = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                let value =
+                                    read_attachment.then(|| chunk.attachment.get_value(idx));
                                 if self.cas_value(addr, val.raw, *fv).is_ok() {
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
@@ -704,7 +700,8 @@ impl<
                                     } else {
                                         fval
                                     };
-                                    let prev_val = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                    let prev_val =
+                                        read_attachment.then(|| chunk.attachment.get_value(idx));
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
@@ -729,8 +726,11 @@ impl<
                                         fval,
                                         v
                                     );
-                                    let value = read_attachment.then(|| chunk.attachment.get_value(idx));
-                                    if Self::CAN_ATTACH && read_attachment && self.get_fast_value(addr).raw != val.raw
+                                    let value =
+                                        read_attachment.then(|| chunk.attachment.get_value(idx));
+                                    if Self::CAN_ATTACH
+                                        && read_attachment
+                                        && self.get_fast_value(addr).raw != val.raw
                                     {
                                         backoff.spin();
                                         continue;
@@ -750,7 +750,8 @@ impl<
                                         if pval == 0 {
                                             return ModResult::NotFound;
                                         }
-                                        let aval = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                        let aval = read_attachment
+                                            .then(|| chunk.attachment.get_value(idx));
                                         if let Some(v) = swap(pval) {
                                             if self.cas_value(addr, val.raw, v).is_ok() {
                                                 // swap success
@@ -776,7 +777,8 @@ impl<
                                 } else {
                                     fval
                                 };
-                                let prev_val = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                let prev_val =
+                                    read_attachment.then(|| chunk.attachment.get_value(idx));
                                 match self.cas_value(addr, val.raw, primed_fval) {
                                     Ok(cas_fval) => {
                                         if Self::CAN_ATTACH {
@@ -1052,19 +1054,30 @@ impl<
         }
         dfence();
         debug!("Resizing {:?}", old_chunk_ptr);
-        let new_chunk_ptr =
-            Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap))).into_shared(guard).with_tag(0);
+        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap)))
+            .into_shared(guard)
+            .with_tag(0);
         dfence();
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         dfence();
-        self.epoch.fetch_add(1, AcqRel); self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.epoch.fetch_add(1, AcqRel);
+        self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         dfence();
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
         dfence();
-        let swap_chunk = self.chunk.compare_exchange(old_chunk_lock, new_chunk_ptr.with_tag(0), AcqRel, Relaxed, &guard);
+        let swap_chunk = self.chunk.compare_exchange(
+            old_chunk_lock,
+            new_chunk_ptr.with_tag(0),
+            AcqRel,
+            Relaxed,
+            &guard,
+        );
         if let Err(ec) = swap_chunk {
-            panic!("Must swap chunk, got {:?}, expecting {:?}", ec, old_chunk_ptr);
+            panic!(
+                "Must swap chunk, got {:?}, expecting {:?}",
+                ec, old_chunk_ptr
+            );
         }
         dfence();
         self.new_chunk.store(Shared::null(), Release);
@@ -1746,12 +1759,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
     pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
         HashMapReadGuard::new(&self.table, key)
-    }    
-    
+    }
+
     #[inline(always)]
     fn hash(key: &K) -> usize {
         hash_key::<K, H>(key)
-    } 
+    }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
