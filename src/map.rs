@@ -146,7 +146,7 @@ impl<
     pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
-        let hash = hash::<H>(fkey);
+        let hash = Self::hash(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -242,7 +242,7 @@ impl<
     ) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        let hash = hash::<H>(fkey);
+        let hash = Self::hash(fkey);
         loop {
             let epoch = self.now_epoch();
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
@@ -382,7 +382,7 @@ impl<
         guard: &'a Guard,
     ) -> SwapResult<'a, K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
-        let hash = hash::<H>(fkey);
+        let hash = Self::hash(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -504,7 +504,7 @@ impl<
     pub fn remove(&self, key: &K, fkey: usize) -> Option<(usize, V)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
-        let hash = hash::<H>(fkey);
+        let hash = Self::hash(fkey);
         loop {
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
@@ -1190,7 +1190,7 @@ impl<
         let orig = curr_orig;
         // Make insertion for migration inlined, hopefully the ordering will be right
         let cap = new_chunk_ins.capacity;
-        let mut idx = hash::<H>(fkey);
+        let mut idx = Self::hash(fkey);
         let cap_mask = new_chunk_ins.cap_mask();
         let mut count = 0;
         while count < cap {
@@ -1243,6 +1243,15 @@ impl<
 
     pub fn map_is_copying(&self) -> bool {
         Self::is_copying(self.now_epoch())
+    }
+
+    #[inline(always)]
+    fn hash(fkey: usize)  -> usize {
+        if Self::CAN_ATTACH {
+            fkey // Prevent double hashing
+        } else {
+            hash::<H>(fkey)
+        }
     }
 }
 
@@ -1748,7 +1757,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     HashMap<K, V, ALLOC, H>
 {
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
-        let hash = hash_key::<K, H>(&key);
+        let hash = Self::hash(&key);
         self.table
             .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
