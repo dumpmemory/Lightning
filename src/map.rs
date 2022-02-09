@@ -277,7 +277,7 @@ impl<
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
             };
             let value_insertion =
-                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, None, &guard);
+                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _, _) => {
@@ -335,7 +335,7 @@ impl<
                     fvalue
                 );
                 let old_sent =
-                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, new_chunk, &guard);
+                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
                 dfence();
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
             }
@@ -411,7 +411,6 @@ impl<
                                 key,
                                 fkey,
                                 ModOp::AttemptInsert(new_val, &val),
-                                None,
                                 guard,
                             ) {
                                 ModResult::Done(_, _, new_index)
@@ -456,13 +455,12 @@ impl<
                 key,
                 fkey,
                 ModOp::SwapFastVal(Box::new(func)),
-                None,
                 guard,
             );
             if new_chunk.is_some() {
                 debug_assert_ne!(chunk_ptr, new_chunk_ptr);
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, new_chunk, &guard);
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
@@ -509,7 +507,7 @@ impl<
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let old_chunk_ptr = self.chunk.load(Acquire, &guard);
             let copying = Self::is_copying(epoch);
-            if copying && (new_chunk_ptr.is_null() || new_chunk_ptr.tag() == 1) {
+            if copying {
                 continue;
             }
             let new_chunk = unsafe { new_chunk_ptr.deref() };
@@ -526,7 +524,6 @@ impl<
                     key,
                     fkey,
                     ModOp::Sentinel,
-                    Some(&new_chunk),
                     &guard,
                 );
                 match remove_from_old {
@@ -548,7 +545,6 @@ impl<
                 key,
                 fkey,
                 ModOp::Tombstone,
-                None,
                 &guard,
             );
             match res {
@@ -619,7 +615,6 @@ impl<
         key: &K,
         fkey: usize,
         op: ModOp<V>,
-        migration_chunk: Option<&ChunkPtr<K, V, A, ALLOC>>,
         _guard: &'a Guard,
     ) -> ModResult<V> {
         let cap = chunk.capacity;
@@ -2764,19 +2759,19 @@ mod fat_tests {
                                 // panic!("Unrecoverable value change for {:?}", key);
                             }
                         }
-                        // if j % 7 == 0 {
-                        //     assert_eq!(
-                        //         map.remove(&key),
-                        //         Some(value),
-                        //         "Remove result, get {:?}, copying {}, round {}",
-                        //         map.get(&key),
-                        //         map.table.map_is_copying(),
-                        //         k
-                        //     );
-                        //     assert_eq!(map.get(&key), None, "Remove recursion");
-                        //     assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                        //     map.insert(&key, value);
-                        // }
+                        if j % 7 == 0 {
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                            map.insert(&key, value);
+                        }
                         if j % 3 == 0 {
                             let new_value = val_from(value_num + 7);
                             let pre_insert_epoch = map.table.now_epoch();
