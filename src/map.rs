@@ -1229,17 +1229,8 @@ impl<
             count += 1;
         }
         dfence(); //
-        if self.cas_sentinel(old_address, curr_orig) {
-            old_chunk_ins.attachment.erase(old_idx);
-            *effective_copy += 1;
-            dfence();
-            return true;
-        } else {
-            if curr_orig != orig {
-                error!("Unexpected");
-            }
-            return false;
-        }
+        self.store_value(old_address, curr_orig, SENTINEL_VALUE);
+        return true;
     }
 
     pub fn map_is_copying(&self) -> bool {
