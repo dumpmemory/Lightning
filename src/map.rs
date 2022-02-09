@@ -1582,7 +1582,7 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     #[inline(always)]
     fn set_value(&self, index: usize, value: T) {
         let addr = self.addr_by_index(index);
-        unsafe { ptr::write_volatile(addr as *mut T, value) }
+        unsafe { ptr::write(addr as *mut T, value) }
     }
 
     #[inline(always)]
