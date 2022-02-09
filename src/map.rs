@@ -155,7 +155,7 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
 
-            if let Some((val, idx, addr)) = self.get_from_chunk(&*chunk, hash, key, fkey, new_chunk)
+            if let Some((val, idx, addr)) = self.get_from_chunk(&*chunk, hash, key, fkey)
             {
                 match val.parsed {
                     ParsedValue::Empty => {
@@ -193,7 +193,7 @@ impl<
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
                 if let Some((val, idx, addr)) =
-                    self.get_from_chunk(&*new_chunk, hash, key, fkey, None)
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey)
                 {
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {}
@@ -392,7 +392,7 @@ impl<
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
                 if let Some((old_parsed_val, old_index, _)) =
-                    self.get_from_chunk(chunk, hash, key, fkey, Some(new_chunk))
+                    self.get_from_chunk(chunk, hash, key, fkey)
                 {
                     let old_fval = old_parsed_val.raw;
                     if old_parsed_val.is_primed() {
@@ -584,7 +584,6 @@ impl<
         hash: usize,
         key: &K,
         fkey: usize,
-        migrating: Option<&ChunkPtr<K, V, A, ALLOC>>,
     ) -> Option<(Value, usize, usize)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
@@ -603,11 +602,6 @@ impl<
                 }
             } else if k == EMPTY_KEY {
                 return None;
-            } else if let Some(new_chunk_ins) = migrating {
-                let val_res = self.get_fast_value(addr);
-                if let &ParsedValue::Val(_) = &val_res.parsed {
-                    // self.migrate_entry(k, idx, val_res, chunk, new_chunk_ins, addr, &mut 0);
-                }
             }
             idx += 1; // reprobe
             counter += 1;
@@ -873,10 +867,6 @@ impl<
                     ModOp::Tombstone => return ModResult::Fail,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
-            } else if let (Some(migration_chunk), &ParsedValue::Val(_)) =
-                (migration_chunk, &v.parsed)
-            {
-                // self.migrate_entry(k, idx, v, chunk, migration_chunk, addr, &mut 0);
             }
             idx += 1; // reprobe
             count += 1;
