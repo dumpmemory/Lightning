@@ -1222,15 +1222,25 @@ impl<
                     // Use CAS for old threads may working on this one
                     dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
                     trace!("Copied key {} to new chunk", fkey);
-                    break;
+                    // break;
+                    self.store_value(old_address, curr_orig, SENTINEL_VALUE);
+                    old_chunk_ins.attachment.erase(old_idx);
+                    *effective_copy += 1;
+                    return true; // Escape
                 }
             }
             idx += 1; // reprobe
             count += 1;
         }
         dfence(); //
-        self.store_value(old_address, curr_orig, SENTINEL_VALUE);
-        return true;
+        if self.cas_sentinel(old_address, curr_orig) {
+            old_chunk_ins.attachment.erase(old_idx);
+            *effective_copy += 1;
+            dfence();
+            return true;
+        } else {
+            return false;
+        }
     }
 
     pub fn map_is_copying(&self) -> bool {
