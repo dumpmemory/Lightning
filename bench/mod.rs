@@ -23,6 +23,7 @@ mod dashmap;
 mod flurry;
 mod lfmap;
 mod fat_lfmap;
+mod obj_lfmap;
 mod lockfree;
 mod scc;
 
@@ -255,8 +256,9 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
-        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load, contention, stride),
+        run_perf_test_set::<obj_lfmap::TestTable>(file_name, "lightning - obj", load, contention, stride),
         run_perf_test_set::<fat_lfmap::TestTable>(file_name, "lightning - fat", load, contention, stride),
+        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load, contention, stride),
         run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
         run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
         run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
