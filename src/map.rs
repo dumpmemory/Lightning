@@ -1220,27 +1220,25 @@ impl<
                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
-                    dfence(); // fence to ensure sentinel appears righr after pair copied to new chunk
                     trace!("Copied key {} to new chunk", fkey);
-                    // break;
-                    self.store_value(old_address, curr_orig, SENTINEL_VALUE);
-                    old_chunk_ins.attachment.erase(old_idx);
-                    *effective_copy += 1;
-                    return true; // Escape
+                    break;
                 }
             }
             idx += 1; // reprobe
             count += 1;
         }
         dfence(); //
-        if self.cas_sentinel(old_address, curr_orig) {
-            old_chunk_ins.attachment.erase(old_idx);
-            *effective_copy += 1;
-            dfence();
-            return true;
+        if curr_orig != orig {
+            self.store_value(old_address, curr_orig, SENTINEL_VALUE);
+        } else if self.cas_sentinel(old_address, curr_orig) {
+            // continue
         } else {
             return false;
         }
+        old_chunk_ins.attachment.erase(old_idx);
+        *effective_copy += 1;
+        dfence();
+        return true;
     }
 
     pub fn map_is_copying(&self) -> bool {
