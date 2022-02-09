@@ -1684,8 +1684,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     fn probe(&self, index: usize, key: &K) -> bool {
         let addr = self.addr_by_index(index);
         let pos_key = unsafe {
-            // &*(addr as *mut K)
-            ptr::read_volatile(addr as *mut K)
+            &*(addr as *mut K)
+            // ptr::read_volatile(addr as *mut K)
         };
         pos_key.eq(key)
     }
