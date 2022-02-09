@@ -685,8 +685,13 @@ impl<
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
+                                let value = read_attachment.then(|| chunk.attachment.get_value(idx));
                                 if self.cas_value(addr, val.raw, *fv).is_ok() {
-                                    return ModResult::Done(addr, None, idx);
+                                    if *v == 0 {
+                                        return ModResult::Done(addr, None, idx);
+                                    } else {
+                                        return ModResult::Replaced(*v, value, idx);
+                                    }
                                 } else {
                                     trace!("Cannot upsert fast value in place for {}", fkey);
                                     return ModResult::Fail;
