@@ -50,8 +50,8 @@ enum ParsedValue {
 }
 
 enum ModResult<V> {
-    Replaced(usize, V, usize), // (origin fval, val, index)
-    Existed(usize, V),
+    Replaced(usize, Option<V>, usize), // (origin fval, val, index)
+    Existed(usize, Option<V>),
     Fail,
     Sentinel,
     NotFound,
@@ -277,14 +277,14 @@ impl<
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
             };
             let value_insertion =
-                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, &guard);
+                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, Relaxed);
                 }
-                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
+                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v.unwrap())),
                 ModResult::Fail => {
                     // If fail insertion then retry
                     warn!(
@@ -335,7 +335,7 @@ impl<
                     fvalue
                 );
                 let old_sent =
-                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
+                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
                 dfence();
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
             }
@@ -411,6 +411,7 @@ impl<
                                 key,
                                 fkey,
                                 ModOp::AttemptInsert(new_val, &val),
+                                false,
                                 guard,
                             ) {
                                 ModResult::Done(_, _, new_index)
@@ -455,12 +456,13 @@ impl<
                 key,
                 fkey,
                 ModOp::SwapFastVal(Box::new(func)),
+                false,
                 guard,
             );
             if new_chunk.is_some() {
                 debug_assert_ne!(chunk_ptr, new_chunk_ptr);
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, &guard);
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
@@ -524,13 +526,14 @@ impl<
                     key,
                     fkey,
                     ModOp::Sentinel,
+                    true,
                     &guard,
                 );
                 match remove_from_old {
-                    ModResult::Done(fvalue, Some(value), _)
+                    ModResult::Done(fvalue, value, _)
                     | ModResult::Replaced(fvalue, value, _) => {
                         trace!("Sentinal placed");
-                        retr = Some((fvalue, value));
+                        retr = Some((fvalue, value.unwrap()));
                     }
                     ModResult::Done(_, None, _) => {}
                     _ => {
@@ -545,11 +548,12 @@ impl<
                 key,
                 fkey,
                 ModOp::Tombstone,
+                true,
                 &guard,
             );
             match res {
                 ModResult::Replaced(fvalue, value, _) => {
-                    retr = Some((fvalue, value));
+                    retr = Some((fvalue, value.unwrap()));
                     self.count.fetch_sub(1, Relaxed);
                 }
                 ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
@@ -615,6 +619,7 @@ impl<
         key: &K,
         fkey: usize,
         op: ModOp<V>,
+        read_attachment: bool,
         _guard: &'a Guard,
     ) -> ModResult<V> {
         let cap = chunk.capacity;
@@ -649,13 +654,13 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
-                                let value = chunk.attachment.get_value(idx);
+                                let value = read_attachment.then(|| chunk.attachment.get_value(idx));
                                 if self.cas_sentinel(addr, val.raw) {
                                     chunk.attachment.erase(idx);
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
                                     } else {
-                                        return ModResult::Done(*v, Some(value), idx);
+                                        return ModResult::Done(*v, value, idx);
                                     }
                                 } else {
                                     return ModResult::Fail;
@@ -666,7 +671,7 @@ impl<
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
-                                let value = chunk.attachment.get_value(idx);
+                                let value = read_attachment.then(|| chunk.attachment.get_value(idx));
                                 if !self.cas_tombstone(addr, val.raw).is_ok() {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
@@ -680,13 +685,8 @@ impl<
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
-                                let value = chunk.attachment.get_value(idx);
                                 if self.cas_value(addr, val.raw, *fv).is_ok() {
-                                    if *v == 0 {
-                                        return ModResult::Done(addr, None, idx);
-                                    } else {
-                                        return ModResult::Replaced(*v, value, idx);
-                                    }
+                                    return ModResult::Done(addr, None, idx);
                                 } else {
                                     trace!("Cannot upsert fast value in place for {}", fkey);
                                     return ModResult::Fail;
@@ -699,7 +699,7 @@ impl<
                                     } else {
                                         fval
                                     };
-                                    let prev_val = chunk.attachment.get_value(idx);
+                                    let prev_val = read_attachment.then(|| chunk.attachment.get_value(idx));
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
@@ -709,7 +709,7 @@ impl<
                                             return ModResult::Replaced(val.raw, prev_val, idx);
                                         }
                                         Err(act_val) => {
-                                            if Self::CAN_ATTACH {
+                                            if Self::CAN_ATTACH && read_attachment {
                                                 // Fast value changed, cannot obtain stable fat value
                                                 backoff.spin();
                                                 continue;
@@ -724,8 +724,8 @@ impl<
                                         fval,
                                         v
                                     );
-                                    let value = chunk.attachment.get_value(idx);
-                                    if Self::CAN_ATTACH && self.get_fast_value(addr).raw != val.raw
+                                    let value = read_attachment.then(|| chunk.attachment.get_value(idx));
+                                    if Self::CAN_ATTACH && read_attachment && self.get_fast_value(addr).raw != val.raw
                                     {
                                         backoff.spin();
                                         continue;
@@ -745,7 +745,7 @@ impl<
                                         if pval == 0 {
                                             return ModResult::NotFound;
                                         }
-                                        let aval = chunk.attachment.get_value(idx);
+                                        let aval = read_attachment.then(|| chunk.attachment.get_value(idx));
                                         if let Some(v) = swap(pval) {
                                             if self.cas_value(addr, val.raw, v).is_ok() {
                                                 // swap success
@@ -771,7 +771,7 @@ impl<
                                 } else {
                                     fval
                                 };
-                                let prev_val = chunk.attachment.get_value(idx);
+                                let prev_val = read_attachment.then(|| chunk.attachment.get_value(idx));
                                 match self.cas_value(addr, val.raw, primed_fval) {
                                     Ok(cas_fval) => {
                                         if Self::CAN_ATTACH {
