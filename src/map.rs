@@ -1518,12 +1518,12 @@ pub trait Attachment<K, V> {
 }
 
 pub trait AttachmentItem<K, V> {
-    fn get_key(&self) -> K;
-    fn get_value(&self) -> V;
-    fn set_key(&self, key: K);
-    fn set_value(&self, value: V);
-    fn erase(&self);
-    fn probe(&self, probe_key: &K) -> bool;
+    fn get_key(self) -> K;
+    fn get_value(self) -> V;
+    fn set_key(self, key: K);
+    fn set_value(self, value: V);
+    fn erase(self);
+    fn probe(self, probe_key: &K) -> bool;
 }
 
 pub struct WordAttachment;
@@ -1553,26 +1553,26 @@ impl Attachment<(), ()> for WordAttachment {
 
 impl AttachmentItem<(), ()> for WordAttachmentItem {
     #[inline(always)]
-    fn get_key(&self) -> () {
+    fn get_key(self) -> () {
         ()
     }
 
     #[inline(always)]
-    fn get_value(&self) -> () {
+    fn get_value(self) -> () {
         ()
     }
 
     #[inline(always)]
-    fn set_key(&self, _key: ()) {}
+    fn set_key(self, _key: ()) {}
 
     #[inline(always)]
-    fn set_value(&self, _value: ()) {}
+    fn set_value(self, _value: ()) {}
 
     #[inline(always)]
-    fn erase(&self) {}    
+    fn erase(self) {}    
     
     #[inline(always)]
-    fn probe(&self, _value: &()) -> bool {
+    fn probe(self, _value: &()) -> bool {
         true
     }
 }
@@ -1621,32 +1621,32 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
 
 impl <T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     #[inline(always)]
-    fn get_value(&self) -> T {
+    fn get_value(self) -> T {
         let addr = self.addr;
         let v = unsafe { (*(addr as *mut T)).clone() };
         v
     }
 
     #[inline(always)]
-    fn set_value(&self, value: T) {
+    fn set_value(self, value: T) {
         let addr = self.addr;
         unsafe { ptr::write(addr as *mut T, value) }
     }
 
     #[inline(always)]
-    fn erase(&self) {
+    fn erase(self) {
         drop(self.addr as *mut T)
     }
 
-    fn probe(&self, _value: &()) -> bool {
+    fn probe(self, _value: &()) -> bool {
         true
     }
 
-    fn get_key(&self) -> () {
+    fn get_key(self) -> () {
         ()
     }
 
-    fn set_key(&self, _key: ()) {}
+    fn set_key(self, _key: ()) {}
 }
 
 impl <T: Clone> Copy for WordObjectAttachmentItem<T> {}
@@ -1717,40 +1717,40 @@ impl <K: Clone + Hash + Eq, V: Clone> HashKVAttachmentItem<K, V> {
 
 impl <K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentItem<K, V> {
     #[inline(always)]
-    fn get_key(&self) -> K {
+    fn get_key(self) -> K {
         let addr = self.addr;
         unsafe { (*(addr as *mut K)).clone() }
     }
 
     #[inline(always)]
-    fn set_key(&self, key: K) {
+    fn set_key(self, key: K) {
         let addr = self.addr;
         unsafe { ptr::write_volatile(addr as *mut K, key) }
     }
 
     #[inline(always)]
-    fn get_value(&self) -> V {
+    fn get_value(self) -> V {
         let addr = self.addr;
         let val_addr = addr + Self::VAL_OFFSET;
         unsafe { (*(val_addr as *mut V)).clone() }
     }
 
     #[inline(always)]
-    fn set_value(&self, value: V) {
+    fn set_value(self, value: V) {
         let addr = self.addr;
         let val_addr = addr + Self::VAL_OFFSET;
         unsafe { ptr::write(val_addr as *mut V, value) }
     }
 
     #[inline(always)]
-    fn erase(&self) {
+    fn erase(self) {
         let addr = self.addr;
         // drop(addr as *mut K);
         drop((addr + Self::VAL_OFFSET) as *mut V);
     }
 
     #[inline(always)]
-    fn probe(&self, key: &K) -> bool {
+    fn probe(self, key: &K) -> bool {
         let addr = self.addr;
         let pos_key = unsafe {
             &*(addr as *mut K)
