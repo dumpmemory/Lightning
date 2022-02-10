@@ -828,6 +828,7 @@ impl<
                         if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
+                                // Inserting pre-key so other key don't need to wait at this slot
                                 unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey | INV_KEY_BIT_MASK) }
                             }
                             attachment.set_key(key.clone());
