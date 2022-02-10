@@ -829,7 +829,7 @@ impl<
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
-                                unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey | INV_KEY_BIT_MASK) }
+                                unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey | INV_KEY_BIT_MASK) }
                             }
                             attachment.set_key(key.clone());
                             attachment.set_value((*val).clone());
