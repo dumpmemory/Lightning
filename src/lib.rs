@@ -15,6 +15,7 @@ pub mod map;
 pub mod ring_buffer;
 pub mod spin;
 pub mod ttl_cache;
+pub mod allocator;
 
 pub mod rand;
 
