@@ -190,7 +190,9 @@ impl<
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                if let Some((val, _idx, addr, aitem)) = self.get_from_chunk(&*new_chunk, hash, key, fkey) {
+                if let Some((val, _idx, addr, aitem)) =
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey)
+                {
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {}
                         ParsedValue::Val(fval) => {
@@ -647,8 +649,7 @@ impl<
                     ParsedValue::Val(v) => {
                         match &op {
                             &ModOp::Sentinel => {
-                                let value =
-                                    read_attachment.then(|| attachment.get_value());
+                                let value = read_attachment.then(|| attachment.get_value());
                                 if self.cas_sentinel(addr, val.raw) {
                                     attachment.erase();
                                     if *v == 0 {
@@ -665,8 +666,7 @@ impl<
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
-                                let value =
-                                    read_attachment.then(|| attachment.get_value());
+                                let value = read_attachment.then(|| attachment.get_value());
                                 if !self.cas_tombstone(addr, val.raw).is_ok() {
                                     // this insertion have conflict with others
                                     // other thread changed the value (empty)
@@ -680,8 +680,7 @@ impl<
                                 }
                             }
                             &ModOp::UpsertFastVal(ref fv) => {
-                                let value =
-                                    read_attachment.then(|| attachment.get_value());
+                                let value = read_attachment.then(|| attachment.get_value());
                                 if self.cas_value(addr, val.raw, *fv).is_ok() {
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
@@ -700,8 +699,7 @@ impl<
                                     } else {
                                         fval
                                     };
-                                    let prev_val =
-                                        read_attachment.then(|| attachment.get_value());
+                                    let prev_val = read_attachment.then(|| attachment.get_value());
                                     match self.cas_value(addr, val.raw, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
@@ -726,8 +724,7 @@ impl<
                                         fval,
                                         v
                                     );
-                                    let value =
-                                        read_attachment.then(|| attachment.get_value());
+                                    let value = read_attachment.then(|| attachment.get_value());
                                     if Self::CAN_ATTACH
                                         && read_attachment
                                         && self.get_fast_value(addr).raw != val.raw
@@ -750,8 +747,7 @@ impl<
                                         if pval == 0 {
                                             return ModResult::NotFound;
                                         }
-                                        let aval = read_attachment
-                                            .then(|| attachment.get_value());
+                                        let aval = read_attachment.then(|| attachment.get_value());
                                         if let Some(v) = swap(pval) {
                                             if self.cas_value(addr, val.raw, v).is_ok() {
                                                 // swap success
@@ -777,8 +773,7 @@ impl<
                                 } else {
                                     fval
                                 };
-                                let prev_val =
-                                    read_attachment.then(|| attachment.get_value());
+                                let prev_val = read_attachment.then(|| attachment.get_value());
                                 match self.cas_value(addr, val.raw, primed_fval) {
                                     Ok(cas_fval) => {
                                         if Self::CAN_ATTACH {
@@ -1240,7 +1235,7 @@ impl<
     }
 
     #[inline(always)]
-    fn hash(fkey: usize)  -> usize {
+    fn hash(fkey: usize) -> usize {
         if Self::CAN_ATTACH {
             fkey // Prevent double hashing
         } else {
@@ -1507,7 +1502,6 @@ const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
 }
 
 pub trait Attachment<K, V> {
-
     type Item: AttachmentItem<K, V> + Copy;
 
     fn heap_size_of(cap: usize) -> usize;
@@ -1531,7 +1525,6 @@ pub struct WordAttachmentItem;
 
 // this attachment basically do nothing and sized zero
 impl Attachment<(), ()> for WordAttachment {
-
     type Item = WordAttachmentItem;
 
     fn heap_size_of(_cap: usize) -> usize {
@@ -1568,8 +1561,8 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
     fn set_value(self, _value: ()) {}
 
     #[inline(always)]
-    fn erase(self) {}    
-    
+    fn erase(self) {}
+
     #[inline(always)]
     fn probe(self, _value: &()) -> bool {
         true
@@ -1587,11 +1580,10 @@ pub struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
 #[derive(Clone)]
 pub struct WordObjectAttachmentItem<T> {
     addr: usize,
-    _makrer: PhantomData<T>
+    _makrer: PhantomData<T>,
 }
 
 impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachment<T, A> {
-
     type Item = WordObjectAttachmentItem<T>;
 
     fn heap_size_of(cap: usize) -> usize {
@@ -1618,12 +1610,12 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
         }
         WordObjectAttachmentItem {
             addr,
-            _makrer: PhantomData
+            _makrer: PhantomData,
         }
     }
 }
 
-impl <T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
+impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     #[inline(always)]
     fn get_value(self) -> T {
         let addr = self.addr;
@@ -1653,7 +1645,7 @@ impl <T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     fn set_key(self, _key: ()) {}
 }
 
-impl <T: Clone> Copy for WordObjectAttachmentItem<T> {}
+impl<T: Clone> Copy for WordObjectAttachmentItem<T> {}
 
 pub type HashTable<K, V, ALLOC> =
     Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
@@ -1666,7 +1658,7 @@ pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
 #[derive(Clone)]
 pub struct HashKVAttachmentItem<K, V> {
     addr: usize,
-    _marker: PhantomData<(K, V)>
+    _marker: PhantomData<(K, V)>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
@@ -1690,7 +1682,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     for HashKVAttachment<K, V, A>
 {
-
     type Item = HashKVAttachmentItem<K, V>;
 
     fn heap_size_of(cap: usize) -> usize {
@@ -1715,16 +1706,16 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
         }
         HashKVAttachmentItem {
             addr,
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 }
 
-impl <K: Clone + Hash + Eq, V: Clone> HashKVAttachmentItem<K, V> {
+impl<K: Clone + Hash + Eq, V: Clone> HashKVAttachmentItem<K, V> {
     const VAL_OFFSET: usize = { HashKVAttachment::<K, V, System>::VAL_OFFSET };
 }
 
-impl <K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentItem<K, V> {
+impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentItem<K, V> {
     #[inline(always)]
     fn get_key(self) -> K {
         let addr = self.addr;
@@ -1769,7 +1760,7 @@ impl <K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentI
     }
 }
 
-impl <K: Clone, V: Clone> Copy for HashKVAttachmentItem<K, V> {}
+impl<K: Clone, V: Clone> Copy for HashKVAttachmentItem<K, V> {}
 
 pub trait Map<K, V: Clone> {
     fn with_capacity(cap: usize) -> Self;
@@ -2233,7 +2224,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 SwapResult::Succeed(_, idx, chunk) => {
                     let chunk_ref = unsafe { chunk.deref() };
                     let attachment = chunk_ref.attachment.prefetch(idx);
-                    let v =  attachment.get_value();
+                    let v = attachment.get_value();
                     value = v;
                     break;
                 }
