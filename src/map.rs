@@ -154,7 +154,7 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            if let Some((val, idx, addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey) {
+            if let Some((val, _idx, addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey) {
                 match val.parsed {
                     ParsedValue::Empty => {
                         debug!("Found empty for key {}", fkey);
@@ -190,7 +190,7 @@ impl<
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                if let Some((val, idx, addr, aitem)) = self.get_from_chunk(&*new_chunk, hash, key, fkey) {
+                if let Some((val, _idx, addr, aitem)) = self.get_from_chunk(&*new_chunk, hash, key, fkey) {
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {}
                         ParsedValue::Val(fval) => {
@@ -527,7 +527,6 @@ impl<
                         trace!("Sentinal placed");
                         retr = Some((fvalue, value.unwrap()));
                     }
-                    ModResult::Done(_, None, _) => {}
                     _ => {
                         trace!("Sentinal not placed");
                     }
@@ -1546,7 +1545,7 @@ impl Attachment<(), ()> for WordAttachment {
     #[inline(always)]
     fn dealloc(&self) {}
 
-    fn prefetch(&self, index: usize) -> Self::Item {
+    fn prefetch(&self, _index: usize) -> Self::Item {
         WordAttachmentItem
     }
 }
@@ -1611,9 +1610,14 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     #[inline(always)]
     fn dealloc(&self) {}
 
+    #[inline(always)]
     fn prefetch(&self, index: usize) -> Self::Item {
+        let addr = self.addr_by_index(index);
+        unsafe {
+            intrinsics::prefetch_read_data(addr as *const T, 2);
+        }
         WordObjectAttachmentItem {
-            addr: self.addr_by_index(index),
+            addr,
             _makrer: PhantomData
         }
     }
@@ -1703,9 +1707,14 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     #[inline(always)]
     fn dealloc(&self) {}
 
+    #[inline(always)]
     fn prefetch(&self, index: usize) -> Self::Item {
+        let addr = self.addr_by_index(index);
+        unsafe {
+            intrinsics::prefetch_read_data(addr as *const K, 2);
+        }
         HashKVAttachmentItem {
-            addr: self.addr_by_index(index),
+            addr,
             _marker: PhantomData
         }
     }
@@ -2673,12 +2682,6 @@ impl Default for PassthroughHasher {
     }
 }
 
-fn timestamp() -> u64 {
-    let start = SystemTime::now();
-    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    since_the_epoch.as_millis() as u64
-}
-
 impl<V> Debug for ModResult<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -2699,7 +2702,6 @@ impl<V> Debug for ModResult<V> {
 #[cfg(test)]
 mod fat_tests {
     use crate::map::*;
-    use rayon::prelude::*;
     use std::sync::Arc;
     use std::thread;
 
