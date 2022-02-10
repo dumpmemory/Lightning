@@ -592,12 +592,11 @@ impl<
             let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
             let act_key = k.key();
-            let fkey_matches = act_key == fkey;
-            if Self::CAN_ATTACH && fkey_matches && k.is_pre_key() {
-                backoff.spin();
-                continue;
-            }
-            if fkey_matches && attachment.probe(key) {
+            if act_key == fkey && attachment.probe(key) {
+                if k.is_pre_key() {
+                    backoff.spin();
+                    continue;
+                }
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
                     ParsedValue::Empty => {}
@@ -652,14 +651,13 @@ impl<
             }
             let act_key = k.key();
             let attachment = chunk.attachment.prefetch(idx);
-            let fkey_match = act_key == fkey;
-            if Self::CAN_ATTACH && fkey_match && k.is_pre_key() {
+            if act_key == fkey && attachment.probe(&key) {
+                // Probing non-empty entry
+                if k.is_pre_key() {
                     // Inserting entry have pre-key
                     backoff.spin();
                     continue;
-            }
-            if fkey_match && attachment.probe(&key) {
-                // Probing non-empty entry
+                }
                 let val = v;
                 match &val.parsed {
                     ParsedValue::Val(v) => {
