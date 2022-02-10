@@ -1279,7 +1279,7 @@ struct FastKey<K, V, A: Attachment<K, V>> {
 
 impl <K, V, A: Attachment<K, V>> FastKey<K, V, A> {
 
-    const CAN_ATACH: bool = can_attach::<K, V, A>();
+    const CAN_ATTACH: bool = can_attach::<K, V, A>();
 
     #[inline(always)]
     fn new(key: usize) -> Self {
@@ -1291,7 +1291,7 @@ impl <K, V, A: Attachment<K, V>> FastKey<K, V, A> {
 
     #[inline(always)]
     fn key(self) -> usize {
-        if Self::CAN_ATACH {
+        if Self::CAN_ATTACH {
             self.key & KEY_BIT_MASK
         } else {
             self.key
@@ -1300,7 +1300,7 @@ impl <K, V, A: Attachment<K, V>> FastKey<K, V, A> {
     
     #[inline(always)]
     fn is_pre_key(self) -> bool {
-        if Self::CAN_ATACH {
+        if Self::CAN_ATTACH {
             self.key | INV_KEY_BIT_MASK == self.key
         } else {
             false
