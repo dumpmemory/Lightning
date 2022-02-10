@@ -930,7 +930,7 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_key(&self, entry_addr: usize) -> FastKey<K, V, A> {
+    fn get_fast_key(&self, entry_addr: usize) -> FastKey {
         debug_assert!(entry_addr > 0);
         FastKey::new(unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) })
     }
@@ -1271,49 +1271,29 @@ impl<
     }
 }
 
-
-struct FastKey<K, V, A: Attachment<K, V>> {
-    key: usize,
-    _marker: PhantomData<(K, V, A)>
+#[derive(Clone, Copy)]
+struct FastKey {
+    key: usize
 }
 
-impl <K, V, A: Attachment<K, V>> FastKey<K, V, A> {
-
-    const CAN_ATACH: bool = can_attach::<K, V, A>();
-
+impl FastKey {
     #[inline(always)]
-    fn new(key: usize) -> Self {
+    fn new(key: usize) -> FastKey {
         Self {
-            key,
-            _marker: PhantomData
+            key
         }
     }
 
     #[inline(always)]
     fn key(self) -> usize {
-        if Self::CAN_ATACH {
-            self.key & KEY_BIT_MASK
-        } else {
-            self.key
-        }
+        self.key & KEY_BIT_MASK
     }
     
     #[inline(always)]
     fn is_pre_key(self) -> bool {
-        if Self::CAN_ATACH {
-            self.key | INV_KEY_BIT_MASK == self.key
-        } else {
-            true
-        }
+        self.key | INV_KEY_BIT_MASK == self.key
     }
 }
-
-impl <K, V, A: Attachment<K, V>> Clone for FastKey<K, V, A> {
-    fn clone(&self) -> Self {
-        Self { key: self.key, _marker: PhantomData }
-    }
-}
-impl <K, V, A: Attachment<K, V>> Copy for FastKey<K, V, A> {}
 
 impl Value {
     pub fn new<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
