@@ -1303,7 +1303,7 @@ impl <K, V, A: Attachment<K, V>> FastKey<K, V, A> {
         if Self::CAN_ATACH {
             self.key | INV_KEY_BIT_MASK == self.key
         } else {
-            true
+            false
         }
     }
 }
