@@ -23,7 +23,7 @@ const EMPTY_VALUE: usize = 0;
 const SENTINEL_VALUE: usize = 1;
 const TOMBSTONE_VALUE: usize = 2;
 const LOCKED_VALUE: usize = 3;
-const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK ;
+const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK;
 const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 
 struct Value {
@@ -144,7 +144,9 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            if let Some((val, _idx, _addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey, &guard) {
+            if let Some((val, _idx, _addr, aitem)) =
+                self.get_from_chunk(&*chunk, hash, key, fkey, &guard)
+            {
                 match val.parsed {
                     ParsedValue::Empty => {
                         debug!("Found empty for key {}", fkey);
@@ -226,7 +228,9 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let hash = Self::hash(fkey);
-        let attachment_fval = value.map(|v| Self::attachment_fval(fvalue, key, v)).unwrap_or(fvalue);
+        let attachment_fval = value
+            .map(|v| Self::attachment_fval(fvalue, key, v))
+            .unwrap_or(fvalue);
         loop {
             let epoch = self.now_epoch();
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
@@ -455,9 +459,7 @@ impl<
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
             }
             return match mod_res {
-                ModResult::Replaced(v, _, idx) => {
-                    SwapResult::Succeed(v, idx, modify_chunk_ptr)
-                }
+                ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v, idx, modify_chunk_ptr),
                 ModResult::Aborted => SwapResult::Aborted,
                 ModResult::Fail => SwapResult::Failed,
                 ModResult::NotFound => SwapResult::NotFound,
@@ -565,7 +567,7 @@ impl<
         hash: usize,
         key: &K,
         fkey: usize,
-        _guard: &'a Guard
+        _guard: &'a Guard,
     ) -> Option<(Value, usize, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
@@ -640,9 +642,7 @@ impl<
                             &ModOp::Sentinel => {
                                 let value = read_attachment.then(|| attachment.get_value());
                                 if self.cas_sentinel(addr, val.raw) {
-                                    unsafe {
-                                        attachment.erase(&guard)
-                                    };
+                                    unsafe { attachment.erase(&guard) };
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
                                     } else {
@@ -665,9 +665,7 @@ impl<
                                     return ModResult::Fail;
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
-                                    unsafe {
-                                        attachment.erase(&guard)
-                                    };
+                                    unsafe { attachment.erase(&guard) };
                                     chunk.empty_entries.fetch_add(1, Relaxed);
                                     return ModResult::Replaced(*v, value, idx);
                                 }
@@ -690,9 +688,7 @@ impl<
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     match self.cas_value(addr, val.raw, fval) {
                                         Ok(cas_fval) => {
-                                            unsafe {
-                                                attachment.erase(&guard)
-                                            };
+                                            unsafe { attachment.erase(&guard) };
                                             return ModResult::Replaced(val.raw, prev_val, idx);
                                         }
                                         Err(act_val) => {
@@ -925,8 +921,9 @@ impl<
             assert!(entry_addr < chunk_ref.base + chunk_ref.total_size);
         }
         let addr = entry_addr + mem::size_of::<usize>();
-        let (val, done) =
-            unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE) };
+        let (val, done) = unsafe {
+            intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, SENTINEL_VALUE)
+        };
         done || (val == SENTINEL_VALUE)
     }
 
@@ -1083,7 +1080,7 @@ impl<
                 ParsedValue::Locked => {
                     backoff.spin();
                     continue;
-                },
+                }
             }
             old_address += ENTRY_SIZE;
             idx += 1;
@@ -1181,9 +1178,9 @@ impl<
 
     #[inline(always)]
     fn attachment_fval(fval: usize, key: &K, val: V) -> usize {
-        Self::CAN_ATTACH.then(|| {
-            A::new_fval(key.clone(), val, fval)
-        }).unwrap_or(fval)
+        Self::CAN_ATTACH
+            .then(|| A::new_fval(key.clone(), val, fval))
+            .unwrap_or(fval)
     }
 }
 
@@ -1196,9 +1193,12 @@ impl Value {
             TOMBSTONE_VALUE => ParsedValue::Val(0),
             SENTINEL_VALUE => ParsedValue::Sentinel,
             LOCKED_VALUE => ParsedValue::Locked,
-            _ => ParsedValue::Val(val)
+            _ => ParsedValue::Val(val),
         };
-        Value { raw: val, parsed: res }
+        Value {
+            raw: val,
+            parsed: res,
+        }
     }
 }
 
@@ -1391,7 +1391,6 @@ const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
 }
 
 pub trait Attachment<K, V> {
-
     type Item: AttachmentItem<K, V>;
 
     fn new() -> Self;
@@ -1473,9 +1472,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
         0
     }
 
-    unsafe fn erase(&self, _guard: &Guard) {
-        
-    }
+    unsafe fn erase(&self, _guard: &Guard) {}
 
     fn tag(&self) -> usize {
         unreachable!()
@@ -1494,11 +1491,11 @@ pub struct WordObjectAttachment<T> {
 
 pub struct WordObjectAttachmentItem<T> {
     ptr: usize,
-    _marker: PhantomData<T>
+    _marker: PhantomData<T>,
 }
 
 struct WordObjectAttachmentBucket<T> {
-    val: T
+    val: T,
 }
 
 impl<T: Clone> Attachment<(), T> for WordObjectAttachment<T> {
@@ -1511,8 +1508,8 @@ impl<T: Clone> Attachment<(), T> for WordObjectAttachment<T> {
     }
 }
 
-impl <T>WordObjectAttachmentItem<T> {
-    unsafe fn ptr(&self) -> Shared::<WordObjectAttachmentBucket<T>>{
+impl<T> WordObjectAttachmentItem<T> {
+    unsafe fn ptr(&self) -> Shared<WordObjectAttachmentBucket<T>> {
         Shared::<WordObjectAttachmentBucket<T>>::from_usize(self.ptr)
     }
 }
@@ -1539,14 +1536,14 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
         let ptr = Owned::new(bucket).with_tag(tag);
         Self {
             ptr: ptr.into_usize(),
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 
     fn from_fval<'a>(val: usize) -> Self {
         Self {
             ptr: val,
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 
@@ -1563,38 +1560,32 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     }
 
     fn tag(&self) -> usize {
-        unsafe {
-            self.ptr().tag()
-        }
+        unsafe { self.ptr().tag() }
     }
 
     fn with_tag(&self, tag: usize) -> usize {
-        unsafe {
-            self.ptr().with_tag(tag).into_usize()
-        }
+        unsafe { self.ptr().with_tag(tag).into_usize() }
     }
 }
 
-type HashTable<K, V, ALLOC> =
-    Table<K, V, HashKVAttachment<K, V>, ALLOC, PassthroughHasher>;
+type HashTable<K, V, ALLOC> = Table<K, V, HashKVAttachment<K, V>, ALLOC, PassthroughHasher>;
 
 struct HashKVAttachment<K, V> {
-    _marker: PhantomData<(K, V)>
+    _marker: PhantomData<(K, V)>,
 }
 
 #[derive(Clone)]
 struct HashKVAttachmentItem<K, V> {
     ptr: usize,
-    _marker: PhantomData<(K, V)>
+    _marker: PhantomData<(K, V)>,
 }
 
 struct HashKVAttachmentBucket<K, V> {
-    key: K, value: V
+    key: K,
+    value: V,
 }
 
-impl<K: Clone + Hash + Eq, V: Clone> Attachment<K, V>
-    for HashKVAttachment<K, V>
-{
+impl<K: Clone + Hash + Eq, V: Clone> Attachment<K, V> for HashKVAttachment<K, V> {
     type Item = HashKVAttachmentItem<K, V>;
 
     fn new() -> Self {
@@ -1607,9 +1598,7 @@ impl<K: Clone + Hash + Eq, V: Clone> Attachment<K, V>
 impl<K: Clone + Hash + Eq, V: Clone> HashKVAttachmentItem<K, V> {
     #[inline(always)]
     fn get_ptr(&self) -> Option<Shared<HashKVAttachmentBucket<K, V>>> {
-        (self.ptr > NUM_FIX).then(|| unsafe {
-            self.shared()
-        })
+        (self.ptr > NUM_FIX).then(|| unsafe { self.shared() })
     }
 
     unsafe fn shared(&self) -> Shared<HashKVAttachmentBucket<K, V>> {
@@ -1636,9 +1625,9 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
 
     #[inline(always)]
     fn probe(&self, key: &K) -> bool {
-        self.get_ptr().map(|b| unsafe {
-            &b.deref().key == key
-        }).unwrap_or(false)
+        self.get_ptr()
+            .map(|b| unsafe { &b.deref().key == key })
+            .unwrap_or(false)
     }
 
     fn new<'a>(key: K, value: V, tag: usize) -> Self {
@@ -1646,14 +1635,14 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
         let ptr = Owned::new(bucket).with_tag(tag);
         Self {
             ptr: ptr.into_usize(),
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 
     fn from_fval<'a>(fvalue: usize) -> Self {
         Self {
             ptr: fvalue,
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 
@@ -1661,7 +1650,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
         self.ptr
     }
 
-    fn fval_with_new_value<'a>(&self, value: V, tag: usize) ->usize {
+    fn fval_with_new_value<'a>(&self, value: V, tag: usize) -> usize {
         Self::new(self.get_key(), value, tag).ptr
     }
 
@@ -1670,15 +1659,11 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
     }
 
     fn tag(&self) -> usize {
-        unsafe {
-            self.shared().tag()
-        }
-    }    
-    
+        unsafe { self.shared().tag() }
+    }
+
     fn with_tag(&self, tag: usize) -> usize {
-        unsafe {
-            self.shared().with_tag(tag).into_usize()
-        }
+        unsafe { self.shared().with_tag(tag).into_usize() }
     }
 }
 

@@ -63,15 +63,13 @@ impl<T> Allocator<T> {
         &mut *(self.raw_ptr_of(ptr))
     }
 
-	pub unsafe fn set_ptr(&self, ptr: u32) {
-		self.pointer.store(ptr, Release);
-	}
+    pub unsafe fn set_ptr(&self, ptr: u32) {
+        self.pointer.store(ptr, Release);
+    }
 }
 
-impl <T> Drop for Allocator<T> {
+impl<T> Drop for Allocator<T> {
     fn drop(&mut self) {
-        unsafe {
-			libc::free(self.buffer as *mut c_void)
-		}
+        unsafe { libc::free(self.buffer as *mut c_void) }
     }
 }
