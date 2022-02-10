@@ -1,6 +1,7 @@
 // usize to usize lock-free, wait free table
 use crate::align_padding;
 use alloc::vec::Vec;
+use crossbeam_utils::Backoff;
 use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
@@ -15,7 +16,6 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct EntryTemplate(usize, usize);
 
@@ -25,6 +25,8 @@ const SENTINEL_VALUE: usize = 1;
 const TOMBSTONE_VALUE: usize = 2;
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
+const KEY_BIT_MASK: usize = VAL_BIT_MASK;
+const INV_KEY_BIT_MASK: usize = !KEY_BIT_MASK;
 const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 
@@ -154,7 +156,7 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            if let Some((val, _idx, addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey) {
+            if let Some((val, _idx, addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey, &backoff) {
                 match val.parsed {
                     ParsedValue::Empty => {
                         debug!("Found empty for key {}", fkey);
@@ -191,7 +193,7 @@ impl<
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
                 if let Some((val, _idx, addr, aitem)) =
-                    self.get_from_chunk(&*new_chunk, hash, key, fkey)
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
                 {
                     match val.parsed {
                         ParsedValue::Empty | ParsedValue::Val(0) => {}
@@ -394,7 +396,7 @@ impl<
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
                 if let Some((old_parsed_val, old_index, _, attachment)) =
-                    self.get_from_chunk(chunk, hash, key, fkey)
+                    self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
                     let old_fval = old_parsed_val.raw;
                     if old_parsed_val.is_primed() {
@@ -577,6 +579,7 @@ impl<
         hash: usize,
         key: &K,
         fkey: usize,
+        backoff: &Backoff,
     ) -> Option<(Value, usize, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
@@ -588,13 +591,18 @@ impl<
             let attachment = chunk.attachment.prefetch(idx);
             let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            if k == fkey && attachment.probe(key) {
+            let act_key = k.key();
+            if act_key == fkey && attachment.probe(key) {
+                if k.is_pre_key() {
+                    backoff.spin();
+                    continue;
+                }
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
                     ParsedValue::Empty => {}
                     _ => return Some((val_res, idx, addr, attachment)),
                 }
-            } else if k == EMPTY_KEY {
+            } else if act_key == EMPTY_KEY {
                 return None;
             }
             idx += 1; // reprobe
@@ -641,9 +649,15 @@ impl<
                     _ => {}
                 }
             }
+            let act_key = k.key();
             let attachment = chunk.attachment.prefetch(idx);
-            if k == fkey && attachment.probe(&key) {
+            if act_key == fkey && attachment.probe(&key) {
                 // Probing non-empty entry
+                if k.is_pre_key() {
+                    // Inserting entry have pre-key
+                    backoff.spin();
+                    continue;
+                }
                 let val = v;
                 match &val.parsed {
                     ParsedValue::Val(v) => {
@@ -720,7 +734,7 @@ impl<
                                 } else {
                                     trace!(
                                         "Attempting insert existed entry {}, {}, have key {:?}, skip",
-                                        k,
+                                        act_key,
                                         fval,
                                         v
                                     );
@@ -799,7 +813,7 @@ impl<
                         continue;
                     }
                 }
-            } else if k == EMPTY_KEY {
+            } else if act_key == EMPTY_KEY {
                 let empty_val_orig = v.raw_with_val::<K, V, A>(EMPTY_VALUE);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
@@ -813,6 +827,9 @@ impl<
                         let attachment = chunk.attachment.prefetch(idx);
                         if self.cas_value(addr, empty_val_orig, fval).is_ok() {
                             // CAS value succeed, shall store key
+                            if Self::CAN_ATTACH {
+                                unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey | INV_KEY_BIT_MASK) }
+                            }
                             attachment.set_key(key.clone());
                             attachment.set_value((*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
@@ -872,7 +889,11 @@ impl<
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            if k != EMPTY_KEY {
+            let act_key = k.key();
+            if act_key != EMPTY_KEY {
+                if k.is_pre_key() {
+                    continue;
+                }
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = self.get_fast_value(addr);
                 match val_res.parsed {
@@ -880,7 +901,7 @@ impl<
                     ParsedValue::Val(v) => {
                         let key = attachment.get_key();
                         let value = attachment.get_value();
-                        res.push((k, v, key, value))
+                        res.push((act_key, v, key, value))
                     }
                     ParsedValue::Prime(_) => {
                         continue;
@@ -908,9 +929,9 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_key(&self, entry_addr: usize) -> usize {
+    fn get_fast_key(&self, entry_addr: usize) -> FastKey {
         debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) }
+        FastKey::new(unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) })
     }
 
     #[inline(always)]
@@ -1100,6 +1121,11 @@ impl<
             // iterate the old chunk to extract entries that is NOT empty
             let fvalue = self.get_fast_value(old_address);
             let fkey = self.get_fast_key(old_address);
+            let act_key = fkey.key();
+            if fkey.is_pre_key() {
+                backoff.spin();
+                continue;
+            }
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
             match &fvalue.parsed {
@@ -1113,7 +1139,7 @@ impl<
                 ParsedValue::Val(_) => {
                     // debug!("Migrating entry {:?}", fkey);
                     if !self.migrate_entry(
-                        fkey,
+                        act_key,
                         idx,
                         fvalue,
                         old_chunk_ins,
@@ -1121,7 +1147,7 @@ impl<
                         old_address,
                         &mut effective_copy,
                     ) {
-                        debug!("Migration failed for entry {:?}", fkey);
+                        debug!("Migration failed for entry {:?}", act_key);
                         backoff.spin();
                         continue;
                     }
@@ -1130,7 +1156,7 @@ impl<
                     if *v != SENTINEL_VALUE {
                         warn!(
                             "Discovered valued prime on migration, key {}, value {:#b}",
-                            fkey, fvalue.raw
+                            act_key, fvalue.raw
                         );
                         backoff.spin();
                         continue;
@@ -1185,10 +1211,11 @@ impl<
             let new_attachment = new_chunk_ins.attachment.prefetch(idx);
             let addr = new_chunk_ins.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            if k == fkey && new_attachment.probe(&key) {
+            let act_key = k.key();
+            if act_key == fkey && new_attachment.probe(&key) {
                 // New value existed, skip with None result
                 break;
-            } else if k == EMPTY_KEY {
+            } else if act_key == EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
                     match self.cas_value(old_address, orig, PRIMED_SENTINEL) {
@@ -1240,6 +1267,30 @@ impl<
         } else {
             hash::<H>(fkey)
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FastKey {
+    key: usize
+}
+
+impl FastKey {
+    #[inline(always)]
+    fn new(key: usize) -> FastKey {
+        Self {
+            key
+        }
+    }
+
+    #[inline(always)]
+    fn key(self) -> usize {
+        self.key & KEY_BIT_MASK
+    }
+    
+    #[inline(always)]
+    fn is_pre_key(self) -> bool {
+        self.key | INV_KEY_BIT_MASK == self.key
     }
 }
 
@@ -1487,7 +1538,7 @@ pub fn hash<H: Hasher + Default>(num: usize) -> usize {
 pub fn hash_key<K: Hash, H: Hasher + Default>(key: &K) -> usize {
     let mut hasher = H::default();
     key.hash(&mut hasher);
-    hasher.finish() as usize
+    hasher.finish() as usize & KEY_BIT_MASK
 }
 
 #[inline(always)]
