@@ -8,9 +8,9 @@ extern crate alloc;
 extern crate test;
 
 // pub mod deque;
-pub mod linked_map;
+// pub mod linked_map;
+// pub mod lru_cache;
 pub mod list;
-pub mod lru_cache;
 pub mod map;
 pub mod ring_buffer;
 pub mod spin;
