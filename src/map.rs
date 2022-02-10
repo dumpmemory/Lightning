@@ -23,7 +23,6 @@ const EMPTY_VALUE: usize = 0;
 const SENTINEL_VALUE: usize = 1;
 const TOMBSTONE_VALUE: usize = 2;
 const LOCKED_VALUE: usize = 3;
-const RESERVED_VAL: usize = NUM_FIX;
 const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK ;
 const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 
@@ -145,7 +144,7 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            if let Some((val, _idx, addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey, &guard) {
+            if let Some((val, _idx, _addr, aitem)) = self.get_from_chunk(&*chunk, hash, key, fkey, &guard) {
                 match val.parsed {
                     ParsedValue::Empty => {
                         debug!("Found empty for key {}", fkey);
@@ -177,7 +176,7 @@ impl<
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                if let Some((val, _idx, addr, aitem)) =
+                if let Some((val, _idx, _addr, aitem)) =
                     self.get_from_chunk(&*new_chunk, hash, key, fkey, &guard)
                 {
                     match val.parsed {
@@ -385,9 +384,17 @@ impl<
                         && old_fval != TOMBSTONE_VALUE
                         && old_fval != LOCKED_VALUE
                     {
-                        if let Some(new_val) = func(old_fval) {
-                            let val = attachment.get_value();
-                            let fval = Self::attachment_fval(new_val, key, val);
+                        let act_old_val = if Self::CAN_ATTACH {
+                            A::decode_fval(old_fval)
+                        } else {
+                            old_fval
+                        };
+                        if let Some(new_val) = func(act_old_val) {
+                            let fval = if Self::CAN_ATTACH {
+                                attachment.with_tag(new_val)
+                            } else {
+                                new_val
+                            };
                             match self.modify_entry(
                                 new_chunk,
                                 hash,
@@ -558,7 +565,7 @@ impl<
         hash: usize,
         key: &K,
         fkey: usize,
-        guard: &'a Guard
+        _guard: &'a Guard
     ) -> Option<(Value, usize, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
@@ -633,7 +640,9 @@ impl<
                             &ModOp::Sentinel => {
                                 let value = read_attachment.then(|| attachment.get_value());
                                 if self.cas_sentinel(addr, val.raw) {
-                                    attachment.erase();
+                                    unsafe {
+                                        attachment.erase(&guard)
+                                    };
                                     if *v == 0 {
                                         return ModResult::Done(addr, None, idx);
                                     } else {
@@ -656,7 +665,9 @@ impl<
                                     return ModResult::Fail;
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
-                                    attachment.erase();
+                                    unsafe {
+                                        attachment.erase(&guard)
+                                    };
                                     chunk.empty_entries.fetch_add(1, Relaxed);
                                     return ModResult::Replaced(*v, value, idx);
                                 }
@@ -679,7 +690,9 @@ impl<
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     match self.cas_value(addr, val.raw, fval) {
                                         Ok(cas_fval) => {
-                                            attachment.erase();
+                                            unsafe {
+                                                attachment.erase(&guard)
+                                            };
                                             return ModResult::Replaced(val.raw, prev_val, idx);
                                         }
                                         Err(act_val) => {
@@ -705,15 +718,21 @@ impl<
                                 );
                                 match &val.parsed {
                                     ParsedValue::Val(pval) => {
-                                        let pval = *pval;
+                                        let mut pval = *pval;
                                         if pval == 0 {
                                             return ModResult::NotFound;
                                         }
-                                        let aval = read_attachment.then(|| attachment.get_value());
+                                        if Self::CAN_ATTACH {
+                                            pval = A::decode_fval(pval);
+                                        }
                                         if let Some(v) = swap(pval) {
-                                            if self.cas_value(addr, val.raw, v).is_ok() {
-                                                attachment.erase();
-                                                return ModResult::Replaced(val.raw, aval, idx);
+                                            let attach_v = if Self::CAN_ATTACH {
+                                                attachment.with_tag(v)
+                                            } else {
+                                                v
+                                            };
+                                            if self.cas_value(addr, val.raw, attach_v).is_ok() {
+                                                return ModResult::Replaced(val.raw, None, idx);
                                             } else {
                                                 return ModResult::Fail;
                                             }
@@ -733,7 +752,9 @@ impl<
                                 let prev_val = read_attachment.then(|| attachment.get_value());
                                 match self.cas_value(addr, val.raw, fval) {
                                     Ok(cas_fval) => {
-                                        attachment.erase();
+                                        unsafe {
+                                            attachment.erase(&guard);
+                                        }
                                         return ModResult::Replaced(val.raw, prev_val, idx);
                                     }
                                     Err(_) => {
@@ -1140,7 +1161,6 @@ impl<
         } else {
             return false;
         }
-        old_attachment.erase();
         *effective_copy += 1;
         dfence();
         return true;
@@ -1162,7 +1182,7 @@ impl<
     #[inline(always)]
     fn attachment_fval(fval: usize, key: &K, val: V) -> usize {
         Self::CAN_ATTACH.then(|| {
-            A::new_fval(key.clone(), val)
+            A::new_fval(key.clone(), val, fval)
         }).unwrap_or(fval)
     }
 }
@@ -1193,7 +1213,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let ptr = alloc_mem::<ALLOC>(total_size) as *mut Self;
         let addr = ptr as usize;
         let data_base = addr + self_size_aligned;
-        let attachment_base = data_base + chunk_size;
         unsafe {
             ptr::write(
                 ptr,
@@ -1380,21 +1399,28 @@ pub trait Attachment<K, V> {
         Self::Item::from_fval(fvalue)
     }
 
-    fn new_fval(key: K, value: V) -> usize {
-        let item = Self::Item::new(key, value);
+    fn new_fval(key: K, value: V, tag: usize) -> usize {
+        let item = Self::Item::new(key, value, tag);
         item.to_fval()
+    }
+
+    fn decode_fval(raw: usize) -> usize {
+        let item = Self::Item::from_fval(raw);
+        item.tag()
     }
 }
 
 trait AttachmentItem<K, V>: Sized {
-    fn new<'a>(key: K, value: V) -> Self;
-    fn fval_with_new_value<'a>(&self, value: V) -> usize;
+    fn new<'a>(key: K, value: V, tag: usize) -> Self;
+    fn fval_with_new_value<'a>(&self, value: V, tag: usize) -> usize;
     fn from_fval<'a>(fvalue: usize) -> Self;
     fn to_fval(&self) -> usize;
     fn get_key(&self) -> K;
     fn get_value(&self) -> V;
     fn probe(&self, probe_key: &K) -> bool;
-    fn erase(&self) {}
+    fn tag(&self) -> usize;
+    fn with_tag(&self, tag: usize) -> usize;
+    unsafe fn erase(&self, guard: &Guard);
 }
 
 struct WordAttachment;
@@ -1431,11 +1457,11 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
         true
     }
 
-    fn new<'a>(key: (), value: ()) -> Self {
+    fn new<'a>(key: (), _value: (), _tag: usize) -> Self {
         Self
     }
 
-    fn from_fval<'a>(fvalue: usize) -> Self {
+    fn from_fval<'a>(_fvalue: usize) -> Self {
         Self
     }
 
@@ -1443,15 +1469,27 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
         unreachable!()
     }
 
-    fn fval_with_new_value<'a>(&self, value: ()) -> usize {
+    fn fval_with_new_value<'a>(&self, _value: (), _tag: usize) -> usize {
         0
+    }
+
+    unsafe fn erase(&self, _guard: &Guard) {
+        
+    }
+
+    fn tag(&self) -> usize {
+        unreachable!()
+    }
+
+    fn with_tag(&self, tag: usize) -> usize {
+        unreachable!()
     }
 }
 
 pub type WordTable<H, ALLOC> = Table<(), (), WordAttachment, H, ALLOC>;
 
-pub struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
-    shadow: PhantomData<(T, A)>,
+pub struct WordObjectAttachment<T> {
+    shadow: PhantomData<T>,
 }
 
 pub struct WordObjectAttachmentItem<T> {
@@ -1463,7 +1501,7 @@ struct WordObjectAttachmentBucket<T> {
     val: T
 }
 
-impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachment<T, A> {
+impl<T: Clone> Attachment<(), T> for WordObjectAttachment<T> {
     type Item = WordObjectAttachmentItem<T>;
 
     fn new() -> Self {
@@ -1473,11 +1511,17 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     }
 }
 
+impl <T>WordObjectAttachmentItem<T> {
+    unsafe fn ptr(&self) -> Shared::<WordObjectAttachmentBucket<T>>{
+        Shared::<WordObjectAttachmentBucket<T>>::from_usize(self.ptr)
+    }
+}
+
 impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     #[inline(always)]
     fn get_value(&self) -> T {
         debug_assert!(self.ptr > NUM_FIX);
-        let ptr = unsafe { Shared::<WordObjectAttachmentBucket<T>>::from_usize(self.ptr) };
+        let ptr = unsafe { self.ptr() };
         let bucket = unsafe { ptr.deref() };
         bucket.val.clone()
     }
@@ -1490,9 +1534,9 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
         ()
     }
 
-    fn new<'a>(key: (), value: T) -> Self {
+    fn new<'a>(_key: (), value: T, tag: usize) -> Self {
         let bucket = WordObjectAttachmentBucket { val: value };
-        let ptr = Owned::new(bucket);
+        let ptr = Owned::new(bucket).with_tag(tag);
         Self {
             ptr: ptr.into_usize(),
             _marker: PhantomData
@@ -1510,12 +1554,28 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
         self.ptr
     }
 
-    fn fval_with_new_value<'a>(&self, value: T) -> usize {
-        Self::new((), value).ptr
+    fn fval_with_new_value<'a>(&self, value: T, tag: usize) -> usize {
+        Self::new((), value, tag).ptr
+    }
+
+    unsafe fn erase(&self, guard: &Guard) {
+        guard.defer_destroy(self.ptr());
+    }
+
+    fn tag(&self) -> usize {
+        unsafe {
+            self.ptr().tag()
+        }
+    }
+
+    fn with_tag(&self, tag: usize) -> usize {
+        unsafe {
+            self.ptr().with_tag(tag).into_usize()
+        }
     }
 }
 
-pub type HashTable<K, V, ALLOC> =
+type HashTable<K, V, ALLOC> =
     Table<K, V, HashKVAttachment<K, V>, ALLOC, PassthroughHasher>;
 
 struct HashKVAttachment<K, V> {
@@ -1547,7 +1607,13 @@ impl<K: Clone + Hash + Eq, V: Clone> Attachment<K, V>
 impl<K: Clone + Hash + Eq, V: Clone> HashKVAttachmentItem<K, V> {
     #[inline(always)]
     fn get_ptr(&self) -> Option<Shared<HashKVAttachmentBucket<K, V>>> {
-        (self.ptr > NUM_FIX).then(|| unsafe { Shared::from_usize(self.ptr) })
+        (self.ptr > NUM_FIX).then(|| unsafe {
+            self.shared()
+        })
+    }
+
+    unsafe fn shared(&self) -> Shared<HashKVAttachmentBucket<K, V>> {
+        Shared::<HashKVAttachmentBucket<K, V>>::from_usize(self.ptr)
     }
 }
 
@@ -1555,7 +1621,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
     #[inline(always)]
     fn get_key(&self) -> K {
         unsafe {
-            let ptr = Shared::<HashKVAttachmentBucket<K, V>>::from_usize(self.ptr);
+            let ptr = self.shared();
             ptr.deref().key.clone()
         }
     }
@@ -1563,7 +1629,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
     #[inline(always)]
     fn get_value(&self) -> V {
         unsafe {
-            let ptr = Shared::<HashKVAttachmentBucket<K, V>>::from_usize(self.ptr);
+            let ptr = self.shared();
             ptr.deref().value.clone()
         }
     }
@@ -1575,9 +1641,9 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
         }).unwrap_or(false)
     }
 
-    fn new<'a>(key: K, value: V) -> Self {
+    fn new<'a>(key: K, value: V, tag: usize) -> Self {
         let bucket = HashKVAttachmentBucket { key, value };
-        let ptr = Owned::new(bucket);
+        let ptr = Owned::new(bucket).with_tag(tag);
         Self {
             ptr: ptr.into_usize(),
             _marker: PhantomData
@@ -1595,8 +1661,24 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
         self.ptr
     }
 
-    fn fval_with_new_value<'a>(&self, value: V) ->usize {
-        Self::new(self.get_key(), value).ptr
+    fn fval_with_new_value<'a>(&self, value: V, tag: usize) ->usize {
+        Self::new(self.get_key(), value, tag).ptr
+    }
+
+    unsafe fn erase(&self, guard: &Guard) {
+        guard.defer_destroy(Shared::<HashKVAttachmentBucket<K, V>>::from_usize(self.ptr));
+    }
+
+    fn tag(&self) -> usize {
+        unsafe {
+            self.shared().tag()
+        }
+    }    
+    
+    fn with_tag(&self, tag: usize) -> usize {
+        unsafe {
+            self.shared().with_tag(tag).into_usize()
+        }
     }
 }
 
@@ -1630,7 +1712,7 @@ pub trait Map<K, V: Clone> {
 }
 
 const NUM_FIX: usize = 5;
-const PLACEHOLDER_VAL: usize = NUM_FIX + 1;
+const PLACEHOLDER_VAL: usize = NUM_FIX + 2;
 
 pub struct HashMap<
     K: Clone + Hash + Eq,
@@ -1652,12 +1734,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .map(|(_, v)| v)
     }
 
-    // pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
-    //     HashMapWriteGuard::new(&self.table, key)
-    // }
-    // pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
-    //     HashMapReadGuard::new(&self.table, key)
-    // }
+    pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
+        HashMapWriteGuard::new(&self.table, key)
+    }
+    pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
+        HashMapReadGuard::new(&self.table, key)
+    }
 
     #[inline(always)]
     fn hash(key: &K) -> usize {
@@ -1722,7 +1804,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 }
 
-pub type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
+pub type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V>, ALLOC, H>;
 
 #[derive(Clone)]
 pub struct ObjectMap<
@@ -1740,13 +1822,13 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, A
             .map(|(_, v)| v)
     }
 
-    // pub fn read(&self, key: usize) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
-    //     ObjectMapReadGuard::new(&self.table, key)
-    // }
+    pub fn read(&self, key: usize) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
+        ObjectMapReadGuard::new(&self.table, key)
+    }
 
-    // pub fn write(&self, key: usize) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
-    //     ObjectMapWriteGuard::new(&self.table, key)
-    // }
+    pub fn write(&self, key: usize) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
+        ObjectMapWriteGuard::new(&self.table, key)
+    }
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
@@ -2022,58 +2104,58 @@ pub struct HashMapReadGuard<
     _mark: PhantomData<H>,
 }
 
-// impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-//     HashMapReadGuard<'a, K, V, ALLOC, H>
-// {
-//     fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
-//         let backoff = crossbeam_utils::Backoff::new();
-//         let guard = crossbeam_epoch::pin();
-//         let hash = hash_key::<K, H>(&key);
-//         let value: V;
-//         loop {
-//             let swap_res = table.swap(
-//                 hash,
-//                 key,
-//                 move |fast_value| {
-//                     if fast_value != PLACEHOLDER_VAL - 1 {
-//                         // Not write locked, can bump it by one
-//                         trace!("Key hash {} is not write locked, will read lock", hash);
-//                         Some(fast_value + 1)
-//                     } else {
-//                         trace!("Key hash {} is write locked, unchanged", hash);
-//                         None
-//                     }
-//                 },
-//                 &guard,
-//             );
-//             match swap_res {
-//                 SwapResult::Succeed(_, idx, chunk) => {
-//                     let chunk_ref = unsafe { chunk.deref() };
-//                     let attachment = chunk_ref.attachment.prefetch(idx);
-//                     let v = attachment.get_value();
-//                     value = v;
-//                     break;
-//                 }
-//                 SwapResult::Failed | SwapResult::Aborted => {
-//                     trace!("Lock on key hash {} failed, retry", hash);
-//                     backoff.spin();
-//                     continue;
-//                 }
-//                 SwapResult::NotFound => {
-//                     trace!("Cannot found hash key {} to lock", hash);
-//                     return None;
-//                 }
-//             }
-//         }
-//         Some(Self {
-//             table,
-//             key: key.clone(),
-//             value,
-//             hash,
-//             _mark: Default::default(),
-//         })
-//     }
-// }
+impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    HashMapReadGuard<'a, K, V, ALLOC, H>
+{
+    fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let hash = hash_key::<K, H>(&key);
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                hash,
+                key,
+                move |fast_value| {
+                    if fast_value != PLACEHOLDER_VAL - 1 {
+                        // Not write locked, can bump it by one
+                        trace!("Key hash {} is not write locked, will read lock", hash);
+                        Some(fast_value + 1)
+                    } else {
+                        trace!("Key hash {} is write locked, unchanged", hash);
+                        None
+                    }
+                },
+                &guard,
+            );
+            match swap_res {
+                SwapResult::Succeed(fval, _idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let attachment = chunk_ref.attachment.load(fval);
+                    let v = attachment.get_value();
+                    value = v;
+                    break;
+                }
+                SwapResult::Failed | SwapResult::Aborted => {
+                    trace!("Lock on key hash {} failed, retry", hash);
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::NotFound => {
+                    trace!("Cannot found hash key {} to lock", hash);
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            table,
+            key: key.clone(),
+            value,
+            hash,
+            _mark: Default::default(),
+        })
+    }
+}
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
     for HashMapReadGuard<'a, K, V, ALLOC, H>
@@ -2117,64 +2199,64 @@ pub struct HashMapWriteGuard<
     _mark: PhantomData<H>,
 }
 
-// impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-//     HashMapWriteGuard<'a, K, V, ALLOC, H>
-// {
-//     fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
-//         let backoff = crossbeam_utils::Backoff::new();
-//         let guard = crossbeam_epoch::pin();
-//         let hash = hash_key::<K, H>(&key);
-//         let value: V;
-//         loop {
-//             let swap_res = table.swap(
-//                 hash,
-//                 key,
-//                 move |fast_value| {
-//                     if fast_value == PLACEHOLDER_VAL {
-//                         // Not write locked, can bump it by one
-//                         trace!("Key hash {} is write lockable, will write lock", hash);
-//                         Some(fast_value - 1)
-//                     } else {
-//                         trace!("Key hash {} is write locked, unchanged", hash);
-//                         None
-//                     }
-//                 },
-//                 &guard,
-//             );
-//             match swap_res {
-//                 SwapResult::Succeed(_, idx, chunk) => {
-//                     let chunk_ref = unsafe { chunk.deref() };
-//                     let attachment = chunk_ref.attachment.prefetch(idx);
-//                     let v = attachment.get_value();
-//                     value = v;
-//                     break;
-//                 }
-//                 SwapResult::Failed | SwapResult::Aborted => {
-//                     trace!("Lock on key hash {} failed, retry", hash);
-//                     backoff.spin();
-//                     continue;
-//                 }
-//                 SwapResult::NotFound => {
-//                     debug!("Cannot found hash key {} to lock", hash);
-//                     return None;
-//                 }
-//             }
-//         }
-//         Some(Self {
-//             table,
-//             key: key.clone(),
-//             value,
-//             hash,
-//             _mark: Default::default(),
-//         })
-//     }
+impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    HashMapWriteGuard<'a, K, V, ALLOC, H>
+{
+    fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let hash = hash_key::<K, H>(&key);
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                hash,
+                key,
+                move |fast_value| {
+                    if fast_value == PLACEHOLDER_VAL {
+                        // Not write locked, can bump it by one
+                        trace!("Key hash {} is write lockable, will write lock", hash);
+                        Some(fast_value - 1)
+                    } else {
+                        trace!("Key hash {} is write locked, unchanged", hash);
+                        None
+                    }
+                },
+                &guard,
+            );
+            match swap_res {
+                SwapResult::Succeed(fval, _idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let attachment = chunk_ref.attachment.load(fval);
+                    let v = attachment.get_value();
+                    value = v;
+                    break;
+                }
+                SwapResult::Failed | SwapResult::Aborted => {
+                    trace!("Lock on key hash {} failed, retry", hash);
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::NotFound => {
+                    debug!("Cannot found hash key {} to lock", hash);
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            table,
+            key: key.clone(),
+            value,
+            hash,
+            _mark: Default::default(),
+        })
+    }
 
-//     pub fn remove(self) -> V {
-//         let res = self.table.remove(&self.key, self.hash).unwrap().1;
-//         mem::forget(self);
-//         res
-//     }
-// }
+    pub fn remove(self) -> V {
+        let res = self.table.remove(&self.key, self.hash).unwrap().1;
+        mem::forget(self);
+        res
+    }
+}
 
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
     for HashMapWriteGuard<'a, K, V, ALLOC, H>
@@ -2210,97 +2292,97 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 }
 
-// pub struct ObjectMapReadGuard<
-//     'a,
-//     V: Clone,
-//     ALLOC: GlobalAlloc + Default = System,
-//     H: Hasher + Default = DefaultHasher,
-// > {
-//     table: &'a ObjectTable<V, ALLOC, H>,
-//     key: usize,
-//     value: V,
-//     _mark: PhantomData<H>,
-// }
+pub struct ObjectMapReadGuard<
+    'a,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default = System,
+    H: Hasher + Default = DefaultHasher,
+> {
+    table: &'a ObjectTable<V, ALLOC, H>,
+    key: usize,
+    value: V,
+    _mark: PhantomData<H>,
+}
 
-// impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-//     ObjectMapReadGuard<'a, V, ALLOC, H>
-// {
-//     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
-//         let backoff = crossbeam_utils::Backoff::new();
-//         let guard = crossbeam_epoch::pin();
-//         let hash = hash_key::<usize, H>(&key);
-//         let value: V;
-//         loop {
-//             let swap_res = table.swap(
-//                 key,
-//                 &(),
-//                 move |fast_value| {
-//                     if fast_value != PLACEHOLDER_VAL - 1 {
-//                         // Not write locked, can bump it by one
-//                         trace!("Key {} is not write locked, will read lock", hash);
-//                         Some(fast_value + 1)
-//                     } else {
-//                         trace!("Key {} is write locked, unchanged", hash);
-//                         None
-//                     }
-//                 },
-//                 &guard,
-//             );
-//             match swap_res {
-//                 SwapResult::Succeed(_, idx, chunk) => {
-//                     let chunk_ref = unsafe { chunk.deref() };
-//                     let attachment = chunk_ref.attachment.prefetch(idx);
-//                     let v = attachment.get_value();
-//                     value = v;
-//                     break;
-//                 }
-//                 SwapResult::Failed | SwapResult::Aborted => {
-//                     trace!("Lock on key {} failed, retry", hash);
-//                     backoff.spin();
-//                     continue;
-//                 }
-//                 SwapResult::NotFound => {
-//                     debug!("Cannot found hash key {} to lock", hash);
-//                     return None;
-//                 }
-//             }
-//         }
-//         Some(Self {
-//             table,
-//             key,
-//             value,
-//             _mark: Default::default(),
-//         })
-//     }
-// }
+impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    ObjectMapReadGuard<'a, V, ALLOC, H>
+{
+    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let hash = hash_key::<usize, H>(&key);
+        let value: V;
+        loop {
+            let swap_res = table.swap(
+                key,
+                &(),
+                move |fast_value| {
+                    if fast_value != PLACEHOLDER_VAL - 1 {
+                        // Not write locked, can bump it by one
+                        trace!("Key {} is not write locked, will read lock", hash);
+                        Some(fast_value + 1)
+                    } else {
+                        trace!("Key {} is write locked, unchanged", hash);
+                        None
+                    }
+                },
+                &guard,
+            );
+            match swap_res {
+                SwapResult::Succeed(fval, _idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let attachment = chunk_ref.attachment.load(fval);
+                    let v = attachment.get_value();
+                    value = v;
+                    break;
+                }
+                SwapResult::Failed | SwapResult::Aborted => {
+                    trace!("Lock on key {} failed, retry", hash);
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::NotFound => {
+                    debug!("Cannot found hash key {} to lock", hash);
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            table,
+            key,
+            value,
+            _mark: Default::default(),
+        })
+    }
+}
 
-// impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-//     for ObjectMapReadGuard<'a, V, ALLOC, H>
-// {
-//     type Target = V;
+impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+    for ObjectMapReadGuard<'a, V, ALLOC, H>
+{
+    type Target = V;
 
-//     fn deref(&self) -> &Self::Target {
-//         &self.value
-//     }
-// }
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
 
-// impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-//     for ObjectMapReadGuard<'a, V, ALLOC, H>
-// {
-//     fn drop(&mut self) {
-//         trace!("Release read lock for hash key {}", self.key);
-//         let guard = crossbeam_epoch::pin();
-//         self.table.swap(
-//             self.key,
-//             &(),
-//             |fast_value| {
-//                 debug_assert!(fast_value > PLACEHOLDER_VAL);
-//                 Some(fast_value - 1)
-//             },
-//             &guard,
-//         );
-//     }
-// }
+impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for ObjectMapReadGuard<'a, V, ALLOC, H>
+{
+    fn drop(&mut self) {
+        trace!("Release read lock for hash key {}", self.key);
+        let guard = crossbeam_epoch::pin();
+        self.table.swap(
+            self.key,
+            &(),
+            |fast_value| {
+                debug_assert!(fast_value > PLACEHOLDER_VAL);
+                Some(fast_value - 1)
+            },
+            &guard,
+        );
+    }
+}
 
 pub struct ObjectMapWriteGuard<
     'a,
@@ -2314,63 +2396,63 @@ pub struct ObjectMapWriteGuard<
     _mark: PhantomData<H>,
 }
 
-// impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-//     ObjectMapWriteGuard<'a, V, ALLOC, H>
-// {
-//     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
-//         let backoff = crossbeam_utils::Backoff::new();
-//         let guard = crossbeam_epoch::pin();
-//         let value: V;
-//         let key = key + NUM_FIX;
-//         loop {
-//             let swap_res = table.swap(
-//                 key,
-//                 &(),
-//                 move |fast_value| {
-//                     if fast_value == PLACEHOLDER_VAL {
-//                         // Not write locked, can bump it by one
-//                         trace!("Key {} is write lockable, will write lock", key);
-//                         Some(fast_value - 1)
-//                     } else {
-//                         trace!("Key {} is write locked, unchanged", key);
-//                         None
-//                     }
-//                 },
-//                 &guard,
-//             );
-//             match swap_res {
-//                 SwapResult::Succeed(_, idx, chunk) => {
-//                     let chunk_ref = unsafe { chunk.deref() };
-//                     let attachment = chunk_ref.attachment.prefetch(idx);
-//                     let v = attachment.get_value();
-//                     value = v;
-//                     break;
-//                 }
-//                 SwapResult::Failed | SwapResult::Aborted => {
-//                     trace!("Lock on key {} failed, retry", key);
-//                     backoff.spin();
-//                     continue;
-//                 }
-//                 SwapResult::NotFound => {
-//                     debug!("Cannot found key {} to lock", key);
-//                     return None;
-//                 }
-//             }
-//         }
-//         Some(Self {
-//             table,
-//             key,
-//             value,
-//             _mark: Default::default(),
-//         })
-//     }
+impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    ObjectMapWriteGuard<'a, V, ALLOC, H>
+{
+    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let value: V;
+        let key = key + NUM_FIX;
+        loop {
+            let swap_res = table.swap(
+                key,
+                &(),
+                move |fast_value| {
+                    if fast_value == PLACEHOLDER_VAL {
+                        // Not write locked, can bump it by one
+                        trace!("Key {} is write lockable, will write lock", key);
+                        Some(fast_value - 1)
+                    } else {
+                        trace!("Key {} is write locked, unchanged", key);
+                        None
+                    }
+                },
+                &guard,
+            );
+            match swap_res {
+                SwapResult::Succeed(fval, _idx, chunk) => {
+                    let chunk_ref = unsafe { chunk.deref() };
+                    let attachment = chunk_ref.attachment.load(fval);
+                    let v = attachment.get_value();
+                    value = v;
+                    break;
+                }
+                SwapResult::Failed | SwapResult::Aborted => {
+                    trace!("Lock on key {} failed, retry", key);
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::NotFound => {
+                    debug!("Cannot found key {} to lock", key);
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            table,
+            key,
+            value,
+            _mark: Default::default(),
+        })
+    }
 
-//     pub fn remove(self) -> V {
-//         let res = self.table.remove(&(), self.key).unwrap().1;
-//         mem::forget(self);
-//         res
-//     }
-// }
+    pub fn remove(self) -> V {
+        let res = self.table.remove(&(), self.key).unwrap().1;
+        mem::forget(self);
+        res
+    }
+}
 
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
     for ObjectMapWriteGuard<'a, V, ALLOC, H>
@@ -2663,19 +2745,19 @@ mod fat_tests {
                                 // panic!("Unrecoverable value change for {:?}", key);
                             }
                         }
-                        // if j % 7 == 0 {
-                        //     assert_eq!(
-                        //         map.remove(&key),
-                        //         Some(value),
-                        //         "Remove result, get {:?}, copying {}, round {}",
-                        //         map.get(&key),
-                        //         map.table.map_is_copying(),
-                        //         k
-                        //     );
-                        //     assert_eq!(map.get(&key), None, "Remove recursion");
-                        //     assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                        //     map.insert(&key, value);
-                        // }
+                        if j % 7 == 0 {
+                            assert_eq!(
+                                map.remove(&key),
+                                Some(value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                            map.insert(&key, value);
+                        }
                         if j % 3 == 0 {
                             let new_value = val_from(value_num + 7);
                             let pre_insert_epoch = map.table.now_epoch();
@@ -3036,51 +3118,51 @@ mod word_tests {
         }
     }
 
-    // #[test]
-    // fn parallel_obj_map_rwlock() {
-    //     let _ = env_logger::try_init();
-    //     let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
-    //     let map = Arc::new(map_cont);
-    //     map.insert(&1, Obj::new(0));
-    //     let mut threads = vec![];
-    //     let num_threads = 256;
-    //     for i in 0..num_threads {
-    //         let map = map.clone();
-    //         threads.push(thread::spawn(move || {
-    //             let mut guard = map.write(1).unwrap();
-    //             let val = guard.get();
-    //             guard.set(val + 1);
-    //             trace!("Dealt with {}", i);
-    //         }));
-    //     }
-    //     for thread in threads {
-    //         let _ = thread.join();
-    //     }
-    //     map.get(&1).unwrap().validate(num_threads);
-    // }
+    #[test]
+    fn parallel_obj_map_rwlock() {
+        let _ = env_logger::try_init();
+        let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
+        let map = Arc::new(map_cont);
+        map.insert(&1, Obj::new(0));
+        let mut threads = vec![];
+        let num_threads = 256;
+        for i in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let mut guard = map.write(1).unwrap();
+                let val = guard.get();
+                guard.set(val + 1);
+                trace!("Dealt with {}", i);
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        map.get(&1).unwrap().validate(num_threads);
+    }
 
-    // #[test]
-    // fn parallel_hash_map_rwlock() {
-    //     let _ = env_logger::try_init();
-    //     let map_cont = super::HashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
-    //     let map = Arc::new(map_cont);
-    //     map.insert(&1, Obj::new(0));
-    //     let mut threads = vec![];
-    //     let num_threads = 16;
-    //     for i in 0..num_threads {
-    //         let map = map.clone();
-    //         threads.push(thread::spawn(move || {
-    //             let mut guard = map.write(&1u32).unwrap();
-    //             let val = guard.get();
-    //             guard.set(val + 1);
-    //             trace!("Dealt with {}", i);
-    //         }));
-    //     }
-    //     for thread in threads {
-    //         let _ = thread.join();
-    //     }
-    //     map.get(&1).unwrap().validate(num_threads);
-    // }
+    #[test]
+    fn parallel_hash_map_rwlock() {
+        let _ = env_logger::try_init();
+        let map_cont = super::HashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
+        let map = Arc::new(map_cont);
+        map.insert(&1, Obj::new(0));
+        let mut threads = vec![];
+        let num_threads = 16;
+        for i in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let mut guard = map.write(&1u32).unwrap();
+                let val = guard.get();
+                guard.set(val + 1);
+                trace!("Dealt with {}", i);
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        map.get(&1).unwrap().validate(num_threads);
+    }
 
     #[derive(Copy, Clone)]
     struct Obj {
