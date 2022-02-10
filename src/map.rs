@@ -791,8 +791,7 @@ impl<
                         }
                     }
                     ParsedValue::Empty => {
-                        // found the key with empty value, shall do nothing and continue probing
-                        // because other thread is trying to write value into it
+                        unreachable!();
                     }
                     ParsedValue::Sentinel => return ModResult::Sentinel,
                     ParsedValue::Prime(_) => {
