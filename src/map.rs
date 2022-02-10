@@ -2828,6 +2828,15 @@ mod fat_tests {
         });
     }
 
+    #[test]
+    fn attachment_size() {
+        type Attachment = HashKVAttachment<usize, usize, System>;
+        assert_eq!(Attachment::KEY_SIZE, 8);
+        assert_eq!(Attachment::VAL_SIZE, 8);
+        assert_eq!(Attachment::VAL_OFFSET, 8);
+        assert_eq!(Attachment::PAIR_SIZE, 16);
+    }
+
     fn key_from(num: usize) -> Key {
         let mut r = [0u8; 128];
         for (i, b) in num.to_be_bytes().iter().enumerate() {
