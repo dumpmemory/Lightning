@@ -2829,7 +2829,7 @@ mod fat_tests {
     fn resize_obj_map() {
         let _ = env_logger::try_init();
         let map = ObjectMap::<usize, System>::with_capacity(16);
-        let turns = 12582912 * 4;
+        let turns = 40960;
         for i in 5..turns {
             let k = i;
             let v = i * 2;
