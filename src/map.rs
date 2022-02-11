@@ -324,7 +324,6 @@ impl<
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
             if new_chunk.is_some() {
-                dfence();
                 debug_assert_ne!(
                     chunk_ptr, new_chunk_ptr,
                     "at epoch {}, inserting k:{}, v:{}",
@@ -340,7 +339,6 @@ impl<
                 );
                 let old_sent =
                     self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
-                dfence();
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
@@ -1255,7 +1253,6 @@ impl<
         }
         old_attachment.erase();
         *effective_copy += 1;
-        dfence();
         return true;
     }
 
@@ -2816,16 +2813,16 @@ mod fat_tests {
     #[test]
     fn resize_obj_map() {
         let _ = env_logger::try_init();
-        let map = ObjectMap::<Value, System>::with_capacity(16);
+        let map = ObjectMap::<usize, System>::with_capacity(16);
         let turns = 12582912 * 4;
         for i in 5..turns {
             let k = i;
-            let v = val_from(i * 2);
+            let v = i * 2;
             map.insert(&k, v);
         }
         for i in 5..turns {
             let k = i;
-            let v = val_from(i * 2);
+            let v = i * 2;
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
                 None => panic!("{}", i),

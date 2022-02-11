@@ -359,6 +359,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
         &format!("{}_{}_uniform.csv", task, name),
         &uniform_measurement,
     );
+    println!("Oversize");
     let oversize_measurement =
         run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, 0.0, stride);
     write_measurements(
