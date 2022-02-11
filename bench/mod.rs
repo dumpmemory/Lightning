@@ -503,7 +503,7 @@ mod tests {
         workload
             .operations(1.5)
             .contention(0.0)
-            .initial_capacity_log2(24);
+            .initial_capacity_log2(26);
         let data = workload.gen_data();
         let prefilled = workload.prefill::<obj_lfmap::TestTable>(&data);
         let m = workload.run_against(data, prefilled);
