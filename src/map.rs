@@ -149,6 +149,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
+        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -246,6 +247,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let hash = Self::hash(fkey);
+        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
@@ -384,6 +386,7 @@ impl<
     ) -> SwapResult<'a, K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
+        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -506,6 +509,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
+        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
@@ -1262,10 +1266,21 @@ impl<
 
     #[inline(always)]
     fn hash(fkey: usize) -> usize {
-        if Self::CAN_ATTACH {
+        if Self::CAN_ATTACH && mem::size_of::<K>() == 0 {
+            hash::<H>(fkey)
+        } else if Self::CAN_ATTACH {
             fkey // Prevent double hashing
         } else {
             hash::<H>(fkey)
+        }
+    }
+
+    #[inline(always)]
+    fn fix_key(key: usize) -> usize {
+        if Self::CAN_ATTACH {
+            key & KEY_BIT_MASK
+        } else {
+            key
         }
     }
 }
@@ -1300,7 +1315,7 @@ impl <K, V, A: Attachment<K, V>> FastKey<K, V, A> {
     #[inline(always)]
     fn is_pre_key(self) -> bool {
         if Self::CAN_ATTACH {
-            self.key | INV_KEY_BIT_MASK == self.key
+            self.key & INV_KEY_BIT_MASK == INV_KEY_BIT_MASK
         } else {
             false
         }
@@ -1558,7 +1573,7 @@ pub fn hash<H: Hasher + Default>(num: usize) -> usize {
 pub fn hash_key<K: Hash, H: Hasher + Default>(key: &K) -> usize {
     let mut hasher = H::default();
     key.hash(&mut hasher);
-    hasher.finish() as usize & KEY_BIT_MASK
+    hasher.finish() as usize
 }
 
 #[inline(always)]
@@ -2472,8 +2487,8 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        let hash = hash_key::<usize, H>(&key);
         let value: V;
+        let key = key + NUM_FIX;
         loop {
             let swap_res = table.swap(
                 key,
@@ -2481,10 +2496,10 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
                 move |fast_value| {
                     if fast_value != PLACEHOLDER_VAL - 1 {
                         // Not write locked, can bump it by one
-                        trace!("Key {} is not write locked, will read lock", hash);
+                        trace!("Key {} is not write locked, will read lock", key);
                         Some(fast_value + 1)
                     } else {
-                        trace!("Key {} is write locked, unchanged", hash);
+                        trace!("Key {} is write locked, unchanged", key);
                         None
                     }
                 },
@@ -2499,12 +2514,12 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
-                    trace!("Lock on key {} failed, retry", hash);
+                    trace!("Lock on key {} failed, retry", key);
                     backoff.spin();
                     continue;
                 }
                 SwapResult::NotFound => {
-                    debug!("Cannot found hash key {} to lock", hash);
+                    debug!("Cannot found hash key {} to lock", key);
                     return None;
                 }
             }

@@ -489,3 +489,27 @@ pub unsafe fn fork<F: FnOnce()>(child_func: F) -> libc::pid_t {
         pid => pid,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bustle::{Mix, Workload};
+
+    use crate::{run_and_measure_mix, obj_lfmap};
+
+    #[test]
+    fn obj_map_oversize() {
+        let mix = Mix::insert_heavy();
+        let mut workload = Workload::new(1, mix);
+        workload
+            .operations(1.5)
+            .contention(0.0)
+            .initial_capacity_log2(24);
+        let data = workload.gen_data();
+        let prefilled = workload.prefill::<obj_lfmap::TestTable>(&data);
+        let m = workload.run_against(data, prefilled);
+        println!(
+            "Completed with range {:.4}, ops {}, spent {:?}, throughput {}, latency {:?}",
+            m.key_range, m.total_ops, m.spent, m.throughput, m.latency
+        )
+    }
+}
