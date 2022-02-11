@@ -2814,6 +2814,26 @@ mod fat_tests {
     }
 
     #[test]
+    fn resize_obj_map() {
+        let _ = env_logger::try_init();
+        let map = ObjectMap::<Value, System>::with_capacity(16);
+        let turns = 12582912 * 4;
+        for i in 5..turns {
+            let k = i;
+            let v = val_from(i * 2);
+            map.insert(&k, v);
+        }
+        for i in 5..turns {
+            let k = i;
+            let v = val_from(i * 2);
+            match map.get(&k) {
+                Some(r) => assert_eq!(r, v),
+                None => panic!("{}", i),
+            }
+        }
+    }
+
+    #[test]
     fn parallel_no_resize() {
         let _ = env_logger::try_init();
         let map = Arc::new(FatHashMap::with_capacity(65536));
