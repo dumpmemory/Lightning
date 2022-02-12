@@ -34,7 +34,6 @@ const FVAL_BITS: usize = mem::size_of::<usize>() * 8;
 const FVAL_VER_POS: usize = FVAL_BITS / 2;
 const FVAL_VER_BIT_MASK: usize = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 const FVAL_VAL_BIT_MASK: usize = !FVAL_VER_BIT_MASK;
-const FVAL_MAX_VERSION: u32 = !0 >> 1;
 
 const PRIMED_SENTINEL: usize = SENTINEL_VALUE | INV_VAL_BIT_MASK;
 
@@ -1373,18 +1372,11 @@ impl Value {
     }
 
     #[inline(always)]
-    const fn raw_to_version(raw: usize) -> u32 {
-        (raw >> FVAL_VER_POS) as u32
-    }
-
-    #[inline(always)]
     const fn next_version<K, V, A: Attachment<K, V>>(old: usize, new: usize) -> usize {
         debug_assert!(can_attach::<K, V, A>());
-        let old_ver = Value::raw_to_version(old);
         // 31 bits wrapping add (one bit reserved for prime flag)
-        let new_ver = (old_ver << 1 | 1).wrapping_add(1) >> 1;
-        debug_assert!(new_ver <= FVAL_MAX_VERSION);
-        new & FVAL_VAL_BIT_MASK | ((new_ver as usize) << FVAL_VER_POS)
+        let new_ver = (old | FVAL_VER_BIT_MASK << 1 | 1).wrapping_add(1) >> 1;
+        new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
     }
 }
 
@@ -3480,14 +3472,6 @@ mod word_tests {
                 }
             }
         }
-    }
-
-    #[test]
-    pub fn versioning() {
-        let init = 0;
-        assert_eq!(Value::raw_to_version(init), 0);
-        let v1 = Value::next_version::<_, _, WordObjectAttachment<usize, System>>(init, init);
-        assert_eq!(Value::raw_to_version(v1), 1);
     }
 
     #[test]
