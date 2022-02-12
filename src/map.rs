@@ -1065,7 +1065,6 @@ impl<
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap)))
             .into_shared(guard)
             .with_tag(0);
-        dfence();
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         dfence();
         self.epoch.fetch_add(1, AcqRel);
