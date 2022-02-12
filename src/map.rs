@@ -948,14 +948,15 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<usize, usize> {
-        debug_assert!(entry_addr > 0);
-        let new_tombstone = if Self::CAN_ATTACH {
-            Value::next_version::<K, V, A>(original, TOMBSTONE_VALUE)
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<(), usize> {
+        let addr = entry_addr + mem::size_of::<usize>();
+        let (old, succ) =
+            unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, TOMBSTONE_VALUE) };
+        if succ {
+            Ok(())
         } else {
-            TOMBSTONE_VALUE
-        };
-        self.cas_value(entry_addr, original, new_tombstone)
+            Err(old)
+        }
     }
     #[inline(always)]
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> Result<usize, usize> {
@@ -967,7 +968,7 @@ impl<
             value
         };
         let (old, succ) =
-            unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_value) };
+            unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, new_value) };
         if succ {
             Ok(new_value)
         } else {
@@ -983,7 +984,7 @@ impl<
         } else {
             value
         };
-        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, new_value) };
+        unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, new_value) };
     }
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
@@ -998,13 +999,8 @@ impl<
             assert!(entry_addr < chunk_ref.base + chunk_ref.total_size);
         }
         let addr = entry_addr + mem::size_of::<usize>();
-        let new_sentinel = if Self::CAN_ATTACH {
-            Value::next_version::<K, V, A>(original, SENTINEL_VALUE)
-        } else {
-            SENTINEL_VALUE
-        };
         let (val, done) =
-            unsafe { intrinsics::atomic_cxchg_acqrel(addr as *mut usize, original, new_sentinel) };
+            unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, SENTINEL_VALUE) };
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
@@ -1379,9 +1375,7 @@ impl Value {
 
     #[inline(always)]
     const fn raw_to_version(raw: usize) -> u32 {
-        let masked = raw & FVAL_VER_BIT_MASK;
-        let shifted = masked >> FVAL_VER_POS;
-        shifted as u32
+        (raw >> FVAL_VER_POS) as u32
     }
 
     #[inline(always)]
