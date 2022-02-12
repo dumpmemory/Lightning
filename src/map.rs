@@ -817,7 +817,6 @@ impl<
                     }
                 }
             } else if act_key == EMPTY_KEY {
-                let empty_val_orig = v.raw_with_val::<K, V, A>(EMPTY_VALUE);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
@@ -828,7 +827,7 @@ impl<
                             addr
                         );
                         let attachment = chunk.attachment.prefetch(idx);
-                        if self.cas_value(addr, empty_val_orig, fval).is_ok() {
+                        if self.cas_value(addr, EMPTY_VALUE, fval).is_ok() {
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
@@ -851,7 +850,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, empty_val_orig, fval).is_ok() {
+                        if self.cas_value(addr, EMPTY_VALUE, fval).is_ok() {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -860,7 +859,7 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_sentinel(addr, empty_val_orig) {
+                        if self.cas_sentinel(addr, EMPTY_VALUE) {
                             // CAS value succeed, shall store key
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
@@ -1363,19 +1362,9 @@ impl Value {
     }
 
     #[inline(always)]
-    pub const fn raw_with_val<K, V, A: Attachment<K, V>>(&self, val: usize) -> usize {
-        if can_attach::<K, V, A>() {
-            (self.raw & FVAL_VER_BIT_MASK) | (val & FVAL_VAL_BIT_MASK)
-        } else {
-            val
-        }
-    }
-
-    #[inline(always)]
     const fn next_version<K, V, A: Attachment<K, V>>(old: usize, new: usize) -> usize {
         debug_assert!(can_attach::<K, V, A>());
-        // 31 bits wrapping add (one bit reserved for prime flag)
-        let new_ver = (old | FVAL_VER_BIT_MASK << 1 | 1).wrapping_add(1) >> 1;
+        let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
     }
 }
