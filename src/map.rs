@@ -830,6 +830,7 @@ impl<
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
+                                attachment.prep_write();
                                 unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, fkey | INV_KEY_BIT_MASK) }
                             }
                             attachment.set_key(key.clone());
@@ -1575,6 +1576,7 @@ pub trait AttachmentItem<K, V> {
     fn set_value(self, value: V);
     fn erase(self);
     fn probe(self, probe_key: &K) -> bool;
+    fn prep_write(self);
 }
 
 pub struct WordAttachment;
@@ -1624,6 +1626,10 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
     #[inline(always)]
     fn probe(self, _value: &()) -> bool {
         true
+    }
+
+    #[inline(always)]
+    fn prep_write(self) {
     }
 }
 
@@ -1701,6 +1707,13 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     }
 
     fn set_key(self, _key: ()) {}
+
+    #[inline(always)]
+    fn prep_write(self) {
+        unsafe {
+            intrinsics::prefetch_write_data(self.addr as *const T, 2);
+        }
+    }
 }
 
 impl<T: Clone> Copy for WordObjectAttachmentItem<T> {}
@@ -1815,6 +1828,14 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
             // ptr::read_volatile(addr as *mut K)
         };
         pos_key.eq(key)
+    }
+
+    #[inline(always)]
+    fn prep_write(self) {
+        let addr = self.addr;
+        unsafe {
+            intrinsics::prefetch_write_data(addr as *const (K, V), 2);
+        }
     }
 }
 
