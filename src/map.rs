@@ -826,7 +826,6 @@ impl<
                             fval,
                             addr
                         );
-                        let attachment = chunk.attachment.prefetch(idx);
                         if self.cas_value(addr, EMPTY_VALUE, fval).is_ok() {
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
