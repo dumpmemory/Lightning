@@ -8,8 +8,10 @@ use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 use core::sync::atomic::{compiler_fence, fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
+use std::mem::MaybeUninit;
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
+use static_assertions::const_assert;
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
@@ -2712,6 +2714,128 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
     }
 }
 
+pub struct LiteHashMap<
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default = System,
+    H: Hasher + Default = DefaultHasher,
+> {
+    table: WordTable<ALLOC, H>,
+    shadow: PhantomData<(K, V, H)>,
+}
+
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    LiteHashMap<K, V, ALLOC, H>
+{
+    const K_SIZE: usize = mem::size_of::<K>();
+    const V_SIZE: usize = mem::size_of::<V>();
+
+    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
+        let k_num = Self::encode(key);
+        let v_num = Self::encode(&value);
+        self.table
+            .insert(op, &(), Some(()), k_num, v_num)
+            .map(|(fv, _)| Self::decode::<V>(fv).clone())
+    }
+
+    // pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
+    //     HashMapWriteGuard::new(&self.table, key)
+    // }
+    // pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
+    //     HashMapReadGuard::new(&self.table, key)
+    // }
+    
+    fn encode<T>(d: &T) -> usize {
+        let mut num: usize = 0;
+        let num_ptr: *mut usize = &mut num;
+        let d_ptr: *const T = &*d;
+        unsafe {
+            libc::memcpy(
+                num_ptr as *mut c_void,
+                d_ptr as *const c_void,
+                mem::size_of::<T>(),
+            );
+        }
+        return num + NUM_FIX;
+    }
+
+    fn decode<T>(num: usize) -> T {
+        let num = num - NUM_FIX;
+        let num_ptr: *const usize = &num;
+        let mut obj = MaybeUninit::<T>::uninit();
+        let obj_ptr = obj.as_mut_ptr();
+        unsafe {
+            libc::memcpy(
+                obj_ptr as *mut c_void,
+                num_ptr as *mut c_void,
+                mem::size_of::<T>(),
+            );
+        };
+        unsafe {
+            return obj.assume_init();
+        }
+    }
+}
+
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
+    for LiteHashMap<K, V, ALLOC, H>
+{
+    fn with_capacity(cap: usize) -> Self {
+        assert!(Self::K_SIZE <= mem::size_of::<usize>());
+        assert!(Self::V_SIZE <= mem::size_of::<usize>());
+        Self {
+            table: Table::with_capacity(cap),
+            shadow: PhantomData,
+        }
+    }
+
+    #[inline(always)]
+    fn get(&self, key: &K) -> Option<V> {
+        let k_num = Self::encode(key);
+        self.table.get(&(), k_num, false).map(|(fv, _)| Self::decode::<V>(fv).clone())
+    }
+
+    #[inline(always)]
+    fn insert(&self, key: &K, value: V) -> Option<V> {
+        self.insert_with_op(InsertOp::Insert, key, value)
+    }
+
+    #[inline(always)]
+    fn try_insert(&self, key: &K, value: V) -> Option<V> {
+        self.insert_with_op(InsertOp::TryInsert, key, value)
+    }
+
+    #[inline(always)]
+    fn remove(&self, key: &K) -> Option<V> {
+        let k_num = Self::encode(key);
+        self.table.remove(&(), k_num).map(|(fv, _)| Self::decode(fv))
+    }
+
+    #[inline(always)]
+    fn entries(&self) -> Vec<(K, V)> {
+        self.table
+            .entries()
+            .into_iter()
+            .map(|(fk, fv, _, _)| (Self::decode(fk), Self::decode::<V>(fv).clone()))
+            .collect()
+    }
+
+    #[inline(always)]
+    fn contains_key(&self, key: &K) -> bool {
+        let k_num = Self::encode(key);
+        self.table.get(&(), k_num, false).is_some()
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    fn clear(&self) {
+        self.table.clear();
+    }
+}
+
 #[inline(always)]
 fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     let align = 64;
@@ -2771,6 +2895,69 @@ impl<V> Debug for ModResult<V> {
             Self::Done(arg0, _arg1, arg2) => f.debug_tuple("Done").field(arg0).field(arg2).finish(),
             Self::TableFull => write!(f, "TableFull"),
             Self::Aborted => write!(f, "Aborted"),
+        }
+    }
+}
+
+
+mod lite_tests {
+    use std::{alloc::System, sync::Arc};
+    use super::{LiteHashMap, Map};
+
+    #[test]
+    fn no_resize() {
+        let _ = env_logger::try_init();
+        let map = LiteHashMap::<usize, usize, System>::with_capacity(4096);
+        for i in 5..2048 {
+            let k = i;
+            let v = i * 2;
+            map.insert(&k, v);
+        }
+        for i in 5..2048 {
+            let k = i;
+            let v = i * 2;
+            match map.get(&k) {
+                Some(r) => assert_eq!(r, v),
+                None => panic!("{}", i),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct SlimStruct {
+        a: u32,
+        b: u32
+    }
+
+    impl SlimStruct {
+        fn new(n: u32) -> Self {
+            Self {
+                a: n,
+                b: n * 2,
+            }
+        }
+    }
+
+    #[test]
+    fn no_resize_arc() {
+        let _ = env_logger::try_init();
+        let map = LiteHashMap::<usize, SlimStruct, System>::with_capacity(4096);
+        for i in 5..2048 {
+            let k = i;
+            let v = i * 2;
+            let d = SlimStruct::new(v);
+            map.insert(&(k as usize), d);
+        }
+        for i in 5..2048 {
+            let k = i;
+            let v = i * 2;
+            match map.get(&k) {
+                Some(r) => {
+                    assert_eq!(r.a as usize, v);
+                    assert_eq!(r.b as usize, v * 2);
+                },
+                None => panic!("{}", i),
+            }
         }
     }
 }
