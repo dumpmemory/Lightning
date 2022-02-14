@@ -267,7 +267,7 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
         // run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride), // Too slow!
         run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
-        run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride),
+        // run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride), // Too slow
         run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
         run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
     ];
