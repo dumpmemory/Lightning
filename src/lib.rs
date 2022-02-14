@@ -7,6 +7,8 @@ extern crate log;
 extern crate alloc;
 extern crate test;
 
+#[macro_use]
+extern crate static_assertions;
 // pub mod deque;
 pub mod linked_map;
 pub mod list;
