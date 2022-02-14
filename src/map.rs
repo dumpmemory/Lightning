@@ -2735,7 +2735,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let v_num = Self::encode(&value);
         self.table
             .insert(op, &(), Some(()), k_num, v_num)
-            .map(|(fv, _)| Self::decode::<V>(fv).clone())
+            .map(|(fv, _)| Self::decode::<V>(fv))
     }
 
     // pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
@@ -2745,10 +2745,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     //     HashMapReadGuard::new(&self.table, key)
     // }
     
-    fn encode<T>(d: &T) -> usize {
+    fn encode<T: Clone>(d: &T) -> usize {
+        let d = d.clone();
         let mut num: usize = 0;
         let num_ptr: *mut usize = &mut num;
-        let d_ptr: *const T = &*d;
+        let d_ptr: *const T = &d;
         unsafe {
             libc::memcpy(
                 num_ptr as *mut c_void,
@@ -2756,10 +2757,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 mem::size_of::<T>(),
             );
         }
+        mem::forget(d);
         return num + NUM_FIX;
     }
 
-    fn decode<T>(num: usize) -> T {
+    fn decode<T: Clone>(num: usize) -> T {
         let num = num - NUM_FIX;
         let num_ptr: *const usize = &num;
         let mut obj = MaybeUninit::<T>::uninit();
@@ -2772,7 +2774,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             );
         };
         unsafe {
-            return obj.assume_init();
+            let obj = obj.assume_init();
+            let r = obj.clone();
+            mem::forget(obj);
+            return r;
         }
     }
 }
@@ -2792,7 +2797,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
         let k_num = Self::encode(key);
-        self.table.get(&(), k_num, false).map(|(fv, _)| Self::decode::<V>(fv).clone())
+        self.table.get(&(), k_num, false).map(|(fv, _)| Self::decode::<V>(fv))
     }
 
     #[inline(always)]
@@ -2816,7 +2821,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .entries()
             .into_iter()
-            .map(|(fk, fv, _, _)| (Self::decode(fk), Self::decode::<V>(fv).clone()))
+            .map(|(fk, fv, _, _)| (Self::decode(fk), Self::decode::<V>(fv)))
             .collect()
     }
 
@@ -2934,6 +2939,19 @@ mod lite_tests {
             Self {
                 a: n,
                 b: n * 2,
+            } 
+        }
+    }
+
+    struct FatStruct {
+        a: usize,
+        b: usize
+    }
+    impl FatStruct {
+        fn new(n: usize) -> Self {
+            Self {
+                a: n,
+                b: n * 2,
             }
         }
     }
@@ -2941,12 +2959,12 @@ mod lite_tests {
     #[test]
     fn no_resize_arc() {
         let _ = env_logger::try_init();
-        let map = LiteHashMap::<usize, SlimStruct, System>::with_capacity(4096);
+        let map = LiteHashMap::<usize, Arc<FatStruct>, System>::with_capacity(4096);
         for i in 5..2048 {
             let k = i;
             let v = i * 2;
-            let d = SlimStruct::new(v);
-            map.insert(&(k as usize), d);
+            let d = Arc::new(FatStruct::new(v));
+            map.insert(&k, d);
         }
         for i in 5..2048 {
             let k = i;
