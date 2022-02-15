@@ -158,10 +158,11 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            'SPIN: loop {
-                if let Some((val, _idx, addr, aitem)) =
-                    self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
-                {
+
+            if let Some((mut val, _idx, addr, aitem)) =
+                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
+            {
+                'SPIN: loop {
                     match val.parsed {
                         ParsedValue::Empty => {
                             debug!("Found empty for key {}", fkey);
@@ -175,16 +176,17 @@ impl<
                             let mut attachment = None;
                             if Self::CAN_ATTACH && read_attachment {
                                 attachment = Some(aitem.get_value());
-                                if self.get_fast_value(addr).raw != val.raw {
+                                let new_val = self.get_fast_value(addr);
+                                if new_val.raw != val.raw {
                                     backoff.spin();
+                                    val = new_val;
                                     continue 'SPIN;
                                 }
                             }
                             return Some((fval, attachment));
                         }
                         ParsedValue::Prime(_) => {
-                            backoff.spin();
-                            continue 'SPIN;
+                            unreachable!();
                         }
                         ParsedValue::Sentinel => {
                             if new_chunk.is_none() {
@@ -201,28 +203,29 @@ impl<
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                'SPIN: loop {
-                    if let Some((val, _idx, addr, aitem)) =
-                        self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
-                    {
+                if let Some((mut val, _idx, addr, aitem)) =
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
+                {
+                    'SPIN_NEW: loop {
                         match val.parsed {
                             ParsedValue::Empty | ParsedValue::Val(0) => {
-                                break 'SPIN;
+                                break 'SPIN_NEW;
                             }
                             ParsedValue::Val(fval) => {
                                 let mut attachment = None;
                                 if Self::CAN_ATTACH && read_attachment {
                                     attachment = Some(aitem.get_value());
-                                    if self.get_fast_value(addr).raw != val.raw {
+                                    let new_val = self.get_fast_value(addr);
+                                    if new_val.raw != val.raw {
+                                        val = new_val;
                                         backoff.spin();
-                                        continue 'SPIN;
+                                        continue 'SPIN_NEW;
                                     }
                                 }
                                 return Some((fval, attachment));
                             }
                             ParsedValue::Prime(_) => {
-                                backoff.spin();
-                                continue 'SPIN;
+                                unreachable!();
                             }
                             ParsedValue::Sentinel => {
                                 warn!("Found sentinel in new chunks for key {}", fkey);
@@ -614,10 +617,18 @@ impl<
                 continue;
             }
             if fkey_matches && attachment.probe(key) {
-                let val_res = self.get_fast_value(addr);
-                match val_res.parsed {
-                    ParsedValue::Empty => {}
-                    _ => return Some((val_res, idx, addr, attachment)),
+                loop {
+                    let val_res = self.get_fast_value(addr);
+                    match val_res.parsed {
+                        ParsedValue::Empty => {
+                            break;
+                        }
+                        ParsedValue::Prime(_) => {
+                            backoff.spin();
+                            continue;
+                        }
+                        _ => return Some((val_res, idx, addr, attachment)),
+                    }
                 }
             } else if act_key == EMPTY_KEY {
                 return None;
