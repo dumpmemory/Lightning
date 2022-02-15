@@ -179,15 +179,14 @@ impl<
                                 let new_val = self.get_fast_value(addr);
                                 if new_val.raw != val.raw {
                                     val = new_val;
-                                    backoff.spin();
                                     continue 'SPIN;
                                 }
                             }
                             return Some((fval, attachment));
                         }
                         ParsedValue::Prime(_) => {
-                            val = self.get_fast_value(addr);
                             backoff.spin();
+                            val = self.get_fast_value(addr);
                             continue 'SPIN;
                         }
                         ParsedValue::Sentinel => {
@@ -220,15 +219,14 @@ impl<
                                     let new_val = self.get_fast_value(addr);
                                     if new_val.raw != val.raw {
                                         val = new_val;
-                                        backoff.spin();
                                         continue 'SPIN_NEW;
                                     }
                                 }
                                 return Some((fval, attachment));
                             }
                             ParsedValue::Prime(_) => {
-                                val = self.get_fast_value(addr);
                                 backoff.spin();
+                                val = self.get_fast_value(addr);
                                 continue 'SPIN_NEW;
                             }
                             ParsedValue::Sentinel => {
@@ -335,7 +333,6 @@ impl<
                         new_chunk_ptr
                     );
                     self.do_migration(chunk_ptr, &guard);
-                    backoff.spin();
                     continue;
                 }
                 ModResult::Sentinel => {
