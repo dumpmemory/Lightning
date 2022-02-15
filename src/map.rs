@@ -178,15 +178,17 @@ impl<
                                 attachment = Some(aitem.get_value());
                                 let new_val = self.get_fast_value(addr);
                                 if new_val.raw != val.raw {
-                                    backoff.spin();
                                     val = new_val;
+                                    backoff.spin();
                                     continue 'SPIN;
                                 }
                             }
                             return Some((fval, attachment));
                         }
                         ParsedValue::Prime(_) => {
-                            unreachable!();
+                            val = self.get_fast_value(addr);
+                            backoff.spin();
+                            continue 'SPIN;
                         }
                         ParsedValue::Sentinel => {
                             if new_chunk.is_none() {
@@ -225,7 +227,9 @@ impl<
                                 return Some((fval, attachment));
                             }
                             ParsedValue::Prime(_) => {
-                                unreachable!();
+                                val = self.get_fast_value(addr);
+                                backoff.spin();
+                                continue 'SPIN;
                             }
                             ParsedValue::Sentinel => {
                                 warn!("Found sentinel in new chunks for key {}", fkey);
@@ -620,9 +624,6 @@ impl<
                 loop {
                     let val_res = self.get_fast_value(addr);
                     match val_res.parsed {
-                        ParsedValue::Empty => {
-                            break;
-                        }
                         ParsedValue::Prime(_) => {
                             backoff.spin();
                             continue;
