@@ -226,6 +226,7 @@ impl<
                             }
                             ParsedValue::Sentinel => {
                                 warn!("Found sentinel in new chunks for key {}", fkey);
+                                backoff.spin();
                                 continue 'OUTER;
                             }
                         }
