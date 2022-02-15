@@ -229,7 +229,7 @@ impl<
                             ParsedValue::Prime(_) => {
                                 val = self.get_fast_value(addr);
                                 backoff.spin();
-                                continue 'SPIN;
+                                continue 'SPIN_NEW;
                             }
                             ParsedValue::Sentinel => {
                                 warn!("Found sentinel in new chunks for key {}", fkey);
