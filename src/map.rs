@@ -8,7 +8,6 @@ use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 use core::sync::atomic::{compiler_fence, fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
-use std::mem::MaybeUninit;
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 use static_assertions::const_assert;
@@ -16,6 +15,7 @@ use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::mem::MaybeUninit;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
 
@@ -151,73 +151,83 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
         let fkey = Self::fix_key(fkey);
-        loop {
+        'OUTER: loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            if let Some((val, _idx, addr, aitem)) =
-                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
-            {
-                match val.parsed {
-                    ParsedValue::Empty => {
-                        debug!("Found empty for key {}", fkey);
-                    }
-                    ParsedValue::Val(0) => {
-                        debug!("Found Val(0) for key {}", fkey);
-                    }
-                    ParsedValue::Val(fval) => {
-                        let mut attachment = None;
-                        if Self::CAN_ATTACH && read_attachment {
-                            attachment = Some(aitem.get_value());
-                            if self.get_fast_value(addr).raw != val.raw {
-                                backoff.spin();
-                                continue;
-                            }
-                        }
-                        return Some((fval, attachment));
-                    }
-                    ParsedValue::Prime(_) => {
-                        backoff.spin();
-                        continue;
-                    }
-                    ParsedValue::Sentinel => {
-                        if new_chunk.is_none() {
-                            warn!("Discovered sentinel but new chunk is null for key {}", fkey);
-                            backoff.spin();
-                            continue;
-                        }
-                        trace!("Found sentinel, moving to new chunk for key {}", fkey);
-                    }
-                }
-            }
-
-            // Looking into new chunk
-            if let Some(new_chunk) = new_chunk {
+            'SPIN: loop {
                 if let Some((val, _idx, addr, aitem)) =
-                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
+                    self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
                 {
                     match val.parsed {
-                        ParsedValue::Empty | ParsedValue::Val(0) => {}
+                        ParsedValue::Empty => {
+                            debug!("Found empty for key {}", fkey);
+                            break 'SPIN;
+                        }
+                        ParsedValue::Val(0) => {
+                            debug!("Found Val(0) for key {}", fkey);
+                            break 'SPIN;
+                        }
                         ParsedValue::Val(fval) => {
                             let mut attachment = None;
                             if Self::CAN_ATTACH && read_attachment {
                                 attachment = Some(aitem.get_value());
                                 if self.get_fast_value(addr).raw != val.raw {
                                     backoff.spin();
-                                    continue;
+                                    continue 'SPIN;
                                 }
                             }
                             return Some((fval, attachment));
                         }
                         ParsedValue::Prime(_) => {
                             backoff.spin();
-                            continue;
+                            continue 'SPIN;
                         }
                         ParsedValue::Sentinel => {
-                            warn!("Found sentinel in new chunks for key {}", fkey);
+                            if new_chunk.is_none() {
+                                warn!("Discovered sentinel but new chunk is null for key {}", fkey);
+                                backoff.spin();
+                                continue 'OUTER;
+                            }
+                            trace!("Found sentinel, moving to new chunk for key {}", fkey);
+                            break 'SPIN;
+                        }
+                    }
+                }
+            }
+
+            // Looking into new chunk
+            if let Some(new_chunk) = new_chunk {
+                'SPIN: loop {
+                    if let Some((val, _idx, addr, aitem)) =
+                        self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
+                    {
+                        match val.parsed {
+                            ParsedValue::Empty | ParsedValue::Val(0) => {
+                                break 'SPIN;
+                            }
+                            ParsedValue::Val(fval) => {
+                                let mut attachment = None;
+                                if Self::CAN_ATTACH && read_attachment {
+                                    attachment = Some(aitem.get_value());
+                                    if self.get_fast_value(addr).raw != val.raw {
+                                        backoff.spin();
+                                        continue 'SPIN;
+                                    }
+                                }
+                                return Some((fval, attachment));
+                            }
+                            ParsedValue::Prime(_) => {
+                                backoff.spin();
+                                continue 'SPIN;
+                            }
+                            ParsedValue::Sentinel => {
+                                warn!("Found sentinel in new chunks for key {}", fkey);
+                                continue 'OUTER;
+                            }
                         }
                     }
                 }
@@ -225,7 +235,7 @@ impl<
             let new_epoch = self.now_epoch();
             if new_epoch != epoch {
                 backoff.spin();
-                continue;
+                continue 'OUTER;
             }
             debug!(
                 "Find nothing for key {}, rt new chunk {:?}, now {:?}. Epoch {} to {}",
@@ -2744,7 +2754,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     // pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
     //     HashMapReadGuard::new(&self.table, key)
     // }
-    
+
     fn encode<T: Clone>(d: &T) -> usize {
         let d = d.clone();
         let mut num: usize = 0;
@@ -2797,7 +2807,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
         let k_num = Self::encode(key);
-        self.table.get(&(), k_num, false).map(|(fv, _)| Self::decode::<V>(fv))
+        self.table
+            .get(&(), k_num, false)
+            .map(|(fv, _)| Self::decode::<V>(fv))
     }
 
     #[inline(always)]
@@ -2813,7 +2825,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
         let k_num = Self::encode(key);
-        self.table.remove(&(), k_num).map(|(fv, _)| Self::decode(fv))
+        self.table
+            .remove(&(), k_num)
+            .map(|(fv, _)| Self::decode(fv))
     }
 
     #[inline(always)]
@@ -2904,10 +2918,9 @@ impl<V> Debug for ModResult<V> {
     }
 }
 
-
 mod lite_tests {
-    use std::{alloc::System, sync::Arc};
     use super::{LiteHashMap, Map};
+    use std::{alloc::System, sync::Arc};
 
     #[test]
     fn no_resize() {
@@ -2931,28 +2944,22 @@ mod lite_tests {
     #[derive(Clone)]
     struct SlimStruct {
         a: u32,
-        b: u32
+        b: u32,
     }
 
     impl SlimStruct {
         fn new(n: u32) -> Self {
-            Self {
-                a: n,
-                b: n * 2,
-            } 
+            Self { a: n, b: n * 2 }
         }
     }
 
     struct FatStruct {
         a: usize,
-        b: usize
+        b: usize,
     }
     impl FatStruct {
         fn new(n: usize) -> Self {
-            Self {
-                a: n,
-                b: n * 2,
-            }
+            Self { a: n, b: n * 2 }
         }
     }
 
@@ -2973,7 +2980,7 @@ mod lite_tests {
                 Some(r) => {
                     assert_eq!(r.a as usize, v);
                     assert_eq!(r.b as usize, v * 2);
-                },
+                }
                 None => panic!("{}", i),
             }
         }
