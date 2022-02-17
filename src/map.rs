@@ -8,6 +8,7 @@ use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 use core::sync::atomic::{compiler_fence, fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
+use std::intrinsics::forget;
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 use static_assertions::const_assert;
@@ -2734,6 +2735,9 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
     }
 }
 
+#[repr(C, align(8))]
+struct AlignedLiteObj<T>(T);
+
 pub struct LiteHashMap<
     K: Clone + Hash + Eq,
     V: Clone,
@@ -2747,8 +2751,8 @@ pub struct LiteHashMap<
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     LiteHashMap<K, V, ALLOC, H>
 {
-    const K_SIZE: usize = mem::size_of::<K>();
-    const V_SIZE: usize = mem::size_of::<V>();
+    const K_SIZE: usize = mem::size_of::<AlignedLiteObj<K>>();
+    const V_SIZE: usize = mem::size_of::<AlignedLiteObj<V>>();
 
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
         let k_num = Self::encode(key);
@@ -2765,40 +2769,24 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     //     HashMapReadGuard::new(&self.table, key)
     // }
 
+    #[inline(always)]
     fn encode<T: Clone>(d: &T) -> usize {
-        let d = d.clone();
-        let mut num: usize = 0;
-        let num_ptr: *mut usize = &mut num;
-        let d_ptr: *const T = &d;
-        unsafe {
-            libc::memcpy(
-                num_ptr as *mut c_void,
-                d_ptr as *const c_void,
-                mem::size_of::<T>(),
-            );
-        }
-        mem::forget(d);
+        let aligned = AlignedLiteObj(d.clone());
+        let ptr = &aligned as *const AlignedLiteObj<T> as *const u64;
+        let num = unsafe {
+            ptr::read(ptr)
+        } as usize;
+        mem::forget(aligned);
         return num + NUM_FIX;
     }
 
+    #[inline(always)]
     fn decode<T: Clone>(num: usize) -> T {
-        let num = num - NUM_FIX;
-        let num_ptr: *const usize = &num;
-        let mut obj = MaybeUninit::<T>::uninit();
-        let obj_ptr = obj.as_mut_ptr();
-        unsafe {
-            libc::memcpy(
-                obj_ptr as *mut c_void,
-                num_ptr as *mut c_void,
-                mem::size_of::<T>(),
-            );
-        };
-        unsafe {
-            let obj = obj.assume_init();
-            let r = obj.clone();
-            mem::forget(obj);
-            return r;
-        }
+        let num = (num - NUM_FIX) as u64;
+        let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
+        let aligned = unsafe { &*ptr };
+        let obj = aligned.0.clone();
+        return obj;
     }
 }
 
