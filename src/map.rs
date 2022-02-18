@@ -8,15 +8,12 @@ use core::ops::Deref;
 use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 use core::sync::atomic::{compiler_fence, fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
-use std::intrinsics::forget;
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
-use static_assertions::const_assert;
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::mem::MaybeUninit;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
 
@@ -1401,17 +1398,18 @@ impl Value {
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
     fn alloc_chunk(capacity: usize) -> *mut Self {
-        let capacity = capacity;
         let self_size = mem::size_of::<Self>();
-        let self_align = align_padding(self_size, 64);
+        let self_align = align_padding(self_size, 8);
         let self_size_aligned = self_size + self_align;
         let chunk_size = chunk_size_of(capacity);
+        let chunk_align = align_padding(chunk_size, 8);
+        let chunk_size_aligned = chunk_size + chunk_align;
         let attachment_heap = A::heap_size_of(capacity);
-        let total_size = self_size_aligned + chunk_size + attachment_heap;
+        let total_size = self_size_aligned + chunk_size_aligned + attachment_heap;
         let ptr = alloc_mem::<ALLOC>(total_size) as *mut Self;
         let addr = ptr as usize;
         let data_base = addr + self_size_aligned;
-        let attachment_base = data_base + chunk_size;
+        let attachment_base = data_base + chunk_size_aligned;
         unsafe {
             ptr::write(
                 ptr,
