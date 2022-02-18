@@ -2736,7 +2736,19 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
 }
 
 #[repr(C, align(8))]
-struct AlignedLiteObj<T>(T);
+struct AlignedLiteObj<T> {
+    data: T,
+    _marker: PhantomData<T>
+}
+
+impl <T> AlignedLiteObj <T> {
+    pub fn new(obj: T) -> Self {
+        Self {
+            data: obj,
+            _marker: PhantomData
+        }
+    }
+}
 
 pub struct LiteHashMap<
     K: Clone + Hash + Eq,
@@ -2769,23 +2781,22 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     //     HashMapReadGuard::new(&self.table, key)
     // }
 
-    #[inline(always)]
+    //#[inline(always)]
     fn encode<T: Clone>(d: &T) -> usize {
-        let aligned = AlignedLiteObj(d.clone());
-        let ptr = &aligned as *const AlignedLiteObj<T> as *const u64;
-        let num = unsafe {
-            ptr::read(ptr)
-        } as usize;
-        mem::forget(aligned);
-        return num + NUM_FIX;
+        let mut num: u64 = 0;
+        let obj_ptr = &mut num as *mut u64 as *mut T;
+        unsafe {
+            ptr::write(obj_ptr, d.clone());
+        }
+        return num as usize + NUM_FIX;
     }
 
-    #[inline(always)]
+    //#[inline(always)]
     fn decode<T: Clone>(num: usize) -> T {
         let num = (num - NUM_FIX) as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
-        let obj = aligned.0.clone();
+        let obj = aligned.data.clone();
         return obj;
     }
 }
@@ -2794,8 +2805,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     for LiteHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
-        assert!(Self::K_SIZE <= mem::size_of::<usize>());
-        assert!(Self::V_SIZE <= mem::size_of::<usize>());
+        assert_eq!(Self::K_SIZE, 8);
+        assert_eq!(Self::V_SIZE, 8);
         Self {
             table: Table::with_capacity(cap),
             shadow: PhantomData,
@@ -2978,6 +2989,27 @@ mod lite_tests {
                 Some(r) => {
                     assert_eq!(r.a as usize, v);
                     assert_eq!(r.b as usize, v * 2);
+                }
+                None => panic!("{}", i),
+            }
+        }
+    }
+
+    #[test]
+    fn no_resize_small_type() {
+        let _ = env_logger::try_init();
+        let map = LiteHashMap::<u8, u8, System>::with_capacity(4096);
+        for i in 0..2048 {
+            let k = i as u8;
+            let v = (i * 2) as u8;
+            map.insert(&k, v);
+        }
+        for i in 0..2048 {
+            let k = i as u8;
+            let v = (i * 2) as u8;
+            match map.get(&k) {
+                Some(r) => {
+                    assert_eq!(r, v);
                 }
                 None => panic!("{}", i),
             }
