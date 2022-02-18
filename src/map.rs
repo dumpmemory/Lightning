@@ -20,9 +20,13 @@ use std::os::raw::c_void;
 pub struct EntryTemplate(usize, usize);
 
 const EMPTY_KEY: usize = 0;
+
 const EMPTY_VALUE: usize = 0;
 const SENTINEL_VALUE: usize = 1;
 const TOMBSTONE_VALUE: usize = 2;
+const LOCKED_VALUE: usize = 3;
+const MIGRATING_VALUE: usize = 4;
+
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
 const KEY_BIT_MASK: usize = VAL_BIT_MASK;
@@ -34,21 +38,6 @@ const FVAL_BITS: usize = mem::size_of::<usize>() * 8;
 const FVAL_VER_POS: usize = FVAL_BITS / 2;
 const FVAL_VER_BIT_MASK: usize = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 const FVAL_VAL_BIT_MASK: usize = !FVAL_VER_BIT_MASK;
-
-const PRIMED_SENTINEL: usize = SENTINEL_VALUE | INV_VAL_BIT_MASK;
-
-struct Value {
-    raw: usize,
-    parsed: ParsedValue,
-}
-
-#[derive(Debug)]
-enum ParsedValue {
-    Val(usize), // None for tombstone
-    Prime(usize),
-    Sentinel,
-    Empty,
-}
 
 enum ModResult<V> {
     Replaced(usize, Option<V>, usize), // (origin fval, val, index)
@@ -161,33 +150,13 @@ impl<
                 self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
             {
                 'SPIN: loop {
-                    match val.parsed {
-                        ParsedValue::Empty => {
+                    let act_val = val.act_val();
+                    match act_val {
+                        EMPTY_VALUE | TOMBSTONE_VALUE => {
                             debug!("Found empty for key {}", fkey);
                             break 'SPIN;
                         }
-                        ParsedValue::Val(0) => {
-                            debug!("Found Val(0) for key {}", fkey);
-                            break 'SPIN;
-                        }
-                        ParsedValue::Val(fval) => {
-                            let mut attachment = None;
-                            if Self::CAN_ATTACH && read_attachment {
-                                attachment = Some(aitem.get_value());
-                                let new_val = self.get_fast_value(addr);
-                                if new_val.raw != val.raw {
-                                    val = new_val;
-                                    continue 'SPIN;
-                                }
-                            }
-                            return Some((fval, attachment));
-                        }
-                        ParsedValue::Prime(_) => {
-                            backoff.spin();
-                            val = self.get_fast_value(addr);
-                            continue 'SPIN;
-                        }
-                        ParsedValue::Sentinel => {
+                        SENTINEL_VALUE => {
                             if new_chunk.is_none() {
                                 warn!("Discovered sentinel but new chunk is null for key {}", fkey);
                                 backoff.spin();
@@ -195,6 +164,23 @@ impl<
                             }
                             trace!("Found sentinel, moving to new chunk for key {}", fkey);
                             break 'SPIN;
+                        }
+                        LOCKED_VALUE | MIGRATING_VALUE => {
+                            backoff.spin();
+                            val = self.get_fast_value(addr);
+                            continue 'SPIN;
+                        }
+                        _ => {
+                            let mut attachment = None;
+                            if Self::CAN_ATTACH && read_attachment {
+                                attachment = Some(aitem.get_value());
+                                let new_val = self.get_fast_value(addr);
+                                if new_val.val != val.val {
+                                    val = new_val;
+                                    continue 'SPIN;
+                                }
+                            }
+                            return Some((act_val, attachment));
                         }
                     }
                 }
@@ -206,31 +192,32 @@ impl<
                     self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
                 {
                     'SPIN_NEW: loop {
-                        match val.parsed {
-                            ParsedValue::Empty | ParsedValue::Val(0) => {
+                        let act_val = val.act_val();
+                        match act_val {
+                            EMPTY_VALUE | TOMBSTONE_VALUE => {
                                 break 'SPIN_NEW;
                             }
-                            ParsedValue::Val(fval) => {
-                                let mut attachment = None;
-                                if Self::CAN_ATTACH && read_attachment {
-                                    attachment = Some(aitem.get_value());
-                                    let new_val = self.get_fast_value(addr);
-                                    if new_val.raw != val.raw {
-                                        val = new_val;
-                                        continue 'SPIN_NEW;
-                                    }
-                                }
-                                return Some((fval, attachment));
-                            }
-                            ParsedValue::Prime(_) => {
+                            LOCKED_VALUE | MIGRATING_VALUE => {
                                 backoff.spin();
                                 val = self.get_fast_value(addr);
                                 continue 'SPIN_NEW;
                             }
-                            ParsedValue::Sentinel => {
+                            SENTINEL_VALUE => {
                                 warn!("Found sentinel in new chunks for key {}", fkey);
                                 backoff.spin();
                                 continue 'OUTER;
+                            }
+                            _ => {
+                                let mut attachment = None;
+                                if Self::CAN_ATTACH && read_attachment {
+                                    attachment = Some(aitem.get_value());
+                                    let new_val = self.get_fast_value(addr);
+                                    if new_val.val != val.val {
+                                        val = new_val;
+                                        continue 'SPIN_NEW;
+                                    }
+                                }
+                                return Some((act_val, attachment));
                             }
                         }
                     }
@@ -415,15 +402,12 @@ impl<
                 if let Some((old_parsed_val, old_index, _, attachment)) =
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
-                    let old_fval = old_parsed_val.raw;
-                    if old_parsed_val.is_primed() {
+                    let old_fval = old_parsed_val.act_val();
+                    if old_fval == LOCKED_VALUE {
                         backoff.spin();
                         continue;
                     }
-                    if old_fval != SENTINEL_VALUE
-                        && old_fval != EMPTY_VALUE
-                        && old_fval != TOMBSTONE_VALUE
-                    {
+                    if old_fval >= NUM_FIX {
                         if let Some(new_val) = func(old_fval) {
                             let val = attachment.get_value();
                             match self.modify_entry(
@@ -438,10 +422,10 @@ impl<
                                 ModResult::Done(_, _, new_index)
                                 | ModResult::Replaced(_, _, new_index) => {
                                     let old_addr = chunk.entry_addr(old_index);
-                                    if self.cas_sentinel(old_addr, old_fval) {
+                                    if self.cas_sentinel(old_addr, old_parsed_val.val) {
                                         // Put a sentinel in the old chunk
                                         return SwapResult::Succeed(
-                                            old_fval & VAL_BIT_MASK,
+                                            old_fval,
                                             new_index,
                                             new_chunk_ptr,
                                         );
@@ -487,7 +471,7 @@ impl<
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => {
-                    SwapResult::Succeed(v & VAL_BIT_MASK, idx, modify_chunk_ptr)
+                    SwapResult::Succeed(v, idx, modify_chunk_ptr)
                 }
                 ModResult::Aborted => SwapResult::Aborted,
                 ModResult::Fail => SwapResult::Failed,
@@ -598,7 +582,7 @@ impl<
         key: &K,
         fkey: usize,
         backoff: &Backoff,
-    ) -> Option<(Value, usize, usize, A::Item)> {
+    ) -> Option<(FastValue<K, V, A>, usize, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -618,13 +602,12 @@ impl<
             if fkey_matches && attachment.probe(key) {
                 loop {
                     let val_res = self.get_fast_value(addr);
-                    match val_res.parsed {
-                        ParsedValue::Prime(_) => {
-                            backoff.spin();
-                            continue;
-                        }
-                        _ => return Some((val_res, idx, addr, attachment)),
+                    let act_val = val_res.act_val();
+                    if act_val == LOCKED_VALUE || act_val == MIGRATING_VALUE {
+                        backoff.spin();
+                        continue;
                     }
+                    return Some((val_res, idx, addr, attachment))
                 }
             } else if act_key == EMPTY_KEY {
                 return None;
@@ -667,30 +650,36 @@ impl<
             }
             if fkey_match && attachment.probe(&key) {
                 loop {
-                    let val = self.get_fast_value(addr);
-                    match &val.parsed {
-                        ParsedValue::Val(v) => {
-                            match &op {
+                    let v = self.get_fast_value(addr);
+                    let act_val = v.act_val();
+                    match act_val {
+                        SENTINEL_VALUE => return ModResult::Sentinel,
+                        LOCKED_VALUE | MIGRATING_VALUE => {
+                            backoff.spin();
+                            continue;
+                        }
+                        _ => {
+                            match &op { 
                                 &ModOp::Sentinel => {
                                     let value = read_attachment.then(|| attachment.get_value());
-                                    if self.cas_sentinel(addr, val.raw) {
+                                    if self.cas_sentinel(addr, v.val) {
                                         attachment.erase();
-                                        if *v == 0 {
+                                        if act_val == 0 {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
-                                            return ModResult::Done(*v, value, idx);
+                                            return ModResult::Done(act_val, value, idx);
                                         }
                                     } else {
                                         return ModResult::Fail;
                                     }
                                 }
                                 &ModOp::Tombstone => {
-                                    if *v == 0 {
+                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                         // Already tombstone
                                         return ModResult::NotFound;
                                     }
                                     let value = read_attachment.then(|| attachment.get_value());
-                                    if !self.cas_tombstone(addr, val.raw).is_ok() {
+                                    if !self.cas_tombstone(addr, v.val).is_ok() {
                                         // this insertion have conflict with others
                                         // other thread changed the value (empty)
                                         // should fail
@@ -699,16 +688,16 @@ impl<
                                         // we have put tombstone on the value, get the attachment and erase it
                                         attachment.erase();
                                         chunk.empty_entries.fetch_add(1, Relaxed);
-                                        return ModResult::Replaced(*v, value, idx);
+                                        return ModResult::Replaced(act_val, value, idx);
                                     }
                                 }
                                 &ModOp::UpsertFastVal(ref fv) => {
                                     let value = read_attachment.then(|| attachment.get_value());
-                                    if self.cas_value(addr, val.raw, *fv).is_ok() {
-                                        if *v == 0 {
+                                    if self.cas_value(addr, v.val, *fv).is_ok() {
+                                        if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
-                                            return ModResult::Replaced(*v, value, idx);
+                                            return ModResult::Replaced(act_val, value, idx);
                                         }
                                     } else {
                                         backoff.spin();
@@ -716,21 +705,21 @@ impl<
                                     }
                                 }
                                 &ModOp::AttemptInsert(fval, oval) => {
-                                    if *v == 0 {
+                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                         let primed_fval = if Self::CAN_ATTACH {
-                                            fval | INV_VAL_BIT_MASK
+                                            LOCKED_VALUE
                                         } else {
                                             fval
                                         };
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        match self.cas_value(addr, val.raw, primed_fval) {
+                                        match self.cas_value(addr, v.val, primed_fval) {
                                             Ok(cas_fval) => {
                                                 if Self::CAN_ATTACH {
                                                     attachment.set_value((*oval).clone());
                                                     self.store_value(addr, cas_fval, fval);
                                                 }
-                                                return ModResult::Replaced(val.raw, prev_val, idx);
+                                                return ModResult::Replaced(act_val, prev_val, idx);
                                             }
                                             Err(act_val) => {
                                                 if Self::CAN_ATTACH && read_attachment {
@@ -746,66 +735,61 @@ impl<
                                         "Attempting insert existed entry {}, {}, have key {:?}, skip",
                                         act_key,
                                         fval,
-                                        v
+                                        act_val,
                                     );
                                         let value = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH
                                             && read_attachment
-                                            && self.get_fast_value(addr).raw != val.raw
-                                        {
+                                            && self.get_fast_value(addr).val != v.val                                        {
                                             backoff.spin();
                                             continue;
                                         }
-                                        return ModResult::Existed(*v, value);
+                                        return ModResult::Existed(act_val, value);
                                     }
                                 }
                                 &ModOp::SwapFastVal(ref swap) => {
                                     trace!(
                                         "Swaping found key {} have original value {:#064b}",
                                         fkey,
-                                        val.raw
+                                        act_val
                                     );
-                                    match &val.parsed {
-                                        ParsedValue::Val(pval) => {
-                                            let pval = *pval;
-                                            if pval == 0 {
-                                                return ModResult::NotFound;
-                                            }
-                                            let aval =
-                                                read_attachment.then(|| attachment.get_value());
-                                            if let Some(v) = swap(pval) {
-                                                if self.cas_value(addr, val.raw, v).is_ok() {
-                                                    // swap success
-                                                    return ModResult::Replaced(val.raw, aval, idx);
-                                                } else {
-                                                    return ModResult::Fail;
-                                                }
+                                    if act_val >= NUM_FIX {
+                                        if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE)  {
+                                            return ModResult::NotFound;
+                                        }
+                                        let aval =
+                                            read_attachment.then(|| attachment.get_value());
+                                        if let Some(sv) = swap(act_val) {
+                                            if self.cas_value(addr, v.val, sv).is_ok() {
+                                                // swap success
+                                                return ModResult::Replaced(act_val, aval, idx);
                                             } else {
-                                                return ModResult::Aborted;
+                                                return ModResult::Fail;
                                             }
+                                        } else {
+                                            return ModResult::Aborted;
                                         }
-                                        _ => {
-                                            return ModResult::Fail;
-                                        }
+                                    } else {
+                                        return ModResult::Fail;
                                     }
                                 }
-                                &ModOp::Insert(fval, ref v) => {
+                                &ModOp::Insert(fval, ov) => {
                                     // Insert with attachment should prime value first when
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
                                     let primed_fval = if Self::CAN_ATTACH {
-                                        fval | INV_VAL_BIT_MASK
+                                        LOCKED_VALUE
                                     } else {
                                         fval
                                     };
                                     let prev_val = read_attachment.then(|| attachment.get_value());
-                                    match self.cas_value(addr, val.raw, primed_fval) {
+                                    match self.cas_value(addr, v.val, primed_fval) {
                                         Ok(cas_fval) => {
                                             if Self::CAN_ATTACH {
-                                                attachment.set_value((*v).clone());
+                                                attachment.set_value(ov.clone());
                                                 self.store_value(addr, cas_fval, fval);
                                             }
-                                            return ModResult::Replaced(val.raw, prev_val, idx);
+                                            return ModResult::Replaced(act_val, prev_val, idx);
                                         }
                                         Err(_) => {
                                             backoff.spin();
@@ -814,14 +798,6 @@ impl<
                                     }
                                 }
                             }
-                        }
-                        ParsedValue::Empty => {
-                            unreachable!();
-                        }
-                        ParsedValue::Sentinel => return ModResult::Sentinel,
-                        ParsedValue::Prime(_) => {
-                            backoff.spin();
-                            continue;
                         }
                     }
                 }
@@ -913,17 +889,14 @@ impl<
                 }
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = self.get_fast_value(addr);
-                match val_res.parsed {
-                    ParsedValue::Val(0) => {}
-                    ParsedValue::Val(v) => {
-                        let key = attachment.get_key();
-                        let value = attachment.get_value();
-                        res.push((act_key, v, key, value))
-                    }
-                    ParsedValue::Prime(_) => {
+                let act_val = val_res.act_val();
+                if act_val >= NUM_FIX {
+                    let key = attachment.get_key();
+                    let value = attachment.get_value();
+                    if Self::CAN_ATTACH && self.get_fast_value(addr).val != val_res.val {
                         continue;
                     }
-                    _ => {}
+                    res.push((act_key, act_val, key, value))
                 }
             }
             idx += 1; // reprobe
@@ -952,11 +925,11 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_value(&self, entry_addr: usize) -> Value {
+    fn get_fast_value(&self, entry_addr: usize) -> FastValue<K, V, A> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
-        Value::new::<K, V, A, ALLOC, H>(val)
+        FastValue::<K, V, A>::new(val)
     }
 
     #[inline(always)]
@@ -980,7 +953,7 @@ impl<
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
-            Value::next_version::<K, V, A>(original, value)
+            FastValue::<K, V, A>::next_version(original, value)
         } else {
             value
         };
@@ -998,7 +971,7 @@ impl<
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
-            Value::next_version::<K, V, A>(original, value)
+            FastValue::<K, V, A>::next_version(original, value)
         } else {
             value
         };
@@ -1151,15 +1124,26 @@ impl<
             }
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
-            match &fvalue.parsed {
-                ParsedValue::Empty | ParsedValue::Val(0) => {
-                    if !self.cas_sentinel(old_address, fvalue.raw) {
+            match fvalue.act_val() {
+                EMPTY_VALUE | TOMBSTONE_VALUE => {
+                    if !self.cas_sentinel(old_address, fvalue.val) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
                     }
                 }
-                ParsedValue::Val(_) => {
+                LOCKED_VALUE => {
+                    backoff.spin();
+                    continue;
+                }
+                SENTINEL_VALUE => {
+                    // Sentinel, skip
+                    // Sentinel in old chunk implies its new value have already in the new chunk
+                    // It can also be other thread have moved this key-value pair to the new chunk
+                    trace!("Skip copy sentinel");
+                }
+                MIGRATING_VALUE => {}
+                _ => {
                     // debug!("Migrating entry {:?}", fkey);
                     if !self.migrate_entry(
                         act_key,
@@ -1174,22 +1158,6 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                }
-                ParsedValue::Prime(v) => {
-                    if *v != SENTINEL_VALUE {
-                        warn!(
-                            "Discovered valued prime on migration, key {}, value {:#b}",
-                            act_key, fvalue.raw
-                        );
-                        backoff.spin();
-                        continue;
-                    }
-                }
-                ParsedValue::Sentinel => {
-                    // Sentinel, skip
-                    // Sentinel in old chunk implies its new value have already in the new chunk
-                    // It can also be other thread have moved this key-value pair to the new chunk
-                    trace!("Skip copy sentinel");
                 }
             }
             old_address += ENTRY_SIZE;
@@ -1206,7 +1174,7 @@ impl<
         &self,
         fkey: usize,
         old_idx: usize,
-        fvalue: Value,
+        fvalue: FastValue<K, V, A>,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
@@ -1214,15 +1182,15 @@ impl<
     ) -> bool {
         debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
         let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
-        if fkey == EMPTY_KEY || fvalue.is_primed() {
+        if fkey == EMPTY_KEY {
             // Value have no key, insertion in progress
             return false;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
-        // Value should be primed
+        // Value should be locked
         let key = old_attachment.get_key();
         let value = old_attachment.get_value();
-        let mut curr_orig = fvalue.raw;
+        let mut curr_orig = fvalue.val;
         let orig = curr_orig;
         // Make insertion for migration inlined, hopefully the ordering will be right
         let cap = new_chunk_ins.capacity;
@@ -1241,7 +1209,7 @@ impl<
             } else if act_key == EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
-                    match self.cas_value(old_address, orig, PRIMED_SENTINEL) {
+                    match self.cas_value(old_address, orig, MIGRATING_VALUE) {
                         Ok(n) => {
                             trace!("Primed value for migration: {}", fkey);
                             curr_orig = n;
@@ -1348,48 +1316,31 @@ impl<K, V, A: Attachment<K, V>> Clone for FastKey<K, V, A> {
 }
 impl<K, V, A: Attachment<K, V>> Copy for FastKey<K, V, A> {}
 
-impl Value {
-    pub fn new<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default>(
+struct FastValue<K, V, A: Attachment<K, V>> {
+    val: usize,
+    _marker: PhantomData<(K, V, A)>
+}
+
+impl <K, V, A: Attachment<K, V>> FastValue<K, V, A> {
+    pub fn new(
         val: usize,
     ) -> Self {
-        let raw = val;
-        let val = if can_attach::<K, V, A>() {
-            val & FVAL_VAL_BIT_MASK
-        } else {
-            val
-        };
-        let res = {
-            if val == EMPTY_VALUE {
-                ParsedValue::Empty
-            } else if val == TOMBSTONE_VALUE {
-                ParsedValue::Val(0)
-            } else {
-                let actual_val = val & VAL_BIT_MASK;
-                let flag = val & INV_VAL_BIT_MASK;
-                if flag != 0 {
-                    ParsedValue::Prime(actual_val)
-                } else if actual_val == SENTINEL_VALUE {
-                    ParsedValue::Sentinel
-                } else if actual_val == TOMBSTONE_VALUE {
-                    unreachable!("");
-                } else {
-                    ParsedValue::Val(actual_val)
-                }
-            }
-        };
-        Value { raw, parsed: res }
+        Self {
+            val, _marker: PhantomData
+        }
     }
 
-    #[inline(always)]
-    fn is_primed(&self) -> bool {
-        match &self.parsed {
-            &ParsedValue::Prime(_) => true,
-            _ => false,
+    #[inline]
+    fn act_val(&self) -> usize {
+        if can_attach::<K, V, A>() {
+            self.val & FVAL_VAL_BIT_MASK
+        } else {
+            self.val
         }
     }
 
     #[inline(always)]
-    const fn next_version<K, V, A: Attachment<K, V>>(old: usize, new: usize) -> usize {
+    const fn next_version(old: usize, new: usize) -> usize {
         debug_assert!(can_attach::<K, V, A>());
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
@@ -1722,6 +1673,7 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
         drop(self.addr as *mut T)
     }
 
+    #[inline(always)]
     fn probe(self, _value: &()) -> bool {
         true
     }
@@ -1846,12 +1798,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
 
     #[inline(always)]
     fn probe(self, key: &K) -> bool {
-        let addr = self.addr;
-        let pos_key = unsafe {
-            &*(addr as *mut K)
-            // ptr::read_volatile(addr as *mut K)
-        };
-        pos_key.eq(key)
+        unsafe { (&*(self.addr as *mut K)) == key }
     }
 
     #[inline(always)]
