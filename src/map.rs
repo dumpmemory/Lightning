@@ -2781,7 +2781,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     //     HashMapReadGuard::new(&self.table, key)
     // }
 
-    //#[inline(always)]
+    #[inline(always)]
     fn encode<T: Clone>(d: &T) -> usize {
         let mut num: u64 = 0;
         let obj_ptr = &mut num as *mut u64 as *mut T;
@@ -2791,7 +2791,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         return num as usize + NUM_FIX;
     }
 
-    //#[inline(always)]
+    #[inline(always)]
     fn decode<T: Clone>(num: usize) -> T {
         let num = (num - NUM_FIX) as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
