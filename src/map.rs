@@ -1420,7 +1420,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
                     total_size,
-                    attachment: A::new(capacity, attachment_base, attachment_heap),
+                    attachment: A::new(attachment_base),
                     shadow: PhantomData,
                 },
             )
@@ -1590,9 +1590,8 @@ const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
 
 pub trait Attachment<K, V> {
     type Item: AttachmentItem<K, V> + Copy;
-
     fn heap_size_of(cap: usize) -> usize;
-    fn new(cap: usize, heap_ptr: usize, heap_size: usize) -> Self;
+    fn new(heap_ptr: usize) -> Self;
     fn prefetch(&self, index: usize) -> Self::Item;
     fn dealloc(&self);
 }
@@ -1619,7 +1618,7 @@ impl Attachment<(), ()> for WordAttachment {
         0
     }
 
-    fn new(_cap: usize, _heap_ptr: usize, _heap_size: usize) -> Self {
+    fn new(_heap_ptr: usize) -> Self {
         Self
     }
 
@@ -1664,7 +1663,6 @@ pub type WordTable<H, ALLOC> = Table<(), (), WordAttachment, H, ALLOC>;
 
 pub struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
     obj_chunk: usize,
-    obj_size: usize,
     shadow: PhantomData<(T, A)>,
 }
 
@@ -1682,10 +1680,9 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
         cap * obj_size
     }
 
-    fn new(_cap: usize, heap_ptr: usize, _heap_size: usize) -> Self {
+    fn new(heap_ptr: usize) -> Self {
         Self {
             obj_chunk: heap_ptr,
-            obj_size: mem::size_of::<T>(),
             shadow: PhantomData,
         }
     }
@@ -1786,7 +1783,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
         cap * Self::PAIR_SIZE
     }
 
-    fn new(_cap: usize, heap_ptr: usize, _heap_size: usize) -> Self {
+    fn new(heap_ptr: usize) -> Self {
         Self {
             obj_chunk: heap_ptr,
             shadow: PhantomData,
@@ -1998,7 +1995,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
 impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     fn addr_by_index(&self, index: usize) -> usize {
-        self.obj_chunk + index * self.obj_size
+        self.obj_chunk + index * mem::size_of::<T>()
     }
 }
 
