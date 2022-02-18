@@ -399,7 +399,7 @@ impl<
             if let Some(new_chunk) = new_chunk {
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                if let Some((old_parsed_val, old_index, _, attachment)) =
+                if let Some((old_parsed_val, old_index, old_addr, attachment)) =
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
                     let old_fval = old_parsed_val.act_val();
@@ -421,7 +421,6 @@ impl<
                             ) {
                                 ModResult::Done(_, _, new_index)
                                 | ModResult::Replaced(_, _, new_index) => {
-                                    let old_addr = chunk.entry_addr(old_index);
                                     if self.cas_sentinel(old_addr, old_parsed_val.val) {
                                         // Put a sentinel in the old chunk
                                         return SwapResult::Succeed(
@@ -753,10 +752,10 @@ impl<
                                         fkey,
                                         act_val
                                     );
+                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE)  {
+                                        return ModResult::NotFound;
+                                    }
                                     if act_val >= NUM_FIX {
-                                        if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE)  {
-                                            return ModResult::NotFound;
-                                        }
                                         let aval =
                                             read_attachment.then(|| attachment.get_value());
                                         if let Some(sv) = swap(act_val) {
