@@ -239,7 +239,7 @@ impl<
             return None;
         }
     }
-
+    
     pub fn insert(
         &self,
         op: InsertOp,
@@ -1564,10 +1564,12 @@ pub struct WordAttachmentItem;
 impl Attachment<(), ()> for WordAttachment {
     type Item = WordAttachmentItem;
 
+    #[inline(always)]
     fn heap_size_of(_cap: usize) -> usize {
         0
     }
 
+    #[inline(always)]
     fn new(_heap_ptr: usize) -> Self {
         Self
     }
@@ -1575,6 +1577,7 @@ impl Attachment<(), ()> for WordAttachment {
     #[inline(always)]
     fn dealloc(&self) {}
 
+    #[inline(always)]
     fn prefetch(&self, _index: usize) -> Self::Item {
         WordAttachmentItem
     }
@@ -1677,10 +1680,12 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
         true
     }
 
+    #[inline(always)]
     fn get_key(self) -> () {
         ()
     }
 
+    #[inline(always)]
     fn set_key(self, _key: ()) {}
 
     #[inline(always)]
@@ -1862,6 +1867,7 @@ pub struct HashMap<
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     HashMap<K, V, ALLOC, H>
 {
+    #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
         let hash = Self::hash(&key);
         self.table
@@ -1957,6 +1963,7 @@ pub struct ObjectMap<
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
+    #[inline(always)]
     fn insert_with_op(&self, op: InsertOp, key: &usize, value: V) -> Option<V> {
         self.table
             .insert(op, &(), Some(value), key + NUM_FIX, PLACEHOLDER_VAL)
@@ -2033,6 +2040,7 @@ pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = 
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
+    #[inline(always)]
     fn insert_with_op(&self, op: InsertOp, key: &usize, value: usize) -> Option<usize> {
         self.table
             .insert(op, &(), None, key + NUM_FIX, value + NUM_FIX)
@@ -2707,6 +2715,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     const K_SIZE: usize = mem::size_of::<AlignedLiteObj<K>>();
     const V_SIZE: usize = mem::size_of::<AlignedLiteObj<V>>();
 
+    #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
         let k_num = Self::encode(key);
         let v_num = Self::encode(&value);
