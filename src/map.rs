@@ -821,9 +821,9 @@ impl<
                                         fkey | INV_KEY_BIT_MASK,
                                     )
                                 }
+                                attachment.set_key(key.clone());
+                                attachment.set_value((*val).clone());
                             }
-                            attachment.set_key(key.clone());
-                            attachment.set_value((*val).clone());
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
