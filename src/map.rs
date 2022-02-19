@@ -692,7 +692,8 @@ impl<
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
-                                            return ModResult::Replaced(act_val, None, idx);
+                                            let attachment = read_attachment.then(|| attachment.get_value());
+                                            return ModResult::Replaced(act_val, attachment, idx);
                                         }
                                     } else {
                                         backoff.spin();
