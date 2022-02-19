@@ -345,18 +345,18 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
 
     println!("Insert heavy");
     let insert_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.5, load, cont, stride);
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
     write_measurements(
         &format!("{}_{}_insertion.csv", task, name),
         &insert_measurement,
     );
 
     println!("Read heavy");
-    let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.5, load, cont, stride);
+    let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
     write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
 
     println!("Uniform");
-    let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.5, load, cont, stride);
+    let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
     write_measurements(
         &format!("{}_{}_uniform.csv", task, name),
         &uniform_measurement,
