@@ -658,8 +658,8 @@ impl<
                         _ => {
                             match &op {
                                 &ModOp::Sentinel => {
-                                    let value = read_attachment.then(|| attachment.get_value());
                                     if self.cas_sentinel(addr, v.val) {
+                                        let value = read_attachment.then(|| attachment.get_value());
                                         attachment.erase();
                                         if act_val == 0 {
                                             return ModResult::Done(addr, None, idx);
@@ -675,7 +675,6 @@ impl<
                                         // Already tombstone
                                         return ModResult::NotFound;
                                     }
-                                    let value = read_attachment.then(|| attachment.get_value());
                                     if !self.cas_tombstone(addr, v.val).is_ok() {
                                         // this insertion have conflict with others
                                         // other thread changed the value (empty)
@@ -683,14 +682,15 @@ impl<
                                         return ModResult::Fail;
                                     } else {
                                         // we have put tombstone on the value, get the attachment and erase it
+                                        let value = read_attachment.then(|| attachment.get_value());
                                         attachment.erase();
                                         chunk.empty_entries.fetch_add(1, Relaxed);
                                         return ModResult::Replaced(act_val, value, idx);
                                     }
                                 }
                                 &ModOp::UpsertFastVal(ref fv) => {
-                                    let value = read_attachment.then(|| attachment.get_value());
                                     if self.cas_value(addr, v.val, *fv).is_ok() {
+                                        let value = read_attachment.then(|| attachment.get_value());
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
@@ -749,10 +749,10 @@ impl<
                                         return ModResult::NotFound;
                                     }
                                     if act_val >= NUM_FIX {
-                                        let aval = read_attachment.then(|| attachment.get_value());
                                         if let Some(sv) = swap(act_val) {
                                             if self.cas_value(addr, v.val, sv).is_ok() {
                                                 // swap success
+                                                let aval = read_attachment.then(|| attachment.get_value());
                                                 return ModResult::Replaced(act_val, aval, idx);
                                             } else {
                                                 return ModResult::Fail;
@@ -770,8 +770,8 @@ impl<
                                     trace!("Inserting in place for {}", fkey);
                                     let primed_fval =
                                         if Self::CAN_ATTACH { LOCKED_VALUE } else { fval };
-                                    let prev_val = read_attachment.then(|| attachment.get_value());
                                     if self.cas_value(addr, v.val, primed_fval).is_ok() {
+                                        let prev_val = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH {
                                             attachment.set_value(ov.clone());
                                             self.store_value(addr, v.val, fval);
