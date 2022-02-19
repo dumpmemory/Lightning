@@ -239,7 +239,7 @@ impl<
             return None;
         }
     }
-    
+
     pub fn insert(
         &self,
         op: InsertOp,
@@ -469,9 +469,7 @@ impl<
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
             }
             return match mod_res {
-                ModResult::Replaced(v, _, idx) => {
-                    SwapResult::Succeed(v, idx, modify_chunk_ptr)
-                }
+                ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v, idx, modify_chunk_ptr),
                 ModResult::Aborted => SwapResult::Aborted,
                 ModResult::Fail => SwapResult::Failed,
                 ModResult::NotFound => SwapResult::NotFound,
@@ -606,7 +604,7 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                    return Some((val_res, idx, addr, attachment))
+                    return Some((val_res, idx, addr, attachment));
                 }
             } else if act_key == EMPTY_KEY {
                 return None;
@@ -658,7 +656,7 @@ impl<
                             continue;
                         }
                         _ => {
-                            match &op { 
+                            match &op {
                                 &ModOp::Sentinel => {
                                     let value = read_attachment.then(|| attachment.get_value());
                                     if self.cas_sentinel(addr, v.val) {
@@ -705,29 +703,23 @@ impl<
                                 }
                                 &ModOp::AttemptInsert(fval, oval) => {
                                     if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
-                                        let primed_fval = if Self::CAN_ATTACH {
-                                            LOCKED_VALUE
-                                        } else {
-                                            fval
-                                        };
+                                        let primed_fval =
+                                            if Self::CAN_ATTACH { LOCKED_VALUE } else { fval };
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        match self.cas_value(addr, v.val, primed_fval) {
-                                            Ok(cas_fval) => {
-                                                if Self::CAN_ATTACH {
-                                                    attachment.set_value((*oval).clone());
-                                                    self.store_value(addr, cas_fval, fval);
-                                                }
-                                                return ModResult::Replaced(act_val, prev_val, idx);
+                                        if self.cas_value(addr, v.val, primed_fval).is_ok() {
+                                            if Self::CAN_ATTACH {
+                                                attachment.set_value((*oval).clone());
+                                                self.store_value(addr, v.val, fval);
                                             }
-                                            Err(act_val) => {
-                                                if Self::CAN_ATTACH && read_attachment {
-                                                    // Fast value changed, cannot obtain stable fat value
-                                                    backoff.spin();
-                                                    continue;
-                                                }
-                                                return ModResult::Existed(act_val, prev_val);
+                                            return ModResult::Replaced(act_val, prev_val, idx);
+                                        } else {
+                                            if Self::CAN_ATTACH && read_attachment {
+                                                // Fast value changed, cannot obtain stable fat value
+                                                backoff.spin();
+                                                continue;
                                             }
+                                            return ModResult::Existed(act_val, prev_val);
                                         }
                                     } else {
                                         trace!(
@@ -739,7 +731,8 @@ impl<
                                         let value = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH
                                             && read_attachment
-                                            && self.get_fast_value(addr).val != v.val                                        {
+                                            && self.get_fast_value(addr).val != v.val
+                                        {
                                             backoff.spin();
                                             continue;
                                         }
@@ -752,12 +745,11 @@ impl<
                                         fkey,
                                         act_val
                                     );
-                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE)  {
+                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                         return ModResult::NotFound;
                                     }
                                     if act_val >= NUM_FIX {
-                                        let aval =
-                                            read_attachment.then(|| attachment.get_value());
+                                        let aval = read_attachment.then(|| attachment.get_value());
                                         if let Some(sv) = swap(act_val) {
                                             if self.cas_value(addr, v.val, sv).is_ok() {
                                                 // swap success
@@ -776,24 +768,18 @@ impl<
                                     // Insert with attachment should prime value first when
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
-                                    let primed_fval = if Self::CAN_ATTACH {
-                                        LOCKED_VALUE
-                                    } else {
-                                        fval
-                                    };
+                                    let primed_fval =
+                                        if Self::CAN_ATTACH { LOCKED_VALUE } else { fval };
                                     let prev_val = read_attachment.then(|| attachment.get_value());
-                                    match self.cas_value(addr, v.val, primed_fval) {
-                                        Ok(cas_fval) => {
-                                            if Self::CAN_ATTACH {
-                                                attachment.set_value(ov.clone());
-                                                self.store_value(addr, cas_fval, fval);
-                                            }
-                                            return ModResult::Replaced(act_val, prev_val, idx);
+                                    if self.cas_value(addr, v.val, primed_fval).is_ok() {
+                                        if Self::CAN_ATTACH {
+                                            attachment.set_value(ov.clone());
+                                            self.store_value(addr, v.val, fval);
                                         }
-                                        Err(_) => {
-                                            backoff.spin();
-                                            continue;
-                                        }
+                                        return ModResult::Replaced(act_val, prev_val, idx);
+                                    } else {
+                                        backoff.spin();
+                                        continue;
                                     }
                                 }
                             }
@@ -1317,15 +1303,14 @@ impl<K, V, A: Attachment<K, V>> Copy for FastKey<K, V, A> {}
 
 struct FastValue<K, V, A: Attachment<K, V>> {
     val: usize,
-    _marker: PhantomData<(K, V, A)>
+    _marker: PhantomData<(K, V, A)>,
 }
 
-impl <K, V, A: Attachment<K, V>> FastValue<K, V, A> {
-    pub fn new(
-        val: usize,
-    ) -> Self {
+impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
+    pub fn new(val: usize) -> Self {
         Self {
-            val, _marker: PhantomData
+            val,
+            _marker: PhantomData,
         }
     }
 
@@ -2687,14 +2672,14 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
 #[repr(C, align(8))]
 struct AlignedLiteObj<T> {
     data: T,
-    _marker: PhantomData<T>
+    _marker: PhantomData<T>,
 }
 
-impl <T> AlignedLiteObj <T> {
+impl<T> AlignedLiteObj<T> {
     pub fn new(obj: T) -> Self {
         Self {
             data: obj,
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 }
@@ -2720,7 +2705,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let k_num = Self::encode(key);
         let v_num = Self::encode(&value);
         self.table
-            .insert(op, &(), Some(()), k_num, v_num)
+            .insert(op, &(), None, k_num, v_num)
             .map(|(fv, _)| Self::decode::<V>(fv))
     }
 
@@ -2773,7 +2758,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn insert(&self, key: &K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::Insert, key, value)
+        self.insert_with_op(InsertOp::UpsertFast, key, value)
     }
 
     #[inline(always)]
