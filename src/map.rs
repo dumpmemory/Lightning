@@ -659,12 +659,11 @@ impl<
                             match &op {
                                 &ModOp::Sentinel => {
                                     if self.cas_sentinel(addr, v.val) {
-                                        let value = read_attachment.then(|| attachment.get_value());
                                         attachment.erase();
                                         if act_val == 0 {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
-                                            return ModResult::Done(act_val, value, idx);
+                                            return ModResult::Done(act_val, None, idx);
                                         }
                                     } else {
                                         return ModResult::Fail;
@@ -690,11 +689,10 @@ impl<
                                 }
                                 &ModOp::UpsertFastVal(ref fv) => {
                                     if self.cas_value(addr, v.val, *fv).is_ok() {
-                                        let value = read_attachment.then(|| attachment.get_value());
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
-                                            return ModResult::Replaced(act_val, value, idx);
+                                            return ModResult::Replaced(act_val, None, idx);
                                         }
                                     } else {
                                         backoff.spin();
@@ -728,7 +726,6 @@ impl<
                                         fval,
                                         act_val,
                                     );
-                                        let value = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH
                                             && read_attachment
                                             && self.get_fast_value(addr).val != v.val
@@ -736,6 +733,7 @@ impl<
                                             backoff.spin();
                                             continue;
                                         }
+                                        let value = read_attachment.then(|| attachment.get_value());
                                         return ModResult::Existed(act_val, value);
                                     }
                                 }
@@ -752,8 +750,7 @@ impl<
                                         if let Some(sv) = swap(act_val) {
                                             if self.cas_value(addr, v.val, sv).is_ok() {
                                                 // swap success
-                                                let aval = read_attachment.then(|| attachment.get_value());
-                                                return ModResult::Replaced(act_val, aval, idx);
+                                                return ModResult::Replaced(act_val, None, idx);
                                             } else {
                                                 return ModResult::Fail;
                                             }
