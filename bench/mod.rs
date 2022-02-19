@@ -372,7 +372,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
         ("insert", insert_measurement),
         ("read", read_measurement),
         ("uniform", uniform_measurement),
-        ("oversize", oversize_measurement),
+        // ("oversize", oversize_measurement),
     ]
 }
 
