@@ -935,12 +935,7 @@ impl<
     fn cas_value_rt_new(&self, entry_addr: usize, original: usize, value: usize) -> Option<usize> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
-        let new_value = if Self::CAN_ATTACH {
-            FastValue::<K, V, A>::next_version(original, value)
-        } else {
-            value
-        };
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, new_value).1.then(|| new_value) }
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, value).1.then(|| value) }
     }
 
     #[inline(always)]
