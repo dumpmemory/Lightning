@@ -29,8 +29,6 @@ const MIGRATING_VALUE: usize = 4;
 
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
-const KEY_BIT_MASK: usize = VAL_BIT_MASK;
-const INV_KEY_BIT_MASK: usize = !KEY_BIT_MASK;
 const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 
@@ -137,7 +135,6 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
-        let fkey = Self::fix_key(fkey);
         'OUTER: loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -251,7 +248,6 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let hash = Self::hash(fkey);
-        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
@@ -389,7 +385,6 @@ impl<
     ) -> SwapResult<'a, K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
-        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -506,7 +501,6 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
-        let fkey = Self::fix_key(fkey);
         loop {
             let epoch = self.now_epoch();
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
@@ -590,13 +584,7 @@ impl<
             let attachment = chunk.attachment.prefetch(idx);
             let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            let act_key = k.key();
-            let fkey_matches = act_key == fkey;
-            if Self::CAN_ATTACH && fkey_matches && k.is_pre_key() {
-                backoff.spin();
-                continue;
-            }
-            if fkey_matches && attachment.probe(key) {
+            if k == fkey && attachment.probe(key) {
                 loop {
                     let val_res = self.get_fast_value(addr);
                     let act_val = val_res.act_val();
@@ -606,7 +594,7 @@ impl<
                     }
                     return Some((val_res, idx, addr, attachment));
                 }
-            } else if act_key == EMPTY_KEY {
+            } else if k == EMPTY_KEY {
                 return None;
             }
             idx += 1; // reprobe
@@ -637,15 +625,8 @@ impl<
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            let act_key = k.key();
             let attachment = chunk.attachment.prefetch(idx);
-            let fkey_match = act_key == fkey;
-            if Self::CAN_ATTACH && fkey_match && k.is_pre_key() {
-                // Inserting entry have pre-key
-                backoff.spin();
-                continue;
-            }
-            if fkey_match && attachment.probe(&key) {
+            if k == fkey && attachment.probe(&key) {
                 loop {
                     let v = self.get_fast_value(addr);
                     let raw = v.val;
@@ -723,7 +704,7 @@ impl<
                                     } else {
                                         trace!(
                                         "Attempting insert existed entry {}, {}, have key {:?}, skip",
-                                        act_key,
+                                        k,
                                         fval,
                                         act_val,
                                     );
@@ -783,7 +764,7 @@ impl<
                         }
                     }
                 }
-            } else if act_key == EMPTY_KEY {
+            } else if k == EMPTY_KEY {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
@@ -793,21 +774,16 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval) {
+                        let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                        if self.cas_value(addr, EMPTY_VALUE, primed_fval) {
+                            Self::store_key(&self, addr, fkey);
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
-                                attachment.prep_write();                     
-                                unsafe {
-                                    intrinsics::atomic_store_relaxed(
-                                        addr as *mut usize,
-                                        fkey | INV_KEY_BIT_MASK,
-                                    )
-                                }
                                 attachment.set_key(key.clone());
                                 attachment.set_value((*val).clone());
+                                Self::store_value_raw(&self, addr, fval);
                             }
-                            Self::store_key(&self, addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             debug!("Retry insert to new slot, now val {}", self.get_fast_value(addr).val);
@@ -865,11 +841,7 @@ impl<
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            let act_key = k.key();
-            if act_key != EMPTY_KEY {
-                if k.is_pre_key() {
-                    continue;
-                }
+            if k != EMPTY_KEY {
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = self.get_fast_value(addr);
                 let act_val = val_res.act_val();
@@ -879,7 +851,7 @@ impl<
                     if Self::CAN_ATTACH && self.get_fast_value(addr).val != val_res.val {
                         continue;
                     }
-                    res.push((act_key, act_val, key, value))
+                    res.push((k, act_val, key, value))
                 }
             }
             idx += 1; // reprobe
@@ -902,9 +874,9 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_key(&self, entry_addr: usize) -> FastKey<K, V, A> {
+    fn get_fast_key(&self, entry_addr: usize) -> usize {
         debug_assert!(entry_addr > 0);
-        FastKey::new(unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) })
+        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) }
     }
 
     #[inline(always)]
@@ -950,6 +922,13 @@ impl<
             value
         };
         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, new_value) };
+    }
+
+    #[inline(always)]
+    fn store_value_raw(&self, entry_addr: usize, value: usize) {
+        debug_assert!(entry_addr >= NUM_FIX);
+        let addr = entry_addr + mem::size_of::<usize>();
+        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, value) };
     }
 
     #[inline(always)]
@@ -1105,11 +1084,6 @@ impl<
             // iterate the old chunk to extract entries that is NOT empty
             let fvalue = self.get_fast_value(old_address);
             let fkey = self.get_fast_key(old_address);
-            let act_key = fkey.key();
-            if fkey.is_pre_key() {
-                backoff.spin();
-                continue;
-            }
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
             match fvalue.act_val() {
@@ -1133,7 +1107,7 @@ impl<
                 MIGRATING_VALUE => {}
                 _ => {
                     if !self.migrate_entry(
-                        act_key,
+                        fkey,
                         idx,
                         fvalue,
                         old_chunk_ins,
@@ -1141,7 +1115,7 @@ impl<
                         old_address,
                         &mut effective_copy,
                     ) {
-                        trace!("Migration failed for entry {:?}", act_key);
+                        trace!("Migration failed for entry {:?}", fkey);
                         backoff.spin();
                         continue;
                     }
@@ -1189,11 +1163,10 @@ impl<
             let new_attachment = new_chunk_ins.attachment.prefetch(idx);
             let addr = new_chunk_ins.entry_addr(idx);
             let k = self.get_fast_key(addr);
-            let act_key = k.key();
-            if act_key == fkey && new_attachment.probe(&key) {
+            if k == fkey && new_attachment.probe(&key) {
                 // New value existed, skip with None result
                 break;
-            } else if act_key == EMPTY_KEY {
+            } else if k == EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
                     match self.cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
@@ -1249,64 +1222,10 @@ impl<
     }
 
     #[inline(always)]
-    fn fix_key(key: usize) -> usize {
-        if Self::CAN_ATTACH {
-            key & KEY_BIT_MASK
-        } else {
-            key
-        }
-    }
-
-    #[inline(always)]
     const fn if_attach_then_val<T: Copy>(then: T, els: T) -> T {
         if Self::CAN_ATTACH { then } else { els }
     }
 }
-
-struct FastKey<K, V, A: Attachment<K, V>> {
-    key: usize,
-    _marker: PhantomData<(K, V, A)>,
-}
-
-impl<K, V, A: Attachment<K, V>> FastKey<K, V, A> {
-    const CAN_ATTACH: bool = can_attach::<K, V, A>();
-
-    #[inline(always)]
-    fn new(key: usize) -> Self {
-        Self {
-            key,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline(always)]
-    fn key(self) -> usize {
-        if Self::CAN_ATTACH {
-            self.key & KEY_BIT_MASK
-        } else {
-            self.key
-        }
-    }
-
-    #[inline(always)]
-    fn is_pre_key(self) -> bool {
-        if Self::CAN_ATTACH {
-            self.key & INV_KEY_BIT_MASK == INV_KEY_BIT_MASK
-        } else {
-            false
-        }
-    }
-}
-
-impl<K, V, A: Attachment<K, V>> Clone for FastKey<K, V, A> {
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key,
-            _marker: PhantomData,
-        }
-    }
-}
-impl<K, V, A: Attachment<K, V>> Copy for FastKey<K, V, A> {}
 
 struct FastValue<K, V, A: Attachment<K, V>> {
     val: usize,
