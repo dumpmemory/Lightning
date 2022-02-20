@@ -244,7 +244,7 @@ impl<
         &self,
         op: InsertOp,
         key: &K,
-        value: Option<V>,
+        value: Option<&V>,
         fkey: usize,
         fvalue: usize,
     ) -> Option<(usize, V)> {
@@ -280,9 +280,9 @@ impl<
             };
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
-                InsertOp::Insert => ModOp::Insert(masked_value, value.as_ref().unwrap()),
+                InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
-                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.as_ref().unwrap()),
+                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
             };
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard);
@@ -1806,9 +1806,9 @@ impl<K: Clone, V: Clone> Copy for HashKVAttachmentItem<K, V> {}
 pub trait Map<K, V: Clone> {
     fn with_capacity(cap: usize) -> Self;
     fn get(&self, key: &K) -> Option<V>;
-    fn insert(&self, key: &K, value: V) -> Option<V>;
+    fn insert(&self, key: &K, value: &V) -> Option<V>;
     // Return None if insertion successful
-    fn try_insert(&self, key: &K, value: V) -> Option<V>;
+    fn try_insert(&self, key: &K, value: &V) -> Option<V>;
     fn remove(&self, key: &K) -> Option<V>;
     fn entries(&self) -> Vec<(K, V)>;
     fn contains_key(&self, key: &K) -> bool;
@@ -1822,7 +1822,7 @@ pub trait Map<K, V: Clone> {
                 }
             } else {
                 let value = func();
-                if let Some(value) = self.try_insert(key, value.clone()) {
+                if let Some(value) = self.try_insert(key, &value) {
                     return value;
                 }
                 return value;
@@ -1855,7 +1855,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     HashMap<K, V, ALLOC, H>
 {
     #[inline(always)]
-    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
+    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
         let hash = Self::hash(&key);
         self.table
             .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
@@ -1892,12 +1892,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn insert(&self, key: &K, value: V) -> Option<V> {
+    fn insert(&self, key: &K, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &K, value: V) -> Option<V> {
+    fn try_insert(&self, key: &K, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
@@ -1951,7 +1951,7 @@ pub struct ObjectMap<
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: &usize, value: V) -> Option<V> {
+    fn insert_with_op(&self, op: InsertOp, key: &usize, value: &V) -> Option<V> {
         self.table
             .insert(op, &(), Some(value), key + NUM_FIX, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
@@ -1983,12 +1983,12 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     }
 
     #[inline(always)]
-    fn insert(&self, key: &usize, value: V) -> Option<V> {
+    fn insert(&self, key: &usize, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &usize, value: V) -> Option<V> {
+    fn try_insert(&self, key: &usize, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
@@ -2054,13 +2054,13 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 
     #[inline(always)]
-    fn insert(&self, key: &usize, value: usize) -> Option<usize> {
-        self.insert_with_op(InsertOp::UpsertFast, key, value)
+    fn insert(&self, key: &usize, value: &usize) -> Option<usize> {
+        self.insert_with_op(InsertOp::UpsertFast, key, *value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &usize, value: usize) -> Option<usize> {
-        self.insert_with_op(InsertOp::TryInsert, key, value)
+    fn try_insert(&self, key: &usize, value: &usize) -> Option<usize> {
+        self.insert_with_op(InsertOp::TryInsert, key, *value)
     }
 
     #[inline(always)]
@@ -2111,7 +2111,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         match table.insert(
             InsertOp::TryInsert,
             &(),
-            Some(()),
+            Some(&()),
             key,
             value | MUTEX_BIT_MASK,
         ) {
@@ -2421,7 +2421,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         self.table.insert(
             InsertOp::Insert,
             &self.key,
-            Some(self.value.clone()),
+            Some(&self.value),
             hash,
             PLACEHOLDER_VAL,
         );
@@ -2616,7 +2616,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
         self.table.insert(
             InsertOp::Insert,
             &(),
-            Some(self.value.clone()),
+            Some(&self.value),
             self.key,
             PLACEHOLDER_VAL,
         );
@@ -2703,9 +2703,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     const V_SIZE: usize = mem::size_of::<AlignedLiteObj<V>>();
 
     #[inline(always)]
-    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: V) -> Option<V> {
+    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
         let k_num = Self::encode(key);
-        let v_num = Self::encode(&value);
+        let v_num = Self::encode(value);
         self.table
             .insert(op, &(), None, k_num, v_num)
             .map(|(fv, _)| Self::decode::<V>(fv))
@@ -2759,12 +2759,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn insert(&self, key: &K, value: V) -> Option<V> {
+    fn insert(&self, key: &K, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::UpsertFast, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &K, value: V) -> Option<V> {
+    fn try_insert(&self, key: &K, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
@@ -2875,7 +2875,7 @@ mod lite_tests {
         for i in 5..2048 {
             let k = i;
             let v = i * 2;
-            map.insert(&k, v);
+            map.insert(&k, &v);
         }
         for i in 5..2048 {
             let k = i;
@@ -2917,7 +2917,7 @@ mod lite_tests {
             let k = i;
             let v = i * 2;
             let d = Arc::new(FatStruct::new(v));
-            map.insert(&k, d);
+            map.insert(&k, &d);
         }
         for i in 5..2048 {
             let k = i;
@@ -2939,7 +2939,7 @@ mod lite_tests {
         for i in 0..2048 {
             let k = i as u8;
             let v = (i * 2) as u8;
-            map.insert(&k, v);
+            map.insert(&k, &v);
         }
         for i in 0..2048 {
             let k = i as u8;
@@ -2973,7 +2973,7 @@ mod fat_tests {
         for i in 5..2048 {
             let k = key_from(i);
             let v = val_from(i * 2);
-            map.insert(&k, v);
+            map.insert(&k, &v);
         }
         for i in 5..2048 {
             let k = key_from(i);
@@ -2992,7 +2992,7 @@ mod fat_tests {
         for i in 5..2048 {
             let k = key_from(i);
             let v = val_from(i * 2);
-            map.insert(&k, v);
+            map.insert(&k, &v);
         }
         for i in 5..2048 {
             let k = key_from(i);
@@ -3012,7 +3012,7 @@ mod fat_tests {
         for i in 5..turns {
             let k = i;
             let v = i * 2;
-            map.insert(&k, v);
+            map.insert(&k, &v);
         }
         for i in 5..turns {
             let k = i;
@@ -3032,7 +3032,7 @@ mod fat_tests {
         for i in 5..99 {
             let k = key_from(i);
             let v = val_from(i * 10);
-            map.insert(&k, v);
+            map.insert(&k, &v);
         }
         for i in 100..900 {
             let map = map.clone();
@@ -3040,7 +3040,7 @@ mod fat_tests {
                 for j in 5..60 {
                     let k = key_from(i * 100 + j);
                     let v = val_from(i * j);
-                    map.insert(&k, v);
+                    map.insert(&k, &v);
                 }
             }));
         }
@@ -3089,7 +3089,7 @@ mod fat_tests {
                         }
                         let value = val_from(value_num);
                         let pre_insert_epoch = map.table.now_epoch();
-                        map.insert(&key, value.clone());
+                        map.insert(&key, &value);
                         let post_insert_epoch = map.table.now_epoch();
                         for l in 1..128 {
                             let pre_fail_get_epoch = map.table.now_epoch();
@@ -3132,12 +3132,12 @@ mod fat_tests {
                             );
                             assert_eq!(map.get(&key), None, "Remove recursion");
                             assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                            map.insert(&key, value);
+                            map.insert(&key, &value);
                         }
                         if j % 3 == 0 {
                             let new_value = val_from(value_num + 7);
                             let pre_insert_epoch = map.table.now_epoch();
-                            map.insert(&key, new_value);
+                            map.insert(&key, &new_value);
                             let post_insert_epoch = map.table.now_epoch();
                             assert_eq!(
                                 map.get(&key), 
@@ -3145,7 +3145,7 @@ mod fat_tests {
                                 "Checking immediate update, key {:?}, epoch {} to {}",
                                 key, pre_insert_epoch, post_insert_epoch
                             );
-                            map.insert(&key, value);
+                            map.insert(&key, &value);
                         }
                     }
                 }
@@ -3221,7 +3221,7 @@ mod word_tests {
         let _ = env_logger::try_init();
         let table = WordMap::<System>::with_capacity(16);
         for i in 50..60 {
-            assert_eq!(table.insert(&i, i), None);
+            assert_eq!(table.insert(&i, &i), None);
         }
         for i in 50..60 {
             assert_eq!(table.get(&i), Some(i));
@@ -3236,7 +3236,7 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map = WordMap::<System>::with_capacity(16);
         for i in 5..2048 {
-            map.insert(&i, i * 2);
+            map.insert(&i, &(i * 2));
         }
         for i in 5..2048 {
             match map.get(&i) {
@@ -3252,13 +3252,13 @@ mod word_tests {
         let map = Arc::new(WordMap::<System>::with_capacity(65536));
         let mut threads = vec![];
         for i in 5..99 {
-            map.insert(&i, i * 10);
+            map.insert(&i, &(i * 10));
         }
         for i in 100..900 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
-                    map.insert(&(i * 100 + j), i * j);
+                    map.insert(&(i * 100 + j), &(i * j));
                 }
             }));
         }
@@ -3302,7 +3302,7 @@ mod word_tests {
                             assert_eq!(map.get(&key), Some(value - 1));
                         }
                         let pre_insert_epoch = map.table.now_epoch();
-                        map.insert(&key, value);
+                        map.insert(&key, &value);
                         let post_insert_epoch = map.table.now_epoch();
                         for l in 1..128 {
                             let pre_fail_get_epoch = map.table.now_epoch();
@@ -3341,12 +3341,12 @@ mod word_tests {
                             );
                             assert_eq!(map.get(&key), None, "Remove recursion");
                             assert!(map.lock(key).is_none(), "Remove recursion with lock");
-                            map.insert(&key, value);
+                            map.insert(&key, &value);
                         }
                         if j % 3 == 0 {
                             let new_value = value + 7;
                             let pre_insert_epoch = map.table.now_epoch();
-                            map.insert(&key, new_value);
+                            map.insert(&key, &new_value);
                             let post_insert_epoch = map.table.now_epoch();
                             assert_eq!(
                                 map.get(&key), 
@@ -3354,7 +3354,7 @@ mod word_tests {
                                 "Checking immediate update, key {}, epoch {} to {}",
                                 key, pre_insert_epoch, post_insert_epoch
                             );
-                            map.insert(&key, value);
+                            map.insert(&key, &value);
                         }
                     }
                 }
@@ -3391,14 +3391,14 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
         for i in 5..128 {
-            map.insert(&i, i * 10);
+            map.insert(&i, &(i * 10));
         }
         let mut threads = vec![];
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
-                    map.insert(&(i * 10 + j), 10);
+                    map.insert(&(i * 10 + j), &10);
                 }
             }));
         }
@@ -3424,7 +3424,7 @@ mod word_tests {
     fn parallel_word_map_mutex() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
-        map.insert(&1, 0);
+        map.insert(&1, &0);
         let mut threads = vec![];
         let num_threads = 256;
         for _ in 0..num_threads {
@@ -3508,7 +3508,7 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(&1, Obj::new(0));
+        map.insert(&1, &Obj::new(0));
         let mut threads = vec![];
         let num_threads = 256;
         for i in 0..num_threads {
@@ -3531,7 +3531,7 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map_cont = super::HashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(&1, Obj::new(0));
+        map.insert(&1, &Obj::new(0));
         let mut threads = vec![];
         let num_threads = 16;
         for i in 0..num_threads {
@@ -3584,7 +3584,7 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map = ObjectMap::<Obj>::with_capacity(16);
         for i in 5..2048 {
-            map.insert(&i, Obj::new(i));
+            map.insert(&i, &Obj::new(i));
         }
         for i in 5..2048 {
             match map.get(&i) {
@@ -3599,14 +3599,14 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map = Arc::new(ObjectMap::<Obj>::with_capacity(4));
         for i in 5..128 {
-            map.insert(&i, Obj::new(i * 10));
+            map.insert(&i, &Obj::new(i * 10));
         }
         let mut threads = vec![];
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
-                    map.insert(&(i * 10 + j), Obj::new(10));
+                    map.insert(&(i * 10 + j), &Obj::new(10));
                 }
             }));
         }
@@ -3636,14 +3636,14 @@ mod word_tests {
         let _ = env_logger::try_init();
         let map = Arc::new(super::HashMap::<u32, Obj>::with_capacity(4));
         for i in 5..128u32 {
-            map.insert(&i, Obj::new((i * 10) as usize));
+            map.insert(&i, &Obj::new((i * 10) as usize));
         }
         let mut threads = vec![];
         for i in 256..265u32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60u32 {
-                    map.insert(&(i * 10 + j), Obj::new(10usize));
+                    map.insert(&(i * 10 + j), &Obj::new(10usize));
                 }
             }));
         }
@@ -3671,10 +3671,10 @@ mod word_tests {
     #[test]
     fn insert_with_num_fixes() {
         let map = WordMap::<System, DefaultHasher>::with_capacity(32);
-        assert_eq!(map.insert(&24, 0), None);
-        assert_eq!(map.insert(&24, 1), Some(0));
-        assert_eq!(map.insert(&0, 0), None);
-        assert_eq!(map.insert(&0, 1), Some(0))
+        assert_eq!(map.insert(&24, &0), None);
+        assert_eq!(map.insert(&24, &1), Some(0));
+        assert_eq!(map.insert(&0, &0), None);
+        assert_eq!(map.insert(&0, &1), Some(0))
     }
 
     #[bench]
@@ -3683,7 +3683,7 @@ mod word_tests {
         let map = WordMap::<System, DefaultHasher>::with_capacity(8);
         let mut i = 5;
         b.iter(|| {
-            map.insert(&i, i);
+            map.insert(&i, &i);
             i += 1;
         });
     }
@@ -3694,7 +3694,7 @@ mod word_tests {
         let map = LiteHashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
         let mut i = 5;
         b.iter(|| {
-            map.insert(&i, i);
+            map.insert(&i, &i);
             i += 1;
         });
     }
@@ -3705,7 +3705,7 @@ mod word_tests {
         let map = super::HashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
         let mut i = 5;
         b.iter(|| {
-            map.insert(&i, i);
+            map.insert(&i, &i);
             i += 1;
         });
     }
