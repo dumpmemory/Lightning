@@ -20,24 +20,18 @@ impl Collection for TestTable {
 
 impl CollectionHandle for TestTable {
     fn get(&mut self, key: &usize) -> bool {
-        let k = *key as usize;
-        self.0.get(&k).is_some()
+        self.0.get(key).is_some()
     }
 
     fn insert(&mut self, key: &usize, value: &usize) -> bool {
-        let k = *key as usize;
-        let v = *value as usize;
-        self.0.insert(&k, v).is_none()
+        self.0.insert(key, value).is_none()
     }
 
     fn remove(&mut self, key: &usize) -> bool {
-        let k = *key as usize;
-        self.0.remove(&k).is_some()
+        self.0.remove(key).is_some()
     }
 
     fn update(&mut self, key: &usize, value: &usize) -> bool {
-        let k = *key as usize;
-        let v = *value as usize;
-        self.0.insert(&k, v).is_none()
+        self.0.insert(key, value).is_none()
     }
 }
