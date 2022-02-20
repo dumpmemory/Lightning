@@ -805,6 +805,7 @@ impl<
                             Self::store_key(&self, addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
+                            debug!("Retry insert to new slot, now val {}", self.get_fast_value(addr).val);
                             backoff.spin();
                             continue;
                         }
@@ -1039,7 +1040,7 @@ impl<
             return ResizeResult::SwapFailed;
         }
         dfence();
-        debug!("Resizing {:?}", old_chunk_ptr);
+        trace!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap)))
             .into_shared(guard)
             .with_tag(0);
@@ -1069,7 +1070,7 @@ impl<
         dfence();
         self.epoch.fetch_add(1, AcqRel);
         dfence();
-        debug!(
+        trace!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
         );
@@ -1086,7 +1087,7 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
-        debug!(
+        trace!(
             "Migrating entries from {:?} to {:?}",
             old_chunk_ins.base, new_chunk_ins.base
         );
@@ -1145,7 +1146,7 @@ impl<
             idx += 1;
         }
         // resize finished, make changes on the numbers
-        debug!("Migrated {} entries to new chunk", effective_copy);
+        trace!("Migrated {} entries to new chunk", effective_copy);
         new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
         return effective_copy;
     }
