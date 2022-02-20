@@ -23,7 +23,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     pub fn insert_front(&self, key: K, value: V) -> Option<V> {
         let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_front(pair);
-        if let Some(old) = self.map.insert(&key, list_ref) {
+        if let Some(old) = self.map.insert(&key, &list_ref) {
             unsafe { old.remove().map(|KVPair(_, v)| v) }
         } else {
             None
@@ -33,7 +33,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     pub fn insert_back(&self, key: K, value: V) -> Option<V> {
         let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_back(pair);
-        if let Some(old) = self.map.insert(&key, list_ref) {
+        if let Some(old) = self.map.insert(&key, &list_ref) {
             unsafe { old.remove().map(|KVPair(_, v)| v) }
         } else {
             None

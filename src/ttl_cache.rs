@@ -42,7 +42,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
                 // Not existed
                 return fallback(key).map(|v| {
                     self.table
-                        .insert(InsertOp::TryInsert, &(), Some(v.clone()), key, new_ttl_val);
+                        .insert(InsertOp::TryInsert, &(), Some(&v), key, new_ttl_val);
                     v
                 });
             }
@@ -74,7 +74,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
                 self.table.insert(
                     InsertOp::Insert,
                     &(),
-                    Some(comp_v.clone()),
+                    Some(&comp_v),
                     key,
                     new_ttl_val,
                 );
