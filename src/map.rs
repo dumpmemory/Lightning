@@ -639,6 +639,23 @@ impl<
                         _ => {
                             let act_val = v.act_val();
                             match op {
+                                ModOp::Insert(fval, ov) => {
+                                    // Insert with attachment should prime value first when
+                                    // duplicate key discovered
+                                    trace!("Inserting in place for {}", fkey);
+                                    let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                                    if Self::cas_value(addr, v.val, primed_fval) {
+                                        let prev_val = read_attachment.then(|| attachment.get_value());
+                                        if Self::CAN_ATTACH {
+                                            attachment.set_value(ov.clone());
+                                            Self::store_value(addr, v.val, fval);
+                                        }
+                                        return ModResult::Replaced(act_val, prev_val, idx);
+                                    } else {
+                                        backoff.spin();
+                                        continue;
+                                    }
+                                }
                                 ModOp::Sentinel => {
                                     if Self::cas_sentinel(addr, v.val) {
                                         attachment.erase();
@@ -741,23 +758,6 @@ impl<
                                         }
                                     } else {
                                         return ModResult::Fail;
-                                    }
-                                }
-                                ModOp::Insert(fval, ov) => {
-                                    // Insert with attachment should prime value first when
-                                    // duplicate key discovered
-                                    trace!("Inserting in place for {}", fkey);
-                                    let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
-                                    if Self::cas_value(addr, v.val, primed_fval) {
-                                        let prev_val = read_attachment.then(|| attachment.get_value());
-                                        if Self::CAN_ATTACH {
-                                            attachment.set_value(ov.clone());
-                                            Self::store_value(addr, v.val, fval);
-                                        }
-                                        return ModResult::Replaced(act_val, prev_val, idx);
-                                    } else {
-                                        backoff.spin();
-                                        continue;
                                     }
                                 }
                             }
