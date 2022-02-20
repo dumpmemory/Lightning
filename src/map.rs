@@ -656,8 +656,8 @@ impl<
                             continue;
                         }
                         _ => {
-                            match &op {
-                                &ModOp::Sentinel => {
+                            match op {
+                                ModOp::Sentinel => {
                                     if self.cas_sentinel(addr, v.val) {
                                         attachment.erase();
                                         if act_val == 0 {
@@ -669,7 +669,7 @@ impl<
                                         return ModResult::Fail;
                                     }
                                 }
-                                &ModOp::Tombstone => {
+                                ModOp::Tombstone => {
                                     if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                         // Already tombstone
                                         return ModResult::NotFound;
@@ -687,7 +687,7 @@ impl<
                                         return ModResult::Replaced(act_val, value, idx);
                                     }
                                 }
-                                &ModOp::UpsertFastVal(ref fv) => {
+                                ModOp::UpsertFastVal(ref fv) => {
                                     if self.cas_value(addr, v.val, *fv) {
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
@@ -700,7 +700,7 @@ impl<
                                         continue;
                                     }
                                 }
-                                &ModOp::AttemptInsert(fval, oval) => {
+                                ModOp::AttemptInsert(fval, oval) => {
                                     if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                         let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                         let prev_val =
@@ -737,7 +737,7 @@ impl<
                                         return ModResult::Existed(act_val, value);
                                     }
                                 }
-                                &ModOp::SwapFastVal(ref swap) => {
+                                ModOp::SwapFastVal(ref swap) => {
                                     trace!(
                                         "Swaping found key {} have original value {:#064b}",
                                         fkey,
@@ -761,7 +761,7 @@ impl<
                                         return ModResult::Fail;
                                     }
                                 }
-                                &ModOp::Insert(fval, ov) => {
+                                ModOp::Insert(fval, ov) => {
                                     // Insert with attachment should prime value first when
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
