@@ -164,14 +164,14 @@ impl<
                         }
                         LOCKED_VALUE | MIGRATING_VALUE => {
                             backoff.spin();
-                            val = self.get_fast_value(addr);
+                            val = Self::get_fast_value(addr);
                             continue 'SPIN;
                         }
                         _ => {
                             let mut attachment = None;
                             if Self::CAN_ATTACH && read_attachment {
                                 attachment = Some(aitem.get_value());
-                                let new_val = self.get_fast_value(addr);
+                                let new_val = Self::get_fast_value(addr);
                                 if new_val.val != val.val {
                                     val = new_val;
                                     continue 'SPIN;
@@ -196,7 +196,7 @@ impl<
                             }
                             LOCKED_VALUE | MIGRATING_VALUE => {
                                 backoff.spin();
-                                val = self.get_fast_value(addr);
+                                val = Self::get_fast_value(addr);
                                 continue 'SPIN_NEW;
                             }
                             SENTINEL_VALUE => {
@@ -208,7 +208,7 @@ impl<
                                 let mut attachment = None;
                                 if Self::CAN_ATTACH && read_attachment {
                                     attachment = Some(aitem.get_value());
-                                    let new_val = self.get_fast_value(addr);
+                                    let new_val = Self::get_fast_value(addr);
                                     if new_val.val != val.val {
                                         val = new_val;
                                         continue 'SPIN_NEW;
@@ -583,10 +583,10 @@ impl<
             idx &= cap_mask;
             let attachment = chunk.attachment.prefetch(idx);
             let addr = chunk.entry_addr(idx);
-            let k = self.get_fast_key(addr);
+            let k = Self::get_fast_key(addr);
             if k == fkey && attachment.probe(key) {
                 loop {
-                    let val_res = self.get_fast_value(addr);
+                    let val_res = Self::get_fast_value(addr);
                     let act_val = val_res.act_val();
                     if act_val == LOCKED_VALUE || act_val == MIGRATING_VALUE {
                         backoff.spin();
@@ -624,11 +624,11 @@ impl<
         while count <= cap {
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
-            let k = self.get_fast_key(addr);
+            let k = Self::get_fast_key(addr);
             let attachment = chunk.attachment.prefetch(idx);
             if k == fkey && attachment.probe(&key) {
                 loop {
-                    let v = self.get_fast_value(addr);
+                    let v = Self::get_fast_value(addr);
                     let raw = v.val;
                     match raw {
                         SENTINEL_VALUE => return ModResult::Sentinel,
@@ -710,7 +710,7 @@ impl<
                                     );
                                         if Self::CAN_ATTACH
                                             && read_attachment
-                                            && self.get_fast_value(addr).val != v.val
+                                            && Self::get_fast_value(addr).val != v.val
                                         {
                                             backoff.spin();
                                             continue;
@@ -786,7 +786,7 @@ impl<
                             }
                             return ModResult::Done(addr, None, idx);
                         } else {
-                            debug!("Retry insert to new slot, now val {}", self.get_fast_value(addr).val);
+                            debug!("Retry insert to new slot, now val {}", Self::get_fast_value(addr).val);
                             backoff.spin();
                             continue;
                         }
@@ -840,15 +840,15 @@ impl<
         while counter < cap {
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
-            let k = self.get_fast_key(addr);
+            let k = Self::get_fast_key(addr);
             if k != EMPTY_KEY {
                 let attachment = chunk.attachment.prefetch(idx);
-                let val_res = self.get_fast_value(addr);
+                let val_res = Self::get_fast_value(addr);
                 let act_val = val_res.act_val();
                 if act_val >= NUM_FIX {
                     let key = attachment.get_key();
                     let value = attachment.get_value();
-                    if Self::CAN_ATTACH && self.get_fast_value(addr).val != val_res.val {
+                    if Self::CAN_ATTACH && Self::get_fast_value(addr).val != val_res.val {
                         continue;
                     }
                     res.push((k, act_val, key, value))
@@ -874,13 +874,13 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_key(&self, entry_addr: usize) -> usize {
+    fn get_fast_key(entry_addr: usize) -> usize {
         debug_assert!(entry_addr > 0);
         unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) }
     }
 
     #[inline(always)]
-    fn get_fast_value(&self, entry_addr: usize) -> FastValue<K, V, A> {
+    fn get_fast_value(entry_addr: usize) -> FastValue<K, V, A> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
@@ -1072,8 +1072,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         while old_address < boundary {
             // iterate the old chunk to extract entries that is NOT empty
-            let fvalue = self.get_fast_value(old_address);
-            let fkey = self.get_fast_key(old_address);
+            let fvalue = Self::get_fast_value(old_address);
+            let fkey = Self::get_fast_key(old_address);
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
             match fvalue.act_val() {
@@ -1152,7 +1152,7 @@ impl<
             idx &= cap_mask;
             let new_attachment = new_chunk_ins.attachment.prefetch(idx);
             let addr = new_chunk_ins.entry_addr(idx);
-            let k = self.get_fast_key(addr);
+            let k = Self::get_fast_key(addr);
             if k == fkey && new_attachment.probe(&key) {
                 // New value existed, skip with None result
                 break;
