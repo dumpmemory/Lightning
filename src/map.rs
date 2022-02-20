@@ -623,9 +623,9 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         while count <= cap {
             idx &= cap_mask;
+            let attachment = chunk.attachment.prefetch(idx);
             let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
-            let attachment = chunk.attachment.prefetch(idx);
             if k == fkey && attachment.probe(&key) {
                 loop {
                     let v = Self::get_fast_value(addr);
@@ -776,12 +776,11 @@ impl<
                         );
                         let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
+                            attachment.set_key(key.clone());
                             Self::store_key(addr, fkey);
+                            attachment.set_value((*val).clone());
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
-                                // Inserting pre-key so other key don't need to wait at this slot
-                                attachment.set_key(key.clone());
-                                attachment.set_value((*val).clone());
                                 Self::store_value_raw(addr, fval);
                             }
                             return ModResult::Done(addr, None, idx);
