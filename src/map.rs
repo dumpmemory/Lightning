@@ -806,7 +806,7 @@ impl<
                                 attachment.set_key(key.clone());
                                 attachment.set_value((*val).clone());
                             }
-                            unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+                            Self::store_key(&self, addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
@@ -822,7 +822,7 @@ impl<
                             addr
                         );
                         if self.cas_value(addr, EMPTY_VALUE, fval) {
-                            unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+                            Self::store_key(&self, addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
@@ -832,7 +832,7 @@ impl<
                     ModOp::Sentinel => {
                         if self.cas_sentinel(addr, EMPTY_VALUE) {
                             // CAS value succeed, shall store key
-                            unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+                            Self::store_key(&self, addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
@@ -928,12 +928,7 @@ impl<
     fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
-        let new_value = if Self::CAN_ATTACH {
-            FastValue::<K, V, A>::next_version(original, value)
-        } else {
-            value
-        };
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, new_value).1 }
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, value).1 }
     }
 
     #[inline(always)]
@@ -957,8 +952,15 @@ impl<
         } else {
             value
         };
-        unsafe { intrinsics::atomic_store_relaxed(addr as *mut usize, new_value) };
+        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, new_value) };
     }
+
+    #[inline(always)]
+    fn store_key(&self, addr: usize, fkey: usize) {
+        debug_assert!(fkey >= NUM_FIX);
+        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+    }
+
     #[inline(always)]
     fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
         if cfg!(debug_assert) {
@@ -1205,7 +1207,7 @@ impl<
                 if self.cas_value(addr, EMPTY_VALUE, orig) {
                     new_attachment.set_key(key);
                     new_attachment.set_value(value);
-                    unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
+                    Self::store_key(&self, addr, fkey);
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     trace!("Copied key {} to new chunk", fkey);
