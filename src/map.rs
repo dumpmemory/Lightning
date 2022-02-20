@@ -702,8 +702,7 @@ impl<
                                 }
                                 &ModOp::AttemptInsert(fval, oval) => {
                                     if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
-                                        let primed_fval =
-                                            if Self::CAN_ATTACH { LOCKED_VALUE } else { fval };
+                                        let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
                                         if self.cas_value(addr, v.val, primed_fval).is_ok() {
@@ -766,8 +765,7 @@ impl<
                                     // Insert with attachment should prime value first when
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
-                                    let primed_fval =
-                                        if Self::CAN_ATTACH { LOCKED_VALUE } else { fval };
+                                    let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                     if self.cas_value(addr, v.val, primed_fval).is_ok() {
                                         let prev_val = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH {
@@ -1251,6 +1249,11 @@ impl<
         } else {
             key
         }
+    }
+
+    #[inline(always)]
+    const fn if_attach_then_val<T: Copy>(then: T, els: T) -> T {
+        if Self::CAN_ATTACH { then } else { els }
     }
 }
 
