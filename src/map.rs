@@ -22,10 +22,10 @@ pub struct EntryTemplate(usize, usize);
 const EMPTY_KEY: usize = 0;
 
 const EMPTY_VALUE: usize = 0;
-const SENTINEL_VALUE: usize = 1;
-const TOMBSTONE_VALUE: usize = 2;
-const LOCKED_VALUE: usize = 3;
-const MIGRATING_VALUE: usize = 4;
+const TOMBSTONE_VALUE: usize = 1;
+const LOCKED_VALUE: usize = 2;
+const MIGRATING_VALUE: usize = 3;
+const SENTINEL_VALUE: usize = 4;
 
 const VAL_BIT_MASK: usize = !0 << 1 >> 1;
 const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
@@ -631,11 +631,11 @@ impl<
                     let v = Self::get_fast_value(addr);
                     let raw = v.val;
                     match raw {
-                        SENTINEL_VALUE => return ModResult::Sentinel,
                         LOCKED_VALUE | MIGRATING_VALUE | EMPTY_VALUE => {
                             backoff.spin();
                             continue;
                         }
+                        SENTINEL_VALUE => return ModResult::Sentinel,
                         _ => {
                             let act_val = v.act_val();
                             match op {
@@ -776,12 +776,14 @@ impl<
                         );
                         let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
-                            attachment.set_key(key.clone());
-                            Self::store_key(addr, fkey);
-                            attachment.set_value((*val).clone());
-                            // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
+                                attachment.set_key(key.clone());
+                                compiler_fence(Acquire);
+                                Self::store_key(addr, fkey);
+                                attachment.set_value((*val).clone());
                                 Self::store_value_raw(addr, fval);
+                            } else {
+                                Self::store_key(addr, fkey);
                             }
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -1172,6 +1174,7 @@ impl<
                 if Self::cas_value(addr, EMPTY_VALUE, orig) {
                     new_attachment.set_key(key);
                     new_attachment.set_value(value);
+                    fence(Acquire);
                     Self::store_key(addr, fkey);
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
@@ -1182,7 +1185,6 @@ impl<
             idx += 1; // reprobe
             count += 1;
         }
-        dfence(); //
         if curr_orig != orig {
             Self::store_sentinel(old_address);
         } else if Self::cas_sentinel(old_address, curr_orig) {
