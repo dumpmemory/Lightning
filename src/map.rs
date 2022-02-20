@@ -648,19 +648,20 @@ impl<
             if fkey_match && attachment.probe(&key) {
                 loop {
                     let v = self.get_fast_value(addr);
-                    let act_val = v.act_val();
-                    match act_val {
+                    let raw = v.val;
+                    match raw {
                         SENTINEL_VALUE => return ModResult::Sentinel,
                         LOCKED_VALUE | MIGRATING_VALUE => {
                             backoff.spin();
                             continue;
                         }
                         _ => {
+                            let act_val = v.act_val();
                             match op {
                                 ModOp::Sentinel => {
                                     if self.cas_sentinel(addr, v.val) {
                                         attachment.erase();
-                                        if act_val == 0 {
+                                        if raw == 0 {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
                                             return ModResult::Done(act_val, None, idx);
@@ -940,7 +941,7 @@ impl<
 
     #[inline(always)]
     fn store_value(&self, entry_addr: usize, original: usize, value: usize) {
-        debug_assert!(entry_addr > 0);
+        debug_assert!(entry_addr >= NUM_FIX);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
             FastValue::<K, V, A>::next_version(original, value)
@@ -948,6 +949,13 @@ impl<
             value
         };
         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, new_value) };
+    }
+
+    #[inline(always)]
+    fn store_sentinel(&self, entry_addr: usize) {
+        debug_assert!(entry_addr > 0);
+        let addr = entry_addr + mem::size_of::<usize>();
+        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, SENTINEL_VALUE) };
     }
 
     #[inline(always)]
@@ -1214,7 +1222,7 @@ impl<
         }
         dfence(); //
         if curr_orig != orig {
-            self.store_value(old_address, curr_orig, SENTINEL_VALUE);
+            self.store_sentinel(old_address);
         } else if self.cas_sentinel(old_address, curr_orig) {
             // continue
         } else {
