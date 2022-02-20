@@ -651,7 +651,7 @@ impl<
                     let raw = v.val;
                     match raw {
                         SENTINEL_VALUE => return ModResult::Sentinel,
-                        LOCKED_VALUE | MIGRATING_VALUE => {
+                        LOCKED_VALUE | MIGRATING_VALUE | EMPTY_VALUE => {
                             backoff.spin();
                             continue;
                         }
@@ -671,7 +671,7 @@ impl<
                                     }
                                 }
                                 ModOp::Tombstone => {
-                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
+                                    if act_val == TOMBSTONE_VALUE {
                                         // Already tombstone
                                         return ModResult::NotFound;
                                     }
@@ -702,7 +702,7 @@ impl<
                                     }
                                 }
                                 ModOp::AttemptInsert(fval, oval) => {
-                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
+                                    if act_val == TOMBSTONE_VALUE {
                                         let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
@@ -744,7 +744,7 @@ impl<
                                         fkey,
                                         act_val
                                     );
-                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
+                                    if act_val == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
                                     if act_val >= NUM_FIX {
@@ -798,12 +798,7 @@ impl<
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
                                 attachment.prep_write();
-                                unsafe {
-                                    intrinsics::atomic_store_relaxed(
-                                        addr as *mut usize,
-                                        fkey | INV_KEY_BIT_MASK,
-                                    )
-                                }
+                                Self::store_key(&self, addr, fkey | INV_KEY_BIT_MASK);
                                 attachment.set_key(key.clone());
                                 attachment.set_value((*val).clone());
                             }
