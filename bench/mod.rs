@@ -257,9 +257,9 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
-        run_perf_test_set::<lite_lfmap::TestTable>(file_name, "lightning - lite", load, contention, stride),
         run_perf_test_set::<obj_lfmap::TestTable>(file_name, "lightning - obj", load, contention, stride),
         run_perf_test_set::<fat_lfmap::TestTable>(file_name, "lightning - fat", load, contention, stride),
+        run_perf_test_set::<lite_lfmap::TestTable>(file_name, "lightning - lite", load, contention, stride),
         run_perf_test_set::<lfmap::TestTable>(file_name, "lightning", load, contention, stride),
         run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
         run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
@@ -290,13 +290,13 @@ fn run_perf_test_set<'a, T: Collection>(
 ) {
     println!("Testing perf with contention {}", contention);
     if contention {
-        let full = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_full", ds_name),
-            load,
-            1.0,
-            stride,
-        );
+        // let full = run_and_record_contention::<T>(
+        //     file_name,
+        //     &format!("{}_full", ds_name),
+        //     load,
+        //     1.0,
+        //     stride,
+        // );
         let hi = run_and_record_contention::<T>(
             file_name,
             &format!("{}_hi", ds_name),
@@ -320,7 +320,12 @@ fn run_perf_test_set<'a, T: Collection>(
         );
         (
             ds_name,
-            vec![("full", full), ("hi", hi), ("mi", mi), ("lo", lo)],
+            vec![
+                // ("full", full), 
+                ("hi", hi), 
+                ("mi", mi), 
+                ("lo", lo)
+            ],
         )
     } else {
         let data = run_and_record_contention::<T>(

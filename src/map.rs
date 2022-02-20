@@ -399,7 +399,7 @@ impl<
             if let Some(new_chunk) = new_chunk {
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                if let Some((old_parsed_val, old_index, old_addr, attachment)) =
+                if let Some((old_parsed_val, _old_index, old_addr, attachment)) =
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
                     let old_fval = old_parsed_val.act_val();
@@ -674,7 +674,7 @@ impl<
                                         // Already tombstone
                                         return ModResult::NotFound;
                                     }
-                                    if !self.cas_tombstone(addr, v.val).is_ok() {
+                                    if !self.cas_tombstone(addr, v.val) {
                                         // this insertion have conflict with others
                                         // other thread changed the value (empty)
                                         // should fail
@@ -688,7 +688,7 @@ impl<
                                     }
                                 }
                                 &ModOp::UpsertFastVal(ref fv) => {
-                                    if self.cas_value(addr, v.val, *fv).is_ok() {
+                                    if self.cas_value(addr, v.val, *fv) {
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
@@ -705,7 +705,7 @@ impl<
                                         let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        if self.cas_value(addr, v.val, primed_fval).is_ok() {
+                                        if self.cas_value(addr, v.val, primed_fval) {
                                             if Self::CAN_ATTACH {
                                                 attachment.set_value((*oval).clone());
                                                 self.store_value(addr, v.val, fval);
@@ -748,7 +748,7 @@ impl<
                                     }
                                     if act_val >= NUM_FIX {
                                         if let Some(sv) = swap(act_val) {
-                                            if self.cas_value(addr, v.val, sv).is_ok() {
+                                            if self.cas_value(addr, v.val, sv) {
                                                 // swap success
                                                 return ModResult::Replaced(act_val, None, idx);
                                             } else {
@@ -766,7 +766,7 @@ impl<
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
                                     let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
-                                    if self.cas_value(addr, v.val, primed_fval).is_ok() {
+                                    if self.cas_value(addr, v.val, primed_fval) {
                                         let prev_val = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH {
                                             attachment.set_value(ov.clone());
@@ -792,7 +792,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval).is_ok() {
+                        if self.cas_value(addr, EMPTY_VALUE, fval) {
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
@@ -821,7 +821,7 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval).is_ok() {
+                        if self.cas_value(addr, EMPTY_VALUE, fval) {
                             unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -914,23 +914,18 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> Result<(), usize> {
+    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> bool {
         let addr = entry_addr + mem::size_of::<usize>();
-        let (old, succ) = unsafe {
+        unsafe {
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
                 addr as *mut usize,
                 original,
                 TOMBSTONE_VALUE,
-            )
-        };
-        if succ {
-            Ok(())
-        } else {
-            Err(old)
+            ).1
         }
     }
     #[inline(always)]
-    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> Result<usize, usize> {
+    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
@@ -938,15 +933,21 @@ impl<
         } else {
             value
         };
-        let (old, succ) = unsafe {
-            intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, new_value)
-        };
-        if succ {
-            Ok(new_value)
-        } else {
-            Err(old)
-        }
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, new_value).1 }
     }
+
+    #[inline(always)]
+    fn cas_value_rt_new(&self, entry_addr: usize, original: usize, value: usize) -> Option<usize> {
+        debug_assert!(entry_addr > 0);
+        let addr = entry_addr + mem::size_of::<usize>();
+        let new_value = if Self::CAN_ATTACH {
+            FastValue::<K, V, A>::next_version(original, value)
+        } else {
+            value
+        };
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, new_value).1.then(|| new_value) }
+    }
+
     #[inline(always)]
     fn store_value(&self, entry_addr: usize, original: usize, value: usize) {
         debug_assert!(entry_addr > 0);
@@ -1190,18 +1191,18 @@ impl<
             } else if act_key == EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
-                    match self.cas_value(old_address, orig, MIGRATING_VALUE) {
-                        Ok(n) => {
+                    match self.cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
+                        Some(n) => {
                             trace!("Primed value for migration: {}", fkey);
                             curr_orig = n;
                         }
-                        Err(_) => {
+                        None => {
                             debug!("Value changed on locating new slot, key {}", fkey);
                             return false;
                         }
                     }
                 }
-                if self.cas_value(addr, EMPTY_VALUE, orig).is_ok() {
+                if self.cas_value(addr, EMPTY_VALUE, orig) {
                     new_attachment.set_key(key);
                     new_attachment.set_value(value);
                     unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) };
