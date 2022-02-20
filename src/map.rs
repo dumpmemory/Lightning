@@ -153,7 +153,7 @@ impl<
                     let act_val = val.act_val();
                     match act_val {
                         EMPTY_VALUE | TOMBSTONE_VALUE => {
-                            debug!("Found empty for key {}", fkey);
+                            trace!("Found empty for key {}", fkey);
                             break 'SPIN;
                         }
                         SENTINEL_VALUE => {
@@ -228,7 +228,7 @@ impl<
                 backoff.spin();
                 continue 'OUTER;
             }
-            debug!(
+            trace!(
                 "Find nothing for key {}, rt new chunk {:?}, now {:?}. Epoch {} to {}",
                 fkey,
                 new_chunk_ptr,
@@ -1126,7 +1126,6 @@ impl<
                 }
                 MIGRATING_VALUE => {}
                 _ => {
-                    // debug!("Migrating entry {:?}", fkey);
                     if !self.migrate_entry(
                         act_key,
                         idx,
@@ -1136,7 +1135,7 @@ impl<
                         old_address,
                         &mut effective_copy,
                     ) {
-                        debug!("Migration failed for entry {:?}", act_key);
+                        trace!("Migration failed for entry {:?}", act_key);
                         backoff.spin();
                         continue;
                     }
@@ -1197,7 +1196,7 @@ impl<
                             curr_orig = n;
                         }
                         None => {
-                            debug!("Value changed on locating new slot, key {}", fkey);
+                            trace!("Value changed on locating new slot, key {}", fkey);
                             return false;
                         }
                     }
@@ -2373,7 +2372,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     continue;
                 }
                 SwapResult::NotFound => {
-                    debug!("Cannot found hash key {} to lock", hash);
+                    trace!("Cannot found hash key {} to lock", hash);
                     return None;
                 }
             }
@@ -2478,7 +2477,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
                     continue;
                 }
                 SwapResult::NotFound => {
-                    debug!("Cannot found hash key {} to lock", key);
+                    trace!("Cannot found hash key {} to lock", key);
                     return None;
                 }
             }
@@ -2570,7 +2569,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
                     continue;
                 }
                 SwapResult::NotFound => {
-                    debug!("Cannot found key {} to lock", key);
+                    trace!("Cannot found key {} to lock", key);
                     return None;
                 }
             }
