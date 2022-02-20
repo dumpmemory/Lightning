@@ -421,7 +421,7 @@ impl<
                             ) {
                                 ModResult::Done(_, _, new_index)
                                 | ModResult::Replaced(_, _, new_index) => {
-                                    if self.cas_sentinel(old_addr, old_parsed_val.val) {
+                                    if Self::cas_sentinel(old_addr, old_parsed_val.val) {
                                         // Put a sentinel in the old chunk
                                         return SwapResult::Succeed(
                                             old_fval,
@@ -433,7 +433,7 @@ impl<
                                         // The best strategy can be CAS a tombstone to the new index and try everything again
                                         // Note that we use attempt insert, it will be safe to just `remove` it
                                         let new_addr = new_chunk.entry_addr(new_index);
-                                        let _ = self.cas_tombstone(new_addr, new_val);
+                                        let _ = Self::cas_tombstone(new_addr, new_val);
                                         continue;
                                     }
                                 }
@@ -659,7 +659,7 @@ impl<
                             let act_val = v.act_val();
                             match op {
                                 ModOp::Sentinel => {
-                                    if self.cas_sentinel(addr, v.val) {
+                                    if Self::cas_sentinel(addr, v.val) {
                                         attachment.erase();
                                         if raw == 0 {
                                             return ModResult::Done(addr, None, idx);
@@ -675,7 +675,7 @@ impl<
                                         // Already tombstone
                                         return ModResult::NotFound;
                                     }
-                                    if !self.cas_tombstone(addr, v.val) {
+                                    if !Self::cas_tombstone(addr, v.val) {
                                         // this insertion have conflict with others
                                         // other thread changed the value (empty)
                                         // should fail
@@ -689,7 +689,7 @@ impl<
                                     }
                                 }
                                 ModOp::UpsertFastVal(ref fv) => {
-                                    if self.cas_value(addr, v.val, *fv) {
+                                    if Self::cas_value(addr, v.val, *fv) {
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
@@ -706,10 +706,10 @@ impl<
                                         let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        if self.cas_value(addr, v.val, primed_fval) {
+                                        if Self::cas_value(addr, v.val, primed_fval) {
                                             if Self::CAN_ATTACH {
                                                 attachment.set_value((*oval).clone());
-                                                self.store_value(addr, v.val, fval);
+                                                Self::store_value(addr, v.val, fval);
                                             }
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         } else {
@@ -749,7 +749,7 @@ impl<
                                     }
                                     if act_val >= NUM_FIX {
                                         if let Some(sv) = swap(act_val) {
-                                            if self.cas_value(addr, v.val, sv) {
+                                            if Self::cas_value(addr, v.val, sv) {
                                                 // swap success
                                                 return ModResult::Replaced(act_val, None, idx);
                                             } else {
@@ -767,11 +767,11 @@ impl<
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
                                     let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
-                                    if self.cas_value(addr, v.val, primed_fval) {
+                                    if Self::cas_value(addr, v.val, primed_fval) {
                                         let prev_val = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH {
                                             attachment.set_value(ov.clone());
-                                            self.store_value(addr, v.val, fval);
+                                            Self::store_value(addr, v.val, fval);
                                         }
                                         return ModResult::Replaced(act_val, prev_val, idx);
                                     } else {
@@ -793,21 +793,16 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval) {
+                        if Self::cas_value(addr, EMPTY_VALUE, fval) {
                             // CAS value succeed, shall store key
                             if Self::CAN_ATTACH {
                                 // Inserting pre-key so other key don't need to wait at this slot
                                 attachment.prep_write();                     
-                                unsafe {
-                                    intrinsics::atomic_store_relaxed(
-                                        addr as *mut usize,
-                                        fkey | INV_KEY_BIT_MASK,
-                                    )
-                                }
+                                Self::store_key(addr, fkey | INV_KEY_BIT_MASK);
                                 attachment.set_key(key.clone());
                                 attachment.set_value((*val).clone());
                             }
-                            Self::store_key(&self, addr, fkey);
+                            Self::store_key(addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             debug!("Retry insert to new slot, now val {}", self.get_fast_value(addr).val);
@@ -823,8 +818,8 @@ impl<
                             fval,
                             addr
                         );
-                        if self.cas_value(addr, EMPTY_VALUE, fval) {
-                            Self::store_key(&self, addr, fkey);
+                        if Self::cas_value(addr, EMPTY_VALUE, fval) {
+                            Self::store_key(addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
@@ -832,9 +827,9 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if self.cas_sentinel(addr, EMPTY_VALUE) {
+                        if Self::cas_sentinel(addr, EMPTY_VALUE) {
                             // CAS value succeed, shall store key
-                            Self::store_key(&self, addr, fkey);
+                            Self::store_key(addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
                             backoff.spin();
@@ -916,7 +911,7 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_tombstone(&self, entry_addr: usize, original: usize) -> bool {
+    fn cas_tombstone(entry_addr: usize, original: usize) -> bool {
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe {
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
@@ -927,21 +922,21 @@ impl<
         }
     }
     #[inline(always)]
-    fn cas_value(&self, entry_addr: usize, original: usize, value: usize) -> bool {
+    fn cas_value(entry_addr: usize, original: usize, value: usize) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, value).1 }
     }
 
     #[inline(always)]
-    fn cas_value_rt_new(&self, entry_addr: usize, original: usize, value: usize) -> Option<usize> {
+    fn cas_value_rt_new(entry_addr: usize, original: usize, value: usize) -> Option<usize> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, value).1.then(|| value) }
     }
 
     #[inline(always)]
-    fn store_value(&self, entry_addr: usize, original: usize, value: usize) {
+    fn store_value(entry_addr: usize, original: usize, value: usize) {
         debug_assert!(entry_addr >= NUM_FIX);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
@@ -953,30 +948,20 @@ impl<
     }
 
     #[inline(always)]
-    fn store_sentinel(&self, entry_addr: usize) {
+    fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, SENTINEL_VALUE) };
     }
 
     #[inline(always)]
-    fn store_key(&self, addr: usize, fkey: usize) {
+    fn store_key(addr: usize, fkey: usize) {
         debug_assert!(fkey >= NUM_FIX);
         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
     }
 
     #[inline(always)]
-    fn cas_sentinel(&self, entry_addr: usize, original: usize) -> bool {
-        if cfg!(debug_assert) {
-            assert!(entry_addr > 0);
-            let guard = crossbeam_epoch::pin();
-            assert!(Self::is_copying(self.epoch.load(Acquire)));
-            assert!(!self.new_chunk.load(Acquire, &guard).is_null());
-            let chunk = self.chunk.load(Acquire, &guard);
-            let chunk_ref = unsafe { chunk.deref() };
-            assert!(entry_addr >= chunk_ref.base);
-            assert!(entry_addr < chunk_ref.base + chunk_ref.total_size);
-        }
+    fn cas_sentinel(entry_addr: usize, original: usize) -> bool {
         let addr = entry_addr + mem::size_of::<usize>();
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
@@ -1114,7 +1099,7 @@ impl<
             // Reasoning value states
             match fvalue.act_val() {
                 EMPTY_VALUE | TOMBSTONE_VALUE => {
-                    if !self.cas_sentinel(old_address, fvalue.val) {
+                    if !Self::cas_sentinel(old_address, fvalue.val) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
@@ -1196,7 +1181,7 @@ impl<
             } else if act_key == EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
-                    match self.cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
+                    match Self::cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
                         Some(n) => {
                             trace!("Primed value for migration: {}", fkey);
                             curr_orig = n;
@@ -1207,10 +1192,10 @@ impl<
                         }
                     }
                 }
-                if self.cas_value(addr, EMPTY_VALUE, orig) {
+                if Self::cas_value(addr, EMPTY_VALUE, orig) {
                     new_attachment.set_key(key);
                     new_attachment.set_value(value);
-                    Self::store_key(&self, addr, fkey);
+                    Self::store_key(addr, fkey);
                     // CAS to ensure sentinel into old chunk (spec)
                     // Use CAS for old threads may working on this one
                     trace!("Copied key {} to new chunk", fkey);
@@ -1222,8 +1207,8 @@ impl<
         }
         dfence(); //
         if curr_orig != orig {
-            self.store_sentinel(old_address);
-        } else if self.cas_sentinel(old_address, curr_orig) {
+            Self::store_sentinel(old_address);
+        } else if Self::cas_sentinel(old_address, curr_orig) {
             // continue
         } else {
             return false;
