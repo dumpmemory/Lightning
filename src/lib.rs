@@ -1,8 +1,10 @@
 #![feature(core_intrinsics)]
 #![feature(allocator_api)]
-#![feature(const_fn_trait_bound)]
 #![feature(test)]
 #![feature(const_option)]
+#![feature(const_fn_trait_bound)]
+#![feature(const_trait_impl)]
+#![feature(const_impl_trait)]
 #[macro_use]
 extern crate log;
 extern crate alloc;

@@ -27,28 +27,28 @@ struct Consts<FK: Atom, FV: Atom> {
 }
 
 impl <FK: Atom, FV: Atom> Consts<FK, FV> {
-    const EMPTY_KEY: FK = FK::from(0);
+    const EMPTY_KEY: FK = FK::atom_from_usize(0);
 
-    const EMPTY_VALUE: FV = FV::from(0);
-    const TOMBSTONE_VALUE: FV = FV::from(1);
-    const LOCKED_VALUE: FV = FV::from(2);
-    const MIGRATING_VALUE: FV = FV::from(3);
-    const SENTINEL_VALUE: FV = FV::from(4);
+    const EMPTY_VALUE: FV = FV::atom_from_usize(0);
+    const TOMBSTONE_VALUE: FV = FV::atom_from_usize(1);
+    const LOCKED_VALUE: FV = FV::atom_from_usize(2);
+    const MIGRATING_VALUE: FV = FV::atom_from_usize(3);
+    const SENTINEL_VALUE: FV = FV::atom_from_usize(4);
 
-    const VAL_TWO: FV = FV::from(2);
+    const VAL_TWO: FV = FV::atom_from_usize(2);
     const VAL_BIT_MASK: FV = !FV::zero() << FV::one() >> FV::one();
     const INV_VAL_BIT_MASK: FV = !Self::VAL_BIT_MASK;
     const WORD_MUTEX_DATA_BIT_MASK: FV = !FV::zero() << Self::VAL_TWO >> Self::VAL_TWO;
     const MUTEX_BIT_MASK: FV = !Self::WORD_MUTEX_DATA_BIT_MASK & Self::VAL_BIT_MASK;
 
-    const FVAL_BITS: u8 = (mem::size_of::<Self>() * 8) as u8;
-    const FVAL_VER_POS: FV = FV::from(Self::FVAL_BITS) / Self::VAL_TWO;
+    const FVAL_BITS: usize = mem::size_of::<Self>() * 8;
+    const FVAL_VER_POS: FV = FV::atom_from_usize(Self::FVAL_BITS) / Self::VAL_TWO;
     const FVAL_VER_BIT_MASK: FV = !FV::zero() << Self::FVAL_VER_POS & Self::VAL_BIT_MASK;
     const FVAL_VAL_BIT_MASK: FV = !Self::FVAL_VER_BIT_MASK;
     const ENTRY_SIZE: usize = mem::size_of::<(FK, FV)>();
 
-    const NUM_FIX_K: FK = FK::from(5);
-    const NUM_FIX_V: FV = FV::from(5);
+    const NUM_FIX_K: FK = FK::atom_from_usize(5);
+    const NUM_FIX_V: FV = FV::atom_from_usize(5);
     const PLACEHOLDER_VAL: FV = Self::NUM_FIX_V + FV::one();
 }
 
@@ -1486,7 +1486,7 @@ const fn can_attach<K, V>() -> bool {
 
 pub trait Atom: 
     'static +
-    PrimInt + Copy + Eq + Ord + 
+    Integer + Copy + Eq + Ord + 
     BitOr<Output = Self> + 
     BitAnd<Output = Self> + 
     Not<Output = Self> + 
@@ -1499,8 +1499,10 @@ pub trait Atom:
     AddAssign +
     From<u8> +
     AsPrimitive<usize> +
-    FromPrimitive
-    {}
+    FromPrimitive +
+    {
+        fn atom_from_usize(n: usize) -> Self;
+    }
 
 pub trait Attachment<K, V> {
     type Item: AttachmentItem<K, V> + Copy;
@@ -2867,15 +2869,19 @@ impl<FV: Atom, V> Debug for ModResult<FV, V> {
     }
 }
 
-impl Atom for u8{}
-impl Atom for u16{}
-impl Atom for u32{}
-impl Atom for u64{}
-impl Atom for usize{}
-impl Atom for i16{}
-impl Atom for i32{}
-impl Atom for i64{}
-impl Atom for isize{}
+macro_rules! atom_types {
+    ($($t: ty),+) => {
+        $(
+            impl const Atom for $t{
+                fn atom_from_usize(n: usize) -> Self {
+                    n as Self
+                }
+            }
+        )+
+    };
+}
+
+atom_types!(u8, u16, u32, u64, usize);
 
 mod lite_tests {
     use super::{LiteHashMap, Map};
