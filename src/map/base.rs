@@ -1186,12 +1186,10 @@ macro_rules! gen_table {
 
         #[inline(always)]
         fn hash(fkey: FKey) -> usize {
-            if Self::CAN_ATTACH && mem::size_of::<K>() == 0 {
-                hash::<H>(fkey as usize)
-            } else if Self::CAN_ATTACH {
-                fkey as usize // Prevent double hashing
+            if mem::size_of::<K>() == 0 {
+                hash_key::<FKey, H>(&fkey)
             } else {
-                hash::<H>(fkey as usize)
+                fkey as usize // Prevent double hashing
             }
         }
 
