@@ -24,12 +24,12 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
     pub fn get<F: Fn(usize) -> Option<V>>(
         &self,
         key: usize,
-        lifetime: usize,
+        lifetime: u16,
         fallback: F,
     ) -> Option<V> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        let time = since_the_epoch() as usize;
+        let time = since_the_epoch() as u16;
         loop {
             let (ttl_val, v) = self.table.get(&(), key, true).unwrap_or((0, None));
             let mem_ttl_time = ttl_val >> 1;

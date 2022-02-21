@@ -1,6 +1,7 @@
 // usize to usize lock-free, wait free table
 use crate::align_padding;
 use alloc::vec::Vec;
+use num::cast::AsPrimitive;
 use num::traits::WrappingAdd;
 use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
@@ -18,8 +19,7 @@ use std::hash::Hash;
 use std::ops::*;
 use std::fmt::Display;
 use std::os::raw::c_void;
-use num::Integer;
-use num::One;
+use num::*;
 
 
 struct Consts<FK: Atom, FV: Atom> {
@@ -1247,11 +1247,11 @@ impl<
     #[inline(always)]
     fn hash(fkey: FK) -> usize {
         if Self::CAN_ATTACH && mem::size_of::<K>() == 0 {
-            hash::<H>(fkey.into())
+            hash::<H>(fkey.as_())
         } else if Self::CAN_ATTACH {
-            fkey.into() // Prevent double hashing
+            fkey.as_() // Prevent double hashing
         } else {
-            hash::<H>(fkey.into())
+            hash::<H>(fkey.as_())
         }
     }
 
@@ -1285,7 +1285,7 @@ impl<FK: Atom, FV: Atom, K, V> FastValue<FK, FV, K, V> {
     }
 
     #[inline(always)]
-    const fn next_version(old: FV, new: FV) -> FV {
+    fn next_version(old: FV, new: FV) -> FV {
         debug_assert!(can_attach::<K, V>());
         let new_ver = (old | Self::FVAL_VAL_BIT_MASK).wrapping_add(&FV::one());
         new & Self::FVAL_VAL_BIT_MASK | (new_ver & Self::FVAL_VER_BIT_MASK)
@@ -1486,7 +1486,7 @@ const fn can_attach<K, V>() -> bool {
 
 pub trait Atom: 
     'static +
-    Integer + Copy + Eq + Ord + 
+    PrimInt + Copy + Eq + Ord + 
     BitOr<Output = Self> + 
     BitAnd<Output = Self> + 
     Not<Output = Self> + 
@@ -1497,7 +1497,9 @@ pub trait Atom:
     Display +
     Binary +
     AddAssign +
-    From<u8> 
+    From<u8> +
+    AsPrimitive<usize> +
+    FromPrimitive
     {}
 
 pub trait Attachment<K, V> {
@@ -1833,7 +1835,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
-        let hash = Self::hash(&key);
+        let hash = Self::hash(&key) as ObjAtom;
         self.table
             .insert(op, key, Some(value), hash, Self::PLACEHOLDER_VAL)
             .map(|(_, v)| v)
@@ -1864,7 +1866,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let hash = Self::hash(key); 
+        let hash = Self::hash(key) as ObjAtom; 
         self.table.get(key, hash, true).map(|v| v.1.unwrap())
     }
 
@@ -1880,7 +1882,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let hash = Self::hash(key);
+        let hash = Self::hash(key) as ObjAtom;
         self.table.remove(key, hash).map(|(_, v)| v)
     }
 
@@ -1895,7 +1897,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let hash = Self::hash(key);
+        let hash = Self::hash(key) as ObjAtom;
         self.table.get(key, hash, false).is_some()
     }
 
@@ -2220,7 +2222,7 @@ pub struct HashMapReadGuard<
     H: Hasher + Default = DefaultHasher,
 > {
     table: &'a HashTable<K, V, ALLOC>,
-    hash: usize,
+    hash: ObjAtom,
     key: K,
     value: V,
     _mark: PhantomData<H>,
@@ -2235,7 +2237,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        let hash = hash_key::<K, H>(&key);
+        let hash = hash_key::<K, H>(&key) as ObjAtom;
         let value: V;
         loop {
             let swap_res = table.swap(
@@ -2318,7 +2320,7 @@ pub struct HashMapWriteGuard<
     H: Hasher + Default = DefaultHasher,
 > {
     table: &'a HashTable<K, V, ALLOC>,
-    hash: usize,
+    hash: ObjAtom,
     key: K,
     value: V,
     _mark: PhantomData<H>,
@@ -2333,7 +2335,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
-        let hash = hash_key::<K, H>(&key);
+        let hash = hash_key::<K, H>(&key) as ObjAtom;
         let value: V;
         loop {
             let swap_res = table.swap(
@@ -2409,7 +2411,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
 {
     fn drop(&mut self) {
         trace!("Release read lock for hash key {}", self.hash);
-        let hash = hash_key::<K, H>(&self.key);
+        let hash = hash_key::<K, H>(&self.key) as ObjAtom;
         self.table.insert(
             InsertOp::Insert,
             &self.key,
@@ -2641,19 +2643,19 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
     }
 
     pub fn contains(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item);
+        let hash = hash_key::<T, H>(item) as ObjAtom;
         self.table.get(item, hash, false).is_some()
     }
 
     pub fn insert(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item);
+        let hash = hash_key::<T, H>(item) as ObjAtom;
         self.table
             .insert(InsertOp::TryInsert, item, None, hash, !0)
             .is_none()
     }
 
     pub fn remove(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item);
+        let hash = hash_key::<T, H>(item) as ObjAtom;
         self.table.remove(item, hash).is_some()
     }
 
@@ -3018,7 +3020,7 @@ mod fat_tests {
     #[test]
     fn resize_obj_map() {
         let _ = env_logger::try_init();
-        let map = ObjectMap::<usize, System>::with_capacity(16);
+        let map = ObjectMap::<usize, usize, System>::with_capacity(16);
         let turns = 40960;
         for i in 5..turns {
             let k = i;
@@ -3230,7 +3232,7 @@ mod word_tests {
     #[test]
     fn will_not_overflow() {
         let _ = env_logger::try_init();
-        let table = WordMap::<System>::with_capacity(16);
+        let table = WordMap::<usize, usize, System>::with_capacity(16);
         for i in 50..60 {
             assert_eq!(table.insert(&i, &i), None);
         }
@@ -3245,7 +3247,7 @@ mod word_tests {
     #[test]
     fn resize() {
         let _ = env_logger::try_init();
-        let map = WordMap::<System>::with_capacity(16);
+        let map = WordMap::<usize, usize, System>::with_capacity(16);
         for i in 5..2048 {
             map.insert(&i, &(i * 2));
         }
@@ -3260,7 +3262,7 @@ mod word_tests {
     #[test]
     fn parallel_no_resize() {
         let _ = env_logger::try_init();
-        let map = Arc::new(WordMap::<System>::with_capacity(65536));
+        let map = Arc::new(WordMap::<usize, usize, System>::with_capacity(65536));
         let mut threads = vec![];
         for i in 5..99 {
             map.insert(&i, &(i * 10));
@@ -3299,7 +3301,7 @@ mod word_tests {
         let num_threads = num_cpus::get();
         let test_load = 4096;
         let repeat_load = 16;
-        let map = Arc::new(WordMap::<System>::with_capacity(32));
+        let map = Arc::new(WordMap::<usize, usize, System>::with_capacity(32));
         let mut threads = vec![];
         for i in 0..num_threads {
             let map = map.clone();
@@ -3400,7 +3402,7 @@ mod word_tests {
     #[test]
     fn parallel_hybrid() {
         let _ = env_logger::try_init();
-        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        let map = Arc::new(WordMap::<usize, usize, System>::with_capacity(4));
         for i in 5..128 {
             map.insert(&i, &(i * 10));
         }
@@ -3434,7 +3436,7 @@ mod word_tests {
     #[test]
     fn parallel_word_map_mutex() {
         let _ = env_logger::try_init();
-        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        let map = Arc::new(WordMap::<usize, usize, System>::with_capacity(4));
         map.insert(&1, &0);
         let mut threads = vec![];
         let num_threads = 256;
@@ -3454,7 +3456,7 @@ mod word_tests {
     #[test]
     fn parallel_word_map_multi_mutex() {
         let _ = env_logger::try_init();
-        let map = Arc::new(WordMap::<System>::with_capacity(16));
+        let map = Arc::new(WordMap::<usize, usize, System>::with_capacity(16));
         let mut threads = vec![];
         let num_threads = 16;
         let test_load = 4096;
@@ -3517,7 +3519,7 @@ mod word_tests {
     #[test]
     fn parallel_obj_map_rwlock() {
         let _ = env_logger::try_init();
-        let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
+        let map_cont = ObjectMap::<usize, Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
         map.insert(&1, &Obj::new(0));
         let mut threads = vec![];
@@ -3593,7 +3595,7 @@ mod word_tests {
     #[test]
     fn obj_map() {
         let _ = env_logger::try_init();
-        let map = ObjectMap::<Obj>::with_capacity(16);
+        let map = ObjectMap::<usize, Obj>::with_capacity(16);
         for i in 5..2048 {
             map.insert(&i, &Obj::new(i));
         }
@@ -3608,7 +3610,7 @@ mod word_tests {
     #[test]
     fn parallel_obj_hybrid() {
         let _ = env_logger::try_init();
-        let map = Arc::new(ObjectMap::<Obj>::with_capacity(4));
+        let map = Arc::new(ObjectMap::<usize, Obj>::with_capacity(4));
         for i in 5..128 {
             map.insert(&i, &Obj::new(i * 10));
         }
@@ -3681,7 +3683,7 @@ mod word_tests {
 
     #[test]
     fn insert_with_num_fixes() {
-        let map = WordMap::<System, DefaultHasher>::with_capacity(32);
+        let map = WordMap::<usize, usize, System, DefaultHasher>::with_capacity(32);
         assert_eq!(map.insert(&24, &0), None);
         assert_eq!(map.insert(&24, &1), Some(0));
         assert_eq!(map.insert(&0, &0), None);
@@ -3691,7 +3693,7 @@ mod word_tests {
     #[bench]
     fn lfmap(b: &mut Bencher) {
         let _ = env_logger::try_init();
-        let map = WordMap::<System, DefaultHasher>::with_capacity(8);
+        let map = WordMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
         let mut i = 5;
         b.iter(|| {
             map.insert(&i, &i);
