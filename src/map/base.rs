@@ -901,7 +901,6 @@ macro_rules! gen_table {
 
         #[inline(always)]
         fn store_value(entry_addr: usize, original: FVal, value: FVal) {
-            debug_assert!(value >= NUM_FIX_V);
             let addr = entry_addr + mem::size_of::<FKey>();
             let new_value = if Self::CAN_ATTACH {
                 FastValue::<K, V, A>::next_version(original, value)
@@ -913,7 +912,6 @@ macro_rules! gen_table {
 
         #[inline(always)]
         fn store_value_raw(entry_addr: usize, value: FVal) {
-            debug_assert!(value >= NUM_FIX_V);
             let addr = entry_addr + mem::size_of::<FKey>();
             unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) };
         }
@@ -927,7 +925,6 @@ macro_rules! gen_table {
 
         #[inline(always)]
         fn store_key(addr: usize, fkey: FKey) {
-            debug_assert!(fkey >= NUM_FIX_K);
             unsafe { intrinsics::atomic_store_rel(addr as *mut FKey, fkey) }
         }
 
@@ -1422,7 +1419,7 @@ macro_rules! gen_table {
 
 pub(crate) mod hash_table {
     use super::*;
-    gen_table!(ObjAtom, ObjAtom);
+    gen_table!(u32, ObjAtom);
 }
 
 pub(crate) mod word_table {
