@@ -142,13 +142,11 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-
-            if let Some((mut val, _idx, addr, aitem)) =
+            if let Some((mut val, addr, aitem)) =
                 self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
             {
                 'SPIN: loop {
-                    let act_val = val.act_val();
-                    match act_val {
+                    match val.val {
                         EMPTY_VALUE | TOMBSTONE_VALUE => {
                             trace!("Found empty for key {}", fkey);
                             break 'SPIN;
@@ -168,6 +166,7 @@ impl<
                             continue 'SPIN;
                         }
                         _ => {
+                            let act_val = val.act_val();
                             let mut attachment = None;
                             if Self::CAN_ATTACH && read_attachment {
                                 attachment = Some(aitem.get_value());
@@ -185,12 +184,11 @@ impl<
 
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
-                if let Some((mut val, _idx, addr, aitem)) =
+                if let Some((mut val, addr, aitem)) =
                     self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
                 {
                     'SPIN_NEW: loop {
-                        let act_val = val.act_val();
-                        match act_val {
+                        match val.val {
                             EMPTY_VALUE | TOMBSTONE_VALUE => {
                                 break 'SPIN_NEW;
                             }
@@ -205,6 +203,7 @@ impl<
                                 continue 'OUTER;
                             }
                             _ => {
+                                let act_val = val.act_val();
                                 let mut attachment = None;
                                 if Self::CAN_ATTACH && read_attachment {
                                     attachment = Some(aitem.get_value());
@@ -394,7 +393,7 @@ impl<
             if let Some(new_chunk) = new_chunk {
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                if let Some((old_parsed_val, _old_index, old_addr, attachment)) =
+                if let Some((old_parsed_val, old_addr, attachment)) =
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
                     let old_fval = old_parsed_val.act_val();
@@ -573,7 +572,7 @@ impl<
         key: &K,
         fkey: usize,
         backoff: &Backoff,
-    ) -> Option<(FastValue<K, V, A>, usize, usize, A::Item)> {
+    ) -> Option<(FastValue<K, V, A>, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -587,12 +586,12 @@ impl<
             if k == fkey && attachment.probe(key) {
                 loop {
                     let val_res = Self::get_fast_value(addr);
-                    let act_val = val_res.act_val();
-                    if act_val == LOCKED_VALUE || act_val == MIGRATING_VALUE {
+                    let val = val_res.val;
+                    if val == LOCKED_VALUE || val == MIGRATING_VALUE {
                         backoff.spin();
                         continue;
                     }
-                    return Some((val_res, idx, addr, attachment));
+                    return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
                 return None;
@@ -648,6 +647,7 @@ impl<
                                         let prev_val = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH {
                                             attachment.set_value(ov.clone());
+                                            compiler_fence(Acquire);
                                             Self::store_value(addr, v.val, fval);
                                         }
                                         return ModResult::Replaced(act_val, prev_val, idx);
@@ -707,6 +707,7 @@ impl<
                                         if Self::cas_value(addr, v.val, primed_fval) {
                                             if Self::CAN_ATTACH {
                                                 attachment.set_value((*oval).clone());
+                                                compiler_fence(Acquire);
                                                 Self::store_value(addr, v.val, fval);
                                             }
                                             return ModResult::Replaced(act_val, prev_val, idx);
@@ -781,6 +782,7 @@ impl<
                                 compiler_fence(Acquire);
                                 Self::store_key(addr, fkey);
                                 attachment.set_value((*val).clone());
+                                compiler_fence(Acquire);
                                 Self::store_value_raw(addr, fval);
                             } else {
                                 Self::store_key(addr, fkey);
