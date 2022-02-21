@@ -1,4 +1,4 @@
-use super::base::word_table::*;
+use super::base::*;
 use super::*;
 
 pub type WordTable<H, ALLOC> = Table<(), (), WordAttachment, H, ALLOC>;

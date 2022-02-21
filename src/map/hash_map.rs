@@ -1,4 +1,4 @@
-use super::base::hash_table::*;
+use super::base::*;
 use super::*;
 
 pub type HashTable<K, V, ALLOC> = Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, DefaultHasher>;
@@ -139,9 +139,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
-        let hash = Self::hash(&key) as FKey;
         self.table
-            .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
+            .insert(op, key, Some(value), 0, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
@@ -150,11 +149,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
     pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
         HashMapReadGuard::new(&self.table, key)
-    }
-
-    #[inline(always)]
-    fn hash(key: &K) -> usize {
-        hash_key::<K, H>(key)
     }
 }
 
@@ -170,8 +164,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let hash = Self::hash(key) as FKey;
-        self.table.get(key, hash, true).map(|v| v.1.unwrap())
+        self.table.get(key, 0, true).map(|v| v.1.unwrap())
     }
 
     #[inline(always)]
@@ -186,8 +179,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let hash = Self::hash(key) as FKey;
-        self.table.remove(key, hash).map(|(_, v)| v)
+        self.table.remove(key, 0).map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -201,8 +193,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let hash = Self::hash(key) as FKey;
-        self.table.get(key, hash, false).is_some()
+        self.table.get(key, 0, false).is_some()
     }
 
     #[inline(always)]
@@ -560,7 +551,7 @@ mod fat_tests {
                           let post_fail_get_epoch = map.table.now_epoch();
                           let right = Some(value);
                           if left != right {
-                              error!("Discovered mismatch key {:?}, analyzing", FatHashMap::hash(&key));
+                              error!("Discovered mismatch key {:?}, analyzing", &key);
                               for m in 1..1024 {
                                   let mleft = map.get(&key);
                                   let mright = Some(value);
@@ -568,7 +559,7 @@ mod fat_tests {
                                       panic!(
                                           "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
                                           m, 
-                                          FatHashMap::hash(&key), 
+                                          &key, 
                                           map.table.map_is_copying(),
                                           pre_fail_get_epoch,
                                           post_fail_get_epoch,
@@ -580,7 +571,7 @@ mod fat_tests {
                                       // panic!("Late value change on {:?}", key);
                                   }
                               }
-                              panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", FatHashMap::hash(&key), l , map.table.map_is_copying(), right, left);
+                              panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
                               // panic!("Unrecoverable value change for {:?}", key);
                           }
                       }

@@ -1,4 +1,4 @@
-use super::base::word_table::*;
+use super::base::*;
 use super::word_map::*;
 use super::*;
 

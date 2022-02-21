@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::map::base::fat_hash_table::*;
+use crate::map::base::*;
 use crate::map::obj_map::WordObjectAttachment;
 
 type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;

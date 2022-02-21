@@ -1,4 +1,4 @@
-use super::base::hash_table::*;
+use super::base::*;
 use super::hash_map::HashTable;
 use super::*;
 
@@ -20,20 +20,17 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
     }
 
     pub fn contains(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item) as FKey;
-        self.table.get(item, hash, false).is_some()
+        self.table.get(item, 0, false).is_some()
     }
 
     pub fn insert(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item) as FKey;
         self.table
-            .insert(InsertOp::TryInsert, item, None, hash, !0)
+            .insert(InsertOp::TryInsert, item, None, 0, !0)
             .is_none()
     }
 
     pub fn remove(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item) as FKey;
-        self.table.remove(item, hash).is_some()
+        self.table.remove(item, 0).is_some()
     }
 
     pub fn items(&self) -> std::collections::HashSet<T> {

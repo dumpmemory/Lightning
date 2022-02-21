@@ -1,4 +1,4 @@
-use super::base::obj_table::*;
+use super::base::*;
 use super::*;
 
 type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
