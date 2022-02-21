@@ -2,7 +2,7 @@
 name = "lightning-containers"
 version = "0.2.2"
 authors = ["Hao Shi <shisoftgenius@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license-file = "LICENSE"
 description = "A set of lock-free data structures"
 repository = "https://github.com/ShisoftResearch/Lightning"

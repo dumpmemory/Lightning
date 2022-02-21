@@ -14,33 +14,41 @@ use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::ops::DerefMut;
+use std::ops::*;
 use std::os::raw::c_void;
 use num::Integer;
 
-pub struct EntryTemplate(usize, usize);
 
-const EMPTY_KEY: usize = 0;
+struct Consts<FK: Atom, FV: Atom> {
+    _marker: PhantomData<(FK, FV)>
+}
 
-const EMPTY_VALUE: usize = 0;
-const TOMBSTONE_VALUE: usize = 1;
-const LOCKED_VALUE: usize = 2;
-const MIGRATING_VALUE: usize = 3;
-const SENTINEL_VALUE: usize = 4;
+impl <FK: Atom, FV: Atom> Consts<FK, FV> {
+    const EMPTY_KEY: FK = FK::from(0);
 
-const VAL_BIT_MASK: usize = !0 << 1 >> 1;
-const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
-const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
-const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
+    const EMPTY_VALUE: FV = FV::from(0);
+    const TOMBSTONE_VALUE: FV = FV::from(1);
+    const LOCKED_VALUE: FV = FV::from(2);
+    const MIGRATING_VALUE: FV = FV::from(3);
+    const SENTINEL_VALUE: FV = FV::from(4);
 
-const FVAL_BITS: usize = mem::size_of::<usize>() * 8;
-const FVAL_VER_POS: usize = FVAL_BITS / 2;
-const FVAL_VER_BIT_MASK: usize = !0 << FVAL_VER_POS & VAL_BIT_MASK;
-const FVAL_VAL_BIT_MASK: usize = !FVAL_VER_BIT_MASK;
+    const VAL_BIT_MASK: FV = !FV::zero() << 1 >> 1;
+    const INV_VAL_BIT_MASK: FV = !Self::VAL_BIT_MASK;
+    const MUTEX_BIT_MASK: FV = !Self::WORD_MUTEX_DATA_BIT_MASK & Self::VAL_BIT_MASK;
 
-enum ModResult<V> {
-    Replaced(usize, Option<V>, usize), // (origin fval, val, index)
-    Existed(usize, Option<V>),
+    const FVAL_BITS: usize = mem::size_of::<Self>() * 8;
+    const FVAL_VER_POS: usize = Self::FVAL_BITS / 2;
+    const FVAL_VER_BIT_MASK: FV = !0 << Self::FVAL_VER_POS & Self::VAL_BIT_MASK;
+    const FVAL_VAL_BIT_MASK: FV = !Self::FVAL_VER_BIT_MASK;
+    const ENTRY_SIZE: usize = mem::size_of::<(FK, FV)>();
+
+    const NUM_FIX: FV = FV::from(5);
+    const PLACEHOLDER_VAL: usize = Self::NUM_FIX + 1;
+}
+
+enum ModResult<FV: Atom, V> {
+    Replaced(FV, Option<V>, usize), // (origin fval, val, index)
+    Existed(FV, Option<V>),
     Fail,
     Sentinel,
     NotFound,
@@ -49,11 +57,11 @@ enum ModResult<V> {
     Aborted,
 }
 
-enum ModOp<'a, V> {
-    Insert(usize, &'a V),
-    UpsertFastVal(usize),
-    AttemptInsert(usize, &'a V),
-    SwapFastVal(Box<dyn Fn(usize) -> Option<usize>>),
+enum ModOp<'a, FV: Atom, V> {
+    Insert(FV, &'a V),
+    UpsertFastVal(FV),
+    AttemptInsert(FV, &'a V),
+    SwapFastVal(Box<dyn Fn(FV) -> Option<FV>>),
     Sentinel,
     Tombstone,
 }
@@ -70,14 +78,14 @@ enum ResizeResult {
     Done,
 }
 
-pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
-    Succeed(usize, usize, Shared<'a, ChunkPtr<K, V, A, ALLOC>>),
+pub enum SwapResult<'a, FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+    Succeed(usize, usize, Shared<'a, ChunkPtr<FK, FV, K, V, A, ALLOC>>),
     NotFound,
     Failed,
     Aborted,
 }
 
-pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+pub struct Chunk<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     occu_limit: usize,
@@ -85,16 +93,16 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     empty_entries: AtomicUsize,
     total_size: usize,
     attachment: A,
-    shadow: PhantomData<(K, V, ALLOC)>,
+    shadow: PhantomData<(FK, FV, K, V, ALLOC)>,
 }
 
-pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
-    ptr: *mut Chunk<K, V, A, ALLOC>,
+pub struct ChunkPtr<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+    ptr: *mut Chunk<FK, FV, K, V, A, ALLOC>,
 }
 
-pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
-    new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
-    chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
+pub struct Table<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
+    new_chunk: Atomic<ChunkPtr<FK, FV, K, V, A, ALLOC>>,
+    chunk: Atomic<ChunkPtr<FK, FV, K, V, A, ALLOC>>,
     count: AtomicUsize,
     epoch: AtomicUsize,
     init_cap: usize,
@@ -102,13 +110,15 @@ pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Has
 }
 
 impl<
+        FK: Atom, FV: Atom,
         K: Clone + Hash + Eq,
         V: Clone,
         A: Attachment<K, V>,
         ALLOC: GlobalAlloc + Default,
         H: Hasher + Default,
-    > Table<K, V, A, ALLOC, H>
+    > Table<FK, FV, K, V, A, ALLOC, H>
 {
+    type C = Consts<FK, FV>;
     const CAN_ATTACH: bool = can_attach::<K, V>();
 
     pub fn with_capacity(cap: usize) -> Self {
@@ -132,7 +142,7 @@ impl<
         Self::with_capacity(64)
     }
 
-    pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
+    pub fn get(&self, key: &K, fkey: FK, read_attachment: bool) -> Option<(usize, Option<V>)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
@@ -150,11 +160,11 @@ impl<
                 'SPIN: loop {
                     let act_val = val.act_val();
                     match act_val {
-                        EMPTY_VALUE | TOMBSTONE_VALUE => {
+                        Self::C::EMPTY_VALUE | Self::C::TOMBSTONE_VALUE => {
                             trace!("Found empty for key {}", fkey);
                             break 'SPIN;
                         }
-                        SENTINEL_VALUE => {
+                        Self::C::SENTINEL_VALUE => {
                             if new_chunk.is_none() {
                                 warn!("Discovered sentinel but new chunk is null for key {}", fkey);
                                 backoff.spin();
@@ -163,7 +173,7 @@ impl<
                             trace!("Found sentinel, moving to new chunk for key {}", fkey);
                             break 'SPIN;
                         }
-                        LOCKED_VALUE | MIGRATING_VALUE => {
+                        Self::C::LOCKED_VALUE | Self::C::MIGRATING_VALUE => {
                             backoff.spin();
                             val = Self::get_fast_value(addr);
                             continue 'SPIN;
@@ -192,10 +202,10 @@ impl<
                     'SPIN_NEW: loop {
                         let act_val = val.act_val();
                         match act_val {
-                            EMPTY_VALUE | TOMBSTONE_VALUE => {
+                            Self::C::EMPTY_VALUE | Self::C::TOMBSTONE_VALUE => {
                                 break 'SPIN_NEW;
                             }
-                            LOCKED_VALUE | MIGRATING_VALUE => {
+                            Self::C::LOCKED_VALUE | Self::C::MIGRATING_VALUE => {
                                 backoff.spin();
                                 val = Self::get_fast_value(addr);
                                 continue 'SPIN_NEW;
@@ -243,8 +253,8 @@ impl<
         op: InsertOp,
         key: &K,
         value: Option<&V>,
-        fkey: usize,
-        fvalue: usize,
+        fkey: FK,
+        fvalue: FV,
     ) -> Option<(usize, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
@@ -275,7 +285,7 @@ impl<
             } else {
                 chunk
             };
-            let masked_value = fvalue & VAL_BIT_MASK;
+            let masked_value = fvalue & Self::C::VAL_BIT_MASK;
             let mod_op = match op {
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
@@ -377,13 +387,13 @@ impl<
         self.now_epoch() != epoch
     }
 
-    pub fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
+    pub fn swap<'a, F: Fn(FV) -> Option<FV> + Copy + 'static>(
         &self,
-        fkey: usize,
+        fkey: FK,
         key: &K,
         func: F,
         guard: &'a Guard,
-    ) -> SwapResult<'a, K, V, A, ALLOC> {
+    ) -> SwapResult<'a, FK, FV, K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
         loop {
@@ -399,11 +409,11 @@ impl<
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
                     let old_fval = old_parsed_val.act_val();
-                    if old_fval == LOCKED_VALUE {
+                    if old_fval == Self::C::LOCKED_VALUE {
                         backoff.spin();
                         continue;
                     }
-                    if old_fval >= NUM_FIX {
+                    if old_fval >= Self::C::NUM_FIX {
                         if let Some(new_val) = func(old_fval) {
                             let val = attachment.get_value();
                             match self.modify_entry(
@@ -483,9 +493,9 @@ impl<
     #[inline(always)]
     fn new_chunk_ref<'a>(
         epoch: usize,
-        new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
-        old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
-    ) -> Option<&'a ChunkPtr<K, V, A, ALLOC>> {
+        new_chunk_ptr: &'a Shared<ChunkPtr<FK, FV, K, V, A, ALLOC>>,
+        old_chunk_ptr: &'a Shared<ChunkPtr<FK, FV, K, V, A, ALLOC>>,
+    ) -> Option<&'a ChunkPtr<FK, FV, K, V, A, ALLOC>> {
         if Self::is_copying(epoch) && !old_chunk_ptr.with_tag(0).eq(new_chunk_ptr) {
             unsafe { new_chunk_ptr.as_ref() } // null ptr will be handled by as_ref
         } else {
@@ -569,12 +579,12 @@ impl<
 
     fn get_from_chunk(
         &self,
-        chunk: &Chunk<K, V, A, ALLOC>,
+        chunk: &Chunk<FK, FV, K, V, A, ALLOC>,
         hash: usize,
         key: &K,
         fkey: usize,
         backoff: &Backoff,
-    ) -> Option<(FastValue<K, V>, usize, usize, A::Item)> {
+    ) -> Option<(FastValue<FK, FV, K, V>, usize, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -589,13 +599,13 @@ impl<
                 loop {
                     let val_res = Self::get_fast_value(addr);
                     let act_val = val_res.act_val();
-                    if act_val == LOCKED_VALUE || act_val == MIGRATING_VALUE {
+                    if act_val == Self::C::LOCKED_VALUE || act_val == Self::C::MIGRATING_VALUE {
                         backoff.spin();
                         continue;
                     }
                     return Some((val_res, idx, addr, attachment));
                 }
-            } else if k == EMPTY_KEY {
+            } else if k == Self::C::EMPTY_KEY {
                 return None;
             }
             idx += 1; // reprobe
@@ -609,14 +619,14 @@ impl<
     #[inline(always)]
     fn modify_entry<'a>(
         &self,
-        chunk: &'a Chunk<K, V, A, ALLOC>,
+        chunk: &'a Chunk<FK, FV, K, V, A, ALLOC>,
         hash: usize,
         key: &K,
-        fkey: usize,
-        op: ModOp<V>,
+        fkey: FK,
+        op: ModOp<FV, V>,
         read_attachment: bool,
         _guard: &'a Guard,
-    ) -> ModResult<V> {
+    ) -> ModResult<FV, V> {
         let cap = chunk.capacity;
         let mut idx = hash;
         let mut count = 0;
@@ -632,7 +642,7 @@ impl<
                     let v = Self::get_fast_value(addr);
                     let raw = v.val;
                     match raw {
-                        LOCKED_VALUE | MIGRATING_VALUE | EMPTY_VALUE => {
+                        Self::C::LOCKED_VALUE | Self::C::MIGRATING_VALUE | Self::C::EMPTY_VALUE => {
                             backoff.spin();
                             continue;
                         }
@@ -644,7 +654,7 @@ impl<
                                     // Insert with attachment should prime value first when
                                     // duplicate key discovered
                                     trace!("Inserting in place for {}", fkey);
-                                    let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                                    let primed_fval = Self::if_attach_then_val(Self::C::LOCKED_VALUE, fval);
                                     if Self::cas_value(addr, v.val, primed_fval) {
                                         let prev_val = read_attachment.then(|| attachment.get_value());
                                         if Self::CAN_ATTACH {
@@ -670,7 +680,7 @@ impl<
                                     }
                                 }
                                 ModOp::Tombstone => {
-                                    if act_val == TOMBSTONE_VALUE {
+                                    if act_val == Self::C::TOMBSTONE_VALUE {
                                         // Already tombstone
                                         return ModResult::NotFound;
                                     }
@@ -689,7 +699,7 @@ impl<
                                 }
                                 ModOp::UpsertFastVal(ref fv) => {
                                     if Self::cas_value(addr, v.val, *fv) {
-                                        if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
+                                        if (act_val == Self::C::TOMBSTONE_VALUE) | (act_val == Self::C::EMPTY_VALUE) {
                                             return ModResult::Done(addr, None, idx);
                                         } else {
                                             let attachment = read_attachment.then(|| attachment.get_value());
@@ -701,8 +711,8 @@ impl<
                                     }
                                 }
                                 ModOp::AttemptInsert(fval, oval) => {
-                                    if act_val == TOMBSTONE_VALUE {
-                                        let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                                    if act_val == Self::C::TOMBSTONE_VALUE {
+                                        let primed_fval = Self::if_attach_then_val(Self::C::LOCKED_VALUE, fval);
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
                                         if Self::cas_value(addr, v.val, primed_fval) {
@@ -743,10 +753,10 @@ impl<
                                         fkey,
                                         act_val
                                     );
-                                    if act_val == TOMBSTONE_VALUE {
+                                    if act_val == Self::C::TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if act_val >= NUM_FIX {
+                                    if act_val >= Self::C::NUM_FIX {
                                         if let Some(sv) = swap(act_val) {
                                             if Self::cas_value(addr, v.val, sv) {
                                                 // swap success
@@ -765,18 +775,18 @@ impl<
                         }
                     }
                 }
-            } else if k == EMPTY_KEY {
+            } else if k == Self::C::EMPTY_KEY {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         trace!(
                             "Inserting entry key: {}, value: {}, raw: {:b}, addr: {}",
                             fkey,
-                            fval & VAL_BIT_MASK,
+                            fval & Self::C::VAL_BIT_MASK,
                             fval,
                             addr
                         );
-                        let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
-                        if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
+                        let primed_fval = Self::if_attach_then_val(Self::C::LOCKED_VALUE, fval);
+                        if Self::cas_value(addr, Self::C::EMPTY_VALUE, primed_fval) {
                             if Self::CAN_ATTACH {
                                 attachment.set_key(key.clone());
                                 compiler_fence(Acquire);
@@ -797,11 +807,11 @@ impl<
                         trace!(
                             "Upserting entry key: {}, value: {}, raw: {:b}, addr: {}",
                             fkey,
-                            fval & VAL_BIT_MASK,
+                            fval & Self::C::VAL_BIT_MASK,
                             fval,
                             addr
                         );
-                        if Self::cas_value(addr, EMPTY_VALUE, fval) {
+                        if Self::cas_value(addr, Self::C::EMPTY_VALUE, fval) {
                             Self::store_key(addr, fkey);
                             return ModResult::Done(addr, None, idx);
                         } else {
@@ -810,7 +820,7 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        if Self::cas_sentinel(addr, EMPTY_VALUE) {
+                        if Self::cas_sentinel(addr, Self::C::EMPTY_VALUE) {
                             // CAS value succeed, shall store key
                             Self::store_key(addr, fkey);
                             return ModResult::Done(addr, None, idx);
@@ -833,7 +843,7 @@ impl<
         }
     }
 
-    fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(usize, usize, K, V)> {
+    fn all_from_chunk(&self, chunk: &Chunk<FK, FV, K, V, A, ALLOC>) -> Vec<(usize, usize, K, V)> {
         let mut idx = 0;
         let cap = chunk.capacity;
         let mut counter = 0;
@@ -843,11 +853,11 @@ impl<
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
-            if k != EMPTY_KEY {
+            if k != Self::C::EMPTY_KEY {
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = Self::get_fast_value(addr);
                 let act_val = val_res.act_val();
-                if act_val >= NUM_FIX {
+                if act_val >= Self::C::NUM_FIX {
                     let key = attachment.get_key();
                     let value = attachment.get_value();
                     if Self::CAN_ATTACH && Self::get_fast_value(addr).val != val_res.val {
@@ -882,7 +892,7 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_value(entry_addr: usize) -> FastValue<K, V> {
+    fn get_fast_value(entry_addr: usize) -> FastValue<FK, FV, K, V> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
@@ -896,7 +906,7 @@ impl<
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
                 addr as *mut usize,
                 original,
-                TOMBSTONE_VALUE,
+                Self::C::TOMBSTONE_VALUE,
             ).1
         }
     }
@@ -916,7 +926,7 @@ impl<
 
     #[inline(always)]
     fn store_value(entry_addr: usize, original: usize, value: usize) {
-        debug_assert!(entry_addr >= NUM_FIX);
+        debug_assert!(entry_addr >= Self::C::NUM_FIX);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
             FastValue::<K, V>::next_version(original, value)
@@ -928,7 +938,7 @@ impl<
 
     #[inline(always)]
     fn store_value_raw(entry_addr: usize, value: usize) {
-        debug_assert!(entry_addr >= NUM_FIX);
+        debug_assert!(entry_addr >= Self::C::NUM_FIX);
         let addr = entry_addr + mem::size_of::<usize>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, value) };
     }
@@ -937,32 +947,32 @@ impl<
     fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, SENTINEL_VALUE) };
+        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, Self::C::SENTINEL_VALUE) };
     }
 
     #[inline(always)]
     fn store_key(addr: usize, fkey: usize) {
-        debug_assert!(fkey >= NUM_FIX);
+        debug_assert!(fkey >= Self::C::NUM_FIX);
         unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
     }
 
     #[inline(always)]
-    fn cas_sentinel(entry_addr: usize, original: usize) -> bool {
+    fn cas_sentinel<T: Atom>(entry_addr: usize, original: T) -> bool {
         let addr = entry_addr + mem::size_of::<usize>();
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
-                addr as *mut usize,
+                addr as *mut T,
                 original,
-                SENTINEL_VALUE,
+                Self::C::SENTINEL_VALUE,
             )
         };
-        done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
+        done || ((val & T::one()) == Self::C::SENTINEL_VALUE)
     }
 
     /// Failed return old shared
     fn check_migration<'a>(
         &self,
-        old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        old_chunk_ptr: Shared<'a, ChunkPtr<FK, FV, K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         if old_chunk_ptr.tag() == 1 {
@@ -979,7 +989,7 @@ impl<
 
     fn do_migration<'a>(
         &self,
-        old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        old_chunk_ptr: Shared<'a, ChunkPtr<FK, FV, K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         let epoch = self.now_epoch();
@@ -1059,8 +1069,8 @@ impl<
 
     fn migrate_entries(
         &self,
-        old_chunk_ins: &Chunk<K, V, A, ALLOC>,
-        new_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        old_chunk_ins: &Chunk<FK, FV, K, V, A, ALLOC>,
+        new_chunk_ins: &Chunk<FK, FV, K, V, A, ALLOC>,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
         trace!(
@@ -1068,7 +1078,7 @@ impl<
             old_chunk_ins.base, new_chunk_ins.base
         );
         let mut old_address = old_chunk_ins.base as usize;
-        let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
+        let boundary = old_address + Chunk::<FK, FV, K, V, A, ALLOC>::chunk_size_of(old_chunk_ins.capacity);
         let mut effective_copy = 0;
         let mut idx = 0;
         let backoff = crossbeam_utils::Backoff::new();
@@ -1079,7 +1089,7 @@ impl<
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
             match fvalue.act_val() {
-                EMPTY_VALUE | TOMBSTONE_VALUE => {
+                Self::C::EMPTY_VALUE | Self::C::TOMBSTONE_VALUE => {
                     if !Self::cas_sentinel(old_address, fvalue.val) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
@@ -1113,7 +1123,7 @@ impl<
                     }
                 }
             }
-            old_address += ENTRY_SIZE;
+            old_address += Self::C::ENTRY_SIZE;
             idx += 1;
         }
         // resize finished, make changes on the numbers
@@ -1125,17 +1135,17 @@ impl<
     #[inline(always)]
     fn migrate_entry(
         &self,
-        fkey: usize,
+        fkey: FK,
         old_idx: usize,
-        fvalue: FastValue<K, V>,
-        old_chunk_ins: &Chunk<K, V, A, ALLOC>,
-        new_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        fvalue: FastValue<FK, FV, K, V>,
+        old_chunk_ins: &Chunk<FK, FV, K, V, A, ALLOC>,
+        new_chunk_ins: &Chunk<FK, FV, K, V, A, ALLOC>,
         old_address: usize,
         effective_copy: &mut usize,
     ) -> bool {
         debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
         let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
-        if fkey == EMPTY_KEY {
+        if fkey == Self::C::EMPTY_KEY {
             // Value have no key, insertion in progress
             return false;
         }
@@ -1158,10 +1168,10 @@ impl<
             if k == fkey && new_attachment.probe(&key) {
                 // New value existed, skip with None result
                 break;
-            } else if k == EMPTY_KEY {
+            } else if k == Self::C::EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
-                    match Self::cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
+                    match Self::cas_value_rt_new(old_address, orig, Self::C::MIGRATING_VALUE) {
                         Some(n) => {
                             trace!("Primed value for migration: {}", fkey);
                             curr_orig = n;
@@ -1172,7 +1182,7 @@ impl<
                         }
                     }
                 }
-                if Self::cas_value(addr, EMPTY_VALUE, orig) {
+                if Self::cas_value(addr, Self::C::EMPTY_VALUE, orig) {
                     new_attachment.set_key(key);
                     new_attachment.set_value(value);
                     fence(Acquire);
@@ -1219,12 +1229,13 @@ impl<
     }
 }
 
-struct FastValue<K, V> {
-    val: usize,
-    _marker: PhantomData<(K, V)>,
+struct FastValue<FK: Atom, FV: Atom, K, V> {
+    val: FV,
+    _marker: PhantomData<(FK, K, V)>,
 }
 
-impl<K, V> FastValue<K, V> {
+impl<FK: Atom, FV: Atom, K, V> FastValue<FK, FV, K, V> {
+    type C = Consts<FK, FV>;
     pub fn new(val: usize) -> Self {
         Self {
             val,
@@ -1235,7 +1246,7 @@ impl<K, V> FastValue<K, V> {
     #[inline]
     fn act_val(&self) -> usize {
         if can_attach::<K, V>() {
-            self.val & FVAL_VAL_BIT_MASK
+            self.val & Self::C::FVAL_VAL_BIT_MASK
         } else {
             self.val
         }
@@ -1244,17 +1255,18 @@ impl<K, V> FastValue<K, V> {
     #[inline(always)]
     const fn next_version(old: usize, new: usize) -> usize {
         debug_assert!(can_attach::<K, V>());
-        let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
-        new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
+        let new_ver = (old | Self::C::FVAL_VAL_BIT_MASK).wrapping_add(1);
+        new & Self::C::FVAL_VAL_BIT_MASK | (new_ver & Self::C::FVAL_VER_BIT_MASK)
     }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
+impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<FK, FV, K, V, A, ALLOC> {
+    type C = Consts<FK, FV>;
     fn alloc_chunk(capacity: usize) -> *mut Self {
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 8);
         let self_size_aligned = self_size + self_align;
-        let chunk_size = chunk_size_of(capacity);
+        let chunk_size = Self::chunk_size_of(capacity);
         let chunk_align = align_padding(chunk_size, 8);
         let chunk_size_aligned = chunk_size + chunk_align;
         let attachment_heap = A::heap_size_of(capacity);
@@ -1281,7 +1293,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         ptr
     }
 
-    unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
+    unsafe fn gc(ptr: *mut Chunk<FK, FV, K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);
         let chunk = &*ptr;
         chunk.attachment.dealloc();
@@ -1290,17 +1302,21 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn entry_addr(&self, idx: usize) -> usize {
-        self.base + idx * ENTRY_SIZE
+        self.base + idx * Self::C::ENTRY_SIZE
     }
 
     #[inline]
     fn cap_mask(&self) -> usize {
         self.capacity - 1
     }
+    #[inline(always)]
+    fn chunk_size_of<>(cap: usize) -> usize {
+        cap * Self::C::ENTRY_SIZE
+    }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
-    for Table<K, V, A, ALLOC, H>
+impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
+    for Table<FK, FV, K, V, A, ALLOC, H>
 {
     fn clone(&self) -> Self {
         let new_table = Table {
@@ -1351,8 +1367,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-    for Table<K, V, A, ALLOC, H>
+impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for Table<FK, FV, K, V, A, ALLOC, H>
 {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
@@ -1367,16 +1383,16 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     }
 }
 
-unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Send
-    for ChunkPtr<K, V, A, ALLOC>
+unsafe impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Send
+    for ChunkPtr<FK, FV, K, V, A, ALLOC>
 {
 }
-unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync
-    for ChunkPtr<K, V, A, ALLOC>
+unsafe impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync
+    for ChunkPtr<FK, FV, K, V, A, ALLOC>
 {
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<K, V, A, ALLOC> {
+impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<FK, FV, K, V, A, ALLOC> {
     fn drop(&mut self) {
         debug_assert_ne!(self.ptr as usize, 0);
 
@@ -1386,8 +1402,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<
     }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<K, V, A, ALLOC> {
-    type Target = Chunk<K, V, A, ALLOC>;
+impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr<FK, FV, K, V, A, ALLOC> {
+    type Target = Chunk<FK, FV, K, V, A, ALLOC>;
 
     fn deref(&self) -> &Self::Target {
         debug_assert_ne!(self.ptr as usize, 0);
@@ -1395,8 +1411,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref for ChunkPtr
     }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<K, V, A, ALLOC> {
-    fn new(ptr: *mut Chunk<K, V, A, ALLOC>) -> Self {
+impl<FK: Atom, FV: Atom, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<FK, FV, K, V, A, ALLOC> {
+    fn new(ptr: *mut Chunk<FK, FV, K, V, A, ALLOC>) -> Self {
         debug_assert_ne!(ptr as usize, 0);
         Self { ptr }
     }
@@ -1410,11 +1426,6 @@ fn is_power_of_2(x: usize) -> bool {
 #[inline(always)]
 fn occupation_limit(cap: usize) -> usize {
     (cap as f64 * 0.8f64) as usize
-}
-
-#[inline(always)]
-fn chunk_size_of(cap: usize) -> usize {
-    cap * ENTRY_SIZE
 }
 
 #[inline(always)]
@@ -1440,6 +1451,8 @@ fn dfence() {
 const fn can_attach<K, V>() -> bool {
     mem::size_of::<(K, V)>() != 0
 }
+
+pub trait Atom: Integer + Copy + BitAnd<Self> + Eq + Ord + BitOr<Self> + Not + Shl + From<u8> {}
 
 pub trait Attachment<K, V> {
     type Item: AttachmentItem<K, V> + Copy;
@@ -1515,7 +1528,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
     fn prep_write(self) {}
 }
 
-pub type WordTable<H, ALLOC> = Table<(), (), WordAttachment, H, ALLOC>;
+pub type WordTable<FK, FV, H, ALLOC> = Table<FK, FV, (), (), WordAttachment, H, ALLOC>;
 
 pub struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
     obj_chunk: usize,
@@ -1601,8 +1614,10 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
 
 impl<T: Clone> Copy for WordObjectAttachmentItem<T> {}
 
+type ObjAtom = u16;
+
 pub type HashTable<K, V, ALLOC> =
-    Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
+    Table<ObjAtom, ObjAtom, K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, PassthroughHasher>;
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     obj_chunk: usize,
@@ -1748,9 +1763,6 @@ pub trait Map<K, V: Clone> {
     fn clear(&self);
 }
 
-const NUM_FIX: usize = 5;
-const PLACEHOLDER_VAL: usize = NUM_FIX + 1;
-
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
     fn addr_by_index(&self, index: usize) -> usize {
         self.obj_chunk + index * Self::PAIR_SIZE
@@ -1770,11 +1782,12 @@ pub struct HashMap<
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     HashMap<K, V, ALLOC, H>
 {
+
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
         let hash = Self::hash(&key);
         self.table
-            .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
+            .insert(op, key, Some(value), hash, Self::C::PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
@@ -1854,36 +1867,37 @@ impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     }
 }
 
-pub type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
+pub type ObjectTable<FK: Atom, V, ALLOC, H> = Table<FK, ObjAtom, (), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
 
 #[derive(Clone)]
 pub struct ObjectMap<
+    FK: Atom,
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: ObjectTable<V, ALLOC, H>,
+    table: ObjectTable<FK, V, ALLOC, H>,
 }
 
-impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
+impl<FK: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<FK, V, ALLOC, H> {
     #[inline(always)]
     fn insert_with_op(&self, op: InsertOp, key: &usize, value: &V) -> Option<V> {
         self.table
-            .insert(op, &(), Some(value), key + NUM_FIX, PLACEHOLDER_VAL)
+            .insert(op, &(), Some(value), key + Self::C::NUM_FIX, Self::C::PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
-    pub fn read(&self, key: usize) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
+    pub fn read(&self, key: FK) -> Option<ObjectMapReadGuard<FK, V, ALLOC, H>> {
         ObjectMapReadGuard::new(&self.table, key)
     }
 
-    pub fn write(&self, key: usize) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
+    pub fn write(&self, key: FK) -> Option<ObjectMapWriteGuard<FK, V, ALLOC, H>> {
         ObjectMapWriteGuard::new(&self.table, key)
     }
 }
 
-impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
-    for ObjectMap<V, ALLOC, H>
+impl<FK: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
+    for ObjectMap<FK, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
         Self {
@@ -1892,25 +1906,25 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     }
 
     #[inline(always)]
-    fn get(&self, key: &usize) -> Option<V> {
+    fn get(&self, key: &ObjAtom) -> Option<V> {
         self.table
-            .get(&(), key + NUM_FIX, true)
+            .get(&(), key + Self::C::NUM_FIX, true)
             .map(|v| v.1.unwrap())
     }
 
     #[inline(always)]
-    fn insert(&self, key: &usize, value: &V) -> Option<V> {
+    fn insert(&self, key: &ObjAtom, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &usize, value: &V) -> Option<V> {
+    fn try_insert(&self, key: &ObjAtom, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
-    fn remove(&self, key: &usize) -> Option<V> {
-        self.table.remove(&(), key + NUM_FIX).map(|(_, v)| v)
+    fn remove(&self, key: &ObjAtom) -> Option<V> {
+        self.table.remove(&(), key + Self::C::NUM_FIX).map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -1918,13 +1932,13 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
         self.table
             .entries()
             .into_iter()
-            .map(|(_, k, _, v)| (k - NUM_FIX, v))
+            .map(|(_, k, _, v)| (k - Self::C::NUM_FIX, v))
             .collect()
     }
 
     #[inline(always)]
-    fn contains_key(&self, key: &usize) -> bool {
-        self.table.get(&(), key + NUM_FIX, false).is_some()
+    fn contains_key(&self, key: &ObjAtom) -> bool {
+        self.table.get(&(), key + Self::C::NUM_FIX, false).is_some()
     }
 
     #[inline(always)]
@@ -1938,24 +1952,24 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
 }
 
 #[derive(Clone)]
-pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
-    table: WordTable<ALLOC, H>,
+pub struct WordMap<FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+    table: WordTable<FK, FV, ALLOC, H>,
 }
 
-impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
+impl<FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<FK, FV, ALLOC, H> {
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: &usize, value: usize) -> Option<usize> {
+    fn insert_with_op(&self, op: InsertOp, key: &FK, value: FV) -> Option<FV> {
         self.table
-            .insert(op, &(), None, key + NUM_FIX, value + NUM_FIX)
-            .map(|(v, _)| v - NUM_FIX)
+            .insert(op, &(), None, key + Self::C::NUM_FIX, value + Self::C::NUM_FIX)
+            .map(|(v, _)| v - Self::C::NUM_FIX)
     }
 
-    pub fn get_from_mutex(&self, key: &usize) -> Option<usize> {
+    pub fn get_from_mutex(&self, key: &FK) -> Option<FV> {
         self.get(key).map(|v| v & WORD_MUTEX_DATA_BIT_MASK)
     }
 }
 
-impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<ALLOC, H> {
+impl<FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<FK, FV, ALLOC, H> {
     fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
@@ -1963,38 +1977,38 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 
     #[inline(always)]
-    fn get(&self, key: &usize) -> Option<usize> {
+    fn get(&self, key: &FK) -> Option<FV> {
         self.table
-            .get(&(), key + NUM_FIX, false)
-            .map(|v| v.0 - NUM_FIX)
+            .get(&(), key + Self::C::NUM_FIX, false)
+            .map(|v| v.0 - Self::C::NUM_FIX)
     }
 
     #[inline(always)]
-    fn insert(&self, key: &usize, value: &usize) -> Option<usize> {
+    fn insert(&self, key: &FK, value: &FV) -> Option<FV> {
         self.insert_with_op(InsertOp::UpsertFast, key, *value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &usize, value: &usize) -> Option<usize> {
+    fn try_insert(&self, key: &FV, value: &FV) -> Option<FV> {
         self.insert_with_op(InsertOp::TryInsert, key, *value)
     }
 
     #[inline(always)]
-    fn remove(&self, key: &usize) -> Option<usize> {
+    fn remove(&self, key: &FK) -> Option<FV> {
         self.table
-            .remove(&(), key + NUM_FIX)
-            .map(|(v, _)| v - NUM_FIX)
+            .remove(&(), key + Self::C::NUM_FIX)
+            .map(|(v, _)| v - Self::C::NUM_FIX)
     }
-    fn entries(&self) -> Vec<(usize, usize)> {
+    fn entries(&self) -> Vec<(FK, FV)> {
         self.table
             .entries()
             .into_iter()
-            .map(|(k, v, _, _)| (k - NUM_FIX, v - NUM_FIX))
+            .map(|(k, v, _, _)| (k - Self::C::NUM_FIX, v - Self::C::NUM_FIX))
             .collect()
     }
 
     #[inline(always)]
-    fn contains_key(&self, key: &usize) -> bool {
+    fn contains_key(&self, key: &FK) -> bool {
         self.get(key).is_some()
     }
 
@@ -2012,26 +2026,27 @@ const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
 pub struct WordMutexGuard<
     'a,
+    FK: Atom, FV: Atom,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: &'a WordTable<ALLOC, H>,
+    table: &'a WordTable<FK, FV, ALLOC, H>,
     key: usize,
     value: usize,
 }
 
-impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
-    fn create(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
-        let key = key + NUM_FIX;
+impl<'a, FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, FK, FV, ALLOC, H> {
+    fn create(table: &'a WordTable<FK, FV, ALLOC, H>, key: usize) -> Option<Self> {
+        let key = key + Self::C::NUM_FIX;
         let value = 0;
         match table.insert(
             InsertOp::TryInsert,
             &(),
             Some(&()),
             key,
-            value | MUTEX_BIT_MASK,
+            value | Self::C::MUTEX_BIT_MASK,
         ) {
-            None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
+            None | Some((Self::C::TOMBSTONE_VALUE, ())) | Some((Self::C::EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
                 Some(Self { table, key, value })
             }
@@ -2041,8 +2056,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             }
         }
     }
-    fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
-        let key = key + NUM_FIX;
+    fn new(table: &'a WordTable<FK, FV, ALLOC, H>, key: usize) -> Option<Self> {
+        let key = key + Self::C::NUM_FIX;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
@@ -2052,7 +2067,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
-                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    let locked_val = fast_value | Self::C::MUTEX_BIT_MASK;
                     if fast_value == locked_val {
                         // Locked, unchanged
                         trace!("The key {} have locked, unchanged and try again", key);
@@ -2087,7 +2102,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             }
         }
         debug_assert_ne!(value, 0);
-        let value = value - NUM_FIX;
+        let value = value - Self::C::NUM_FIX;
         Some(Self { table, key, value })
     }
 
@@ -2095,11 +2110,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         trace!("Removing {}", self.key);
         let res = self.table.remove(&(), self.key).unwrap().0;
         mem::forget(self);
-        res | MUTEX_BIT_MASK
+        res | Self::C::MUTEX_BIT_MASK
     }
 }
 
-impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexGuard<'a, ALLOC, H> {
+impl<'a, FK: Atom, FV: Atom,  ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexGuard<'a, FK, FV, ALLOC, H> {
     type Target = usize;
 
     fn deref(&self) -> &Self::Target {
@@ -2107,17 +2122,17 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexG
     }
 }
 
-impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
-    for WordMutexGuard<'a, ALLOC, H>
+impl<'a, FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+    for WordMutexGuard<'a, FK, FV, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
+impl<'a, FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, FK, FV, ALLOC, H> {
     fn drop(&mut self) {
-        self.value += NUM_FIX;
+        self.value += Self::C::NUM_FIX;
         trace!(
             "Release lock for key {} with value {}",
             self.key,
@@ -2133,11 +2148,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
     }
 }
 
-impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
-    pub fn lock(&self, key: usize) -> Option<WordMutexGuard<ALLOC, H>> {
+impl<FK: Atom, FV: Atom, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<FK, FV, ALLOC, H> {
+    pub fn lock(&self, key: FK) -> Option<WordMutexGuard<FK, FV, ALLOC, H>> {
         WordMutexGuard::new(&self.table, key)
     }
-    pub fn try_insert_locked(&self, key: usize) -> Option<WordMutexGuard<ALLOC, H>> {
+    pub fn try_insert_locked(&self, key: FK) -> Option<WordMutexGuard<FK, FV, ALLOC, H>> {
         WordMutexGuard::create(&self.table, key)
     }
 }
@@ -2169,7 +2184,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 hash,
                 key,
                 move |fast_value| {
-                    if fast_value != PLACEHOLDER_VAL - 1 {
+                    if fast_value != Self::C::PLACEHOLDER_VAL - 1 {
                         // Not write locked, can bump it by one
                         trace!("Key hash {} is not write locked, will read lock", hash);
                         Some(fast_value + 1)
@@ -2229,7 +2244,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             self.hash,
             &self.key,
             |fast_value| {
-                debug_assert!(fast_value > PLACEHOLDER_VAL);
+                debug_assert!(fast_value > Self::C::PLACEHOLDER_VAL);
                 Some(fast_value - 1)
             },
             &guard,
@@ -2264,7 +2279,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 hash,
                 key,
                 move |fast_value| {
-                    if fast_value == PLACEHOLDER_VAL {
+                    if fast_value == Self::C::PLACEHOLDER_VAL {
                         // Not write locked, can bump it by one
                         trace!("Key hash {} is write lockable, will write lock", hash);
                         Some(fast_value - 1)
@@ -2339,37 +2354,38 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             &self.key,
             Some(&self.value),
             hash,
-            PLACEHOLDER_VAL,
+            Self::C::PLACEHOLDER_VAL,
         );
     }
 }
 
 pub struct ObjectMapReadGuard<
     'a,
+    FK: Atom,
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: &'a ObjectTable<V, ALLOC, H>,
+    table: &'a ObjectTable<FK, V, ALLOC, H>,
     key: usize,
     value: V,
     _mark: PhantomData<H>,
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-    ObjectMapReadGuard<'a, V, ALLOC, H>
+impl<'a, FK: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    ObjectMapReadGuard<'a, FK, V, ALLOC, H>
 {
-    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+    fn new(table: &'a ObjectTable<FK, V, ALLOC, H>, key: FK) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
-        let key = key + NUM_FIX;
+        let key = key + Self::C::NUM_FIX;
         loop {
             let swap_res = table.swap(
                 key,
                 &(),
                 move |fast_value| {
-                    if fast_value != PLACEHOLDER_VAL - 1 {
+                    if fast_value != Self::C::PLACEHOLDER_VAL - 1 {
                         // Not write locked, can bump it by one
                         trace!("Key {} is not write locked, will read lock", key);
                         Some(fast_value + 1)
@@ -2408,8 +2424,8 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     }
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-    for ObjectMapReadGuard<'a, V, ALLOC, H>
+impl<'a, FK: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+    for ObjectMapReadGuard<'a, FK, V, ALLOC, H>
 {
     type Target = V;
 
@@ -2418,8 +2434,8 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
     }
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-    for ObjectMapReadGuard<'a, V, ALLOC, H>
+impl<'a, FK: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for ObjectMapReadGuard<'a, FK, V, ALLOC, H>
 {
     fn drop(&mut self) {
         trace!("Release read lock for hash key {}", self.key);
@@ -2428,7 +2444,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
             self.key,
             &(),
             |fast_value| {
-                debug_assert!(fast_value > PLACEHOLDER_VAL);
+                debug_assert!(fast_value > Self::C::PLACEHOLDER_VAL);
                 Some(fast_value - 1)
             },
             &guard,
@@ -2438,30 +2454,31 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
 
 pub struct ObjectMapWriteGuard<
     'a,
+    FK: Atom, 
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: &'a ObjectTable<V, ALLOC, H>,
+    table: &'a ObjectTable<FK, V, ALLOC, H>,
     key: usize,
     value: V,
     _mark: PhantomData<H>,
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-    ObjectMapWriteGuard<'a, V, ALLOC, H>
+impl<'a, FK: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    ObjectMapWriteGuard<'a, FK, V, ALLOC, H>
 {
-    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+    fn new(table: &'a ObjectTable<FK, V, ALLOC, H>, key: usize) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
-        let key = key + NUM_FIX;
+        let key = key + Self::C::NUM_FIX;
         loop {
             let swap_res = table.swap(
                 key,
                 &(),
                 move |fast_value| {
-                    if fast_value == PLACEHOLDER_VAL {
+                    if fast_value == Self::C::PLACEHOLDER_VAL {
                         // Not write locked, can bump it by one
                         trace!("Key {} is write lockable, will write lock", key);
                         Some(fast_value - 1)
@@ -2506,8 +2523,8 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     }
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
-    for ObjectMapWriteGuard<'a, V, ALLOC, H>
+impl<'a, FV: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+    for ObjectMapWriteGuard<'a, FV, V, ALLOC, H>
 {
     type Target = V;
 
@@ -2516,16 +2533,16 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
     }
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
-    for ObjectMapWriteGuard<'a, V, ALLOC, H>
+impl<'a, FV: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+    for ObjectMapWriteGuard<'a, FV, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-    for ObjectMapWriteGuard<'a, V, ALLOC, H>
+impl<'a, FV: Atom, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for ObjectMapWriteGuard<'a, FV, V, ALLOC, H>
 {
     fn drop(&mut self) {
         trace!("Release read lock for key {}", self.key);
@@ -2534,7 +2551,7 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
             &(),
             Some(&self.value),
             self.key,
-            PLACEHOLDER_VAL,
+            Self::C::PLACEHOLDER_VAL,
         );
     }
 }
@@ -2608,7 +2625,7 @@ pub struct LiteHashMap<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: WordTable<ALLOC, H>,
+    table: WordTable<usize, usize, ALLOC, H>,
     shadow: PhantomData<(K, V, H)>,
 }
 
@@ -2641,12 +2658,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             ptr::write(obj_ptr, d.clone());
         }
-        return num as usize + NUM_FIX;
+        return num as usize + Self::C::NUM_FIX;
     }
 
     #[inline(always)]
     fn decode<T: Clone>(num: usize) -> T {
-        let num = (num - NUM_FIX) as u64;
+        let num = (num - Self::C::NUM_FIX) as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
         let obj = aligned.data.clone();
@@ -2763,7 +2780,7 @@ impl Default for PassthroughHasher {
     }
 }
 
-impl<V> Debug for ModResult<V> {
+impl<FV: Atom, V> Debug for ModResult<FV, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Replaced(arg0, _arg1, arg2) => {
@@ -2779,6 +2796,16 @@ impl<V> Debug for ModResult<V> {
         }
     }
 }
+
+impl Atom for u8{}
+impl Atom for u16{}
+impl Atom for u32{}
+impl Atom for u64{}
+impl Atom for usize{}
+impl Atom for i16{}
+impl Atom for i32{}
+impl Atom for i64{}
+impl Atom for isize{}
 
 mod lite_tests {
     use super::{LiteHashMap, Map};

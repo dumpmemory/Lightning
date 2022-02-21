@@ -12,7 +12,7 @@ pub struct TTLCache<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: ObjectTable<V, ALLOC, H>,
+    table: ObjectTable<usize, V, ALLOC, H>,
 }
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, ALLOC, H> {

@@ -2,6 +2,7 @@
 #![feature(allocator_api)]
 #![feature(const_fn_trait_bound)]
 #![feature(test)]
+#![feature(inherent_associated_types)]
 #[macro_use]
 extern crate log;
 extern crate alloc;
