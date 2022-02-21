@@ -17,42 +17,49 @@ use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
 
-pub struct EntryTemplate(usize, usize);
+pub type FKey = u32;
+pub type FVal = u64;
 
-const EMPTY_KEY: usize = 0;
+pub struct EntryTemplate(FKey, FVal);
 
-const EMPTY_VALUE: usize = 0;
-const TOMBSTONE_VALUE: usize = 1;
-const LOCKED_VALUE: usize = 2;
-const MIGRATING_VALUE: usize = 3;
-const SENTINEL_VALUE: usize = 4;
+const EMPTY_KEY: FKey = 0;
 
-const VAL_BIT_MASK: usize = !0 << 1 >> 1;
-const INV_VAL_BIT_MASK: usize = !VAL_BIT_MASK;
-const MUTEX_BIT_MASK: usize = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
+const EMPTY_VALUE: FVal = 0;
+const TOMBSTONE_VALUE: FVal = 1;
+const LOCKED_VALUE: FVal = 2;
+const MIGRATING_VALUE: FVal = 3;
+const SENTINEL_VALUE: FVal = 4;
+
+const VAL_BIT_MASK: FVal = !0 << 1 >> 1;
+const INV_VAL_BIT_MASK: FVal = !VAL_BIT_MASK;
+const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
+const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
 
-const FVAL_BITS: usize = mem::size_of::<usize>() * 8;
-const FVAL_VER_POS: usize = FVAL_BITS / 2;
-const FVAL_VER_BIT_MASK: usize = !0 << FVAL_VER_POS & VAL_BIT_MASK;
-const FVAL_VAL_BIT_MASK: usize = !FVAL_VER_BIT_MASK;
+const FVAL_BITS: usize = mem::size_of::<FVal>() * 8;
+const FVAL_VER_POS: FVal = (FVAL_BITS as FVal) / 2;
+const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
+const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
+const NUM_FIX_K: FKey = 5;
+const NUM_FIX_V: FVal = 5;
+const PLACEHOLDER_VAL: FVal = NUM_FIX_V + 1;
 
 enum ModResult<V> {
-    Replaced(usize, Option<V>, usize), // (origin fval, val, index)
-    Existed(usize, Option<V>),
+    Replaced(FVal, Option<V>, usize), // (origin fval, val, index)
+    Existed(FVal, Option<V>),
     Fail,
     Sentinel,
     NotFound,
-    Done(usize, Option<V>, usize), // _, value, index
+    Done(FVal, Option<V>, usize), // _, value, index
     TableFull,
     Aborted,
 }
 
 enum ModOp<'a, V> {
-    Insert(usize, &'a V),
-    UpsertFastVal(usize),
-    AttemptInsert(usize, &'a V),
-    SwapFastVal(Box<dyn Fn(usize) -> Option<usize>>),
+    Insert(FVal, &'a V),
+    UpsertFastVal(FVal),
+    AttemptInsert(FVal, &'a V),
+    SwapFastVal(Box<dyn Fn(FVal) -> Option<FVal>>),
     Sentinel,
     Tombstone,
 }
@@ -70,7 +77,7 @@ enum ResizeResult {
 }
 
 pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
-    Succeed(usize, usize, Shared<'a, ChunkPtr<K, V, A, ALLOC>>),
+    Succeed(FVal, usize, Shared<'a, ChunkPtr<K, V, A, ALLOC>>),
     NotFound,
     Failed,
     Aborted,
@@ -131,7 +138,7 @@ impl<
         Self::with_capacity(64)
     }
 
-    pub fn get(&self, key: &K, fkey: usize, read_attachment: bool) -> Option<(usize, Option<V>)> {
+    pub fn get(&self, key: &K, fkey: FKey, read_attachment: bool) -> Option<(FVal, Option<V>)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
@@ -233,9 +240,9 @@ impl<
         op: InsertOp,
         key: &K,
         value: Option<&V>,
-        fkey: usize,
-        fvalue: usize,
-    ) -> Option<(usize, V)> {
+        fkey: FKey,
+        fvalue: FVal,
+    ) -> Option<(FVal, V)> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let hash = Self::hash(fkey);
@@ -367,9 +374,9 @@ impl<
         self.now_epoch() != epoch
     }
 
-    pub fn swap<'a, F: Fn(usize) -> Option<usize> + Copy + 'static>(
+    pub fn swap<'a, F: Fn(FVal) -> Option<FVal> + Copy + 'static>(
         &self,
-        fkey: usize,
+        fkey: FKey,
         key: &K,
         func: F,
         guard: &'a Guard,
@@ -393,7 +400,7 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                    if old_fval >= NUM_FIX {
+                    if old_fval >= NUM_FIX_V {
                         if let Some(new_val) = func(old_fval) {
                             let val = attachment.get_value();
                             match self.modify_entry(
@@ -488,7 +495,7 @@ impl<
         self.epoch.load(Acquire)
     }
 
-    pub fn remove(&self, key: &K, fkey: usize) -> Option<(usize, V)> {
+    pub fn remove(&self, key: &K, fkey: FKey) -> Option<(FVal, V)> {
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let hash = Self::hash(fkey);
@@ -562,7 +569,7 @@ impl<
         chunk: &Chunk<K, V, A, ALLOC>,
         hash: usize,
         key: &K,
-        fkey: usize,
+        fkey: FKey,
         backoff: &Backoff,
     ) -> Option<(FastValue<K, V, A>, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
@@ -602,7 +609,7 @@ impl<
         chunk: &'a Chunk<K, V, A, ALLOC>,
         hash: usize,
         key: &K,
-        fkey: usize,
+        fkey: FKey,
         op: ModOp<V>,
         read_attachment: bool,
         _guard: &'a Guard,
@@ -652,7 +659,7 @@ impl<
                                     if Self::cas_sentinel(addr, v.val) {
                                         attachment.erase();
                                         if raw == 0 {
-                                            return ModResult::Done(addr, None, idx);
+                                            return ModResult::Done(0, None, idx);
                                         } else {
                                             return ModResult::Done(act_val, None, idx);
                                         }
@@ -681,7 +688,7 @@ impl<
                                 ModOp::UpsertFastVal(ref fv) => {
                                     if Self::cas_value(addr, v.val, *fv) {
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
-                                            return ModResult::Done(addr, None, idx);
+                                            return ModResult::Done(0, None, idx);
                                         } else {
                                             let attachment = read_attachment.then(|| attachment.get_value());
                                             return ModResult::Replaced(act_val, attachment, idx);
@@ -738,7 +745,7 @@ impl<
                                     if act_val == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if act_val >= NUM_FIX {
+                                    if act_val >= NUM_FIX_V {
                                         if let Some(sv) = swap(act_val) {
                                             if Self::cas_value(addr, v.val, sv) {
                                                 // swap success
@@ -779,7 +786,7 @@ impl<
                             } else {
                                 Self::store_key(addr, fkey);
                             }
-                            return ModResult::Done(addr, None, idx);
+                            return ModResult::Done(0, None, idx);
                         } else {
                             debug!("Retry insert to new slot, now val {}", Self::get_fast_value(addr).val);
                             backoff.spin();
@@ -796,7 +803,7 @@ impl<
                         );
                         if Self::cas_value(addr, EMPTY_VALUE, fval) {
                             Self::store_key(addr, fkey);
-                            return ModResult::Done(addr, None, idx);
+                            return ModResult::Done(0, None, idx);
                         } else {
                             backoff.spin();
                             continue;
@@ -806,7 +813,7 @@ impl<
                         if Self::cas_sentinel(addr, EMPTY_VALUE) {
                             // CAS value succeed, shall store key
                             Self::store_key(addr, fkey);
-                            return ModResult::Done(addr, None, idx);
+                            return ModResult::Done(0, None, idx);
                         } else {
                             backoff.spin();
                             continue;
@@ -826,7 +833,7 @@ impl<
         }
     }
 
-    fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(usize, usize, K, V)> {
+    fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(FKey, FVal, K, V)> {
         let mut idx = 0;
         let cap = chunk.capacity;
         let mut counter = 0;
@@ -840,7 +847,7 @@ impl<
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = Self::get_fast_value(addr);
                 let act_val = val_res.act_val();
-                if act_val >= NUM_FIX {
+                if act_val >= NUM_FIX_V {
                     let key = attachment.get_key();
                     let value = attachment.get_value();
                     if Self::CAN_ATTACH && Self::get_fast_value(addr).val != val_res.val {
@@ -855,7 +862,7 @@ impl<
         return res;
     }
 
-    fn entries(&self) -> Vec<(usize, usize, K, V)> {
+    fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
         let old_chunk_ref = self.chunk.load(Acquire, &guard);
         let new_chunk_ref = self.new_chunk.load(Acquire, &guard);
@@ -869,82 +876,82 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_key(entry_addr: usize) -> usize {
+    fn get_fast_key(entry_addr: usize) -> FKey {
         debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut usize) }
+        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
     }
 
     #[inline(always)]
     fn get_fast_value(entry_addr: usize) -> FastValue<K, V, A> {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<usize>();
-        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
+        let addr = entry_addr + mem::size_of::<FKey>();
+        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut FVal) };
         FastValue::<K, V, A>::new(val)
     }
 
     #[inline(always)]
-    fn cas_tombstone(entry_addr: usize, original: usize) -> bool {
-        let addr = entry_addr + mem::size_of::<usize>();
+    fn cas_tombstone(entry_addr: usize, original: FVal) -> bool {
+        let addr = entry_addr + mem::size_of::<FKey>();
         unsafe {
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
-                addr as *mut usize,
+                addr as *mut FVal,
                 original,
                 TOMBSTONE_VALUE,
             ).1
         }
     }
     #[inline(always)]
-    fn cas_value(entry_addr: usize, original: usize, value: usize) -> bool {
+    fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> bool {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, value).1 }
+        let addr = entry_addr + mem::size_of::<FKey>();
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value).1 }
     }
 
     #[inline(always)]
-    fn cas_value_rt_new(entry_addr: usize, original: usize, value: usize) -> Option<usize> {
+    fn cas_value_rt_new(entry_addr: usize, original: FVal, value: FVal) -> Option<FVal> {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut usize, original, value).1.then(|| value) }
+        let addr = entry_addr + mem::size_of::<FKey>();
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value).1.then(|| value) }
     }
 
     #[inline(always)]
-    fn store_value(entry_addr: usize, original: usize, value: usize) {
-        debug_assert!(entry_addr >= NUM_FIX);
-        let addr = entry_addr + mem::size_of::<usize>();
+    fn store_value(entry_addr: usize, original: FVal, value: FVal) {
+        debug_assert!(value >= NUM_FIX_V);
+        let addr = entry_addr + mem::size_of::<FKey>();
         let new_value = if Self::CAN_ATTACH {
             FastValue::<K, V, A>::next_version(original, value)
         } else {
             value
         };
-        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, new_value) };
+        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, new_value) };
     }
 
     #[inline(always)]
-    fn store_value_raw(entry_addr: usize, value: usize) {
-        debug_assert!(entry_addr >= NUM_FIX);
-        let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, value) };
+    fn store_value_raw(entry_addr: usize, value: FVal) {
+        debug_assert!(value >= NUM_FIX_V);
+        let addr = entry_addr + mem::size_of::<FKey>();
+        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) };
     }
 
     #[inline(always)]
     fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<usize>();
-        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, SENTINEL_VALUE) };
+        let addr = entry_addr + mem::size_of::<FKey>();
+        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, SENTINEL_VALUE) };
     }
 
     #[inline(always)]
-    fn store_key(addr: usize, fkey: usize) {
-        debug_assert!(fkey >= NUM_FIX);
-        unsafe { intrinsics::atomic_store_rel(addr as *mut usize, fkey) }
+    fn store_key(addr: usize, fkey: FKey) {
+        debug_assert!(fkey >= NUM_FIX_K);
+        unsafe { intrinsics::atomic_store_rel(addr as *mut FKey, fkey) }
     }
 
     #[inline(always)]
-    fn cas_sentinel(entry_addr: usize, original: usize) -> bool {
-        let addr = entry_addr + mem::size_of::<usize>();
+    fn cas_sentinel(entry_addr: usize, original: FVal) -> bool {
+        let addr = entry_addr + mem::size_of::<FKey>();
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel_failrelaxed(
-                addr as *mut usize,
+                addr as *mut FVal,
                 original,
                 SENTINEL_VALUE,
             )
@@ -1118,7 +1125,7 @@ impl<
     #[inline(always)]
     fn migrate_entry(
         &self,
-        fkey: usize,
+        fkey: FKey,
         old_idx: usize,
         fvalue: FastValue<K, V, A>,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
@@ -1196,13 +1203,13 @@ impl<
     }
 
     #[inline(always)]
-    fn hash(fkey: usize) -> usize {
+    fn hash(fkey: FKey) -> usize {
         if Self::CAN_ATTACH && mem::size_of::<K>() == 0 {
-            hash::<H>(fkey)
+            hash::<H>(fkey as usize)
         } else if Self::CAN_ATTACH {
-            fkey // Prevent double hashing
+            fkey as usize // Prevent double hashing
         } else {
-            hash::<H>(fkey)
+            hash::<H>(fkey as usize)
         }
     }
 
@@ -1213,12 +1220,12 @@ impl<
 }
 
 struct FastValue<K, V, A: Attachment<K, V>> {
-    val: usize,
+    val: FVal,
     _marker: PhantomData<(K, V, A)>,
 }
 
 impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
-    pub fn new(val: usize) -> Self {
+    pub fn new(val: FVal) -> Self {
         Self {
             val,
             _marker: PhantomData,
@@ -1226,7 +1233,7 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
     }
 
     #[inline]
-    fn act_val(&self) -> usize {
+    fn act_val(&self) -> FVal {
         if can_attach::<K, V, A>() {
             self.val & FVAL_VAL_BIT_MASK
         } else {
@@ -1235,7 +1242,7 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
     }
 
     #[inline(always)]
-    const fn next_version(old: usize, new: usize) -> usize {
+    const fn next_version(old: FVal, new: FVal) -> FVal {
         debug_assert!(can_attach::<K, V, A>());
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
@@ -1741,8 +1748,6 @@ pub trait Map<K, V: Clone> {
     fn clear(&self);
 }
 
-const NUM_FIX: usize = 5;
-const PLACEHOLDER_VAL: usize = NUM_FIX + 1;
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<K, V, A> {
     fn addr_by_index(&self, index: usize) -> usize {
@@ -1765,7 +1770,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
-        let hash = Self::hash(&key);
+        let hash = Self::hash(&key) as FKey;
         self.table
             .insert(op, key, Some(value), hash, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
@@ -1796,7 +1801,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let hash = Self::hash(key);
+        let hash = Self::hash(key) as FKey;
         self.table.get(key, hash, true).map(|v| v.1.unwrap())
     }
 
@@ -1812,7 +1817,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let hash = Self::hash(key);
+        let hash = Self::hash(key) as FKey;
         self.table.remove(key, hash).map(|(_, v)| v)
     }
 
@@ -1827,7 +1832,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let hash = Self::hash(key);
+        let hash = Self::hash(key) as FKey;
         self.table.get(key, hash, false).is_some()
     }
 
@@ -1860,22 +1865,22 @@ pub struct ObjectMap<
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: &usize, value: &V) -> Option<V> {
+    fn insert_with_op(&self, op: InsertOp, key: &FKey, value: &V) -> Option<V> {
         self.table
-            .insert(op, &(), Some(value), key + NUM_FIX, PLACEHOLDER_VAL)
+            .insert(op, &(), Some(value), key + NUM_FIX_K, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
-    pub fn read(&self, key: usize) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
+    pub fn read(&self, key: FKey) -> Option<ObjectMapReadGuard<V, ALLOC, H>> {
         ObjectMapReadGuard::new(&self.table, key)
     }
 
-    pub fn write(&self, key: usize) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
+    pub fn write(&self, key: FKey) -> Option<ObjectMapWriteGuard<V, ALLOC, H>> {
         ObjectMapWriteGuard::new(&self.table, key)
     }
 }
 
-impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
+impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
     for ObjectMap<V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
@@ -1885,39 +1890,39 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, V>
     }
 
     #[inline(always)]
-    fn get(&self, key: &usize) -> Option<V> {
+    fn get(&self, key: &FKey) -> Option<V> {
         self.table
-            .get(&(), key + NUM_FIX, true)
+            .get(&(), key + NUM_FIX_K, true)
             .map(|v| v.1.unwrap())
     }
 
     #[inline(always)]
-    fn insert(&self, key: &usize, value: &V) -> Option<V> {
+    fn insert(&self, key: &FKey, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &usize, value: &V) -> Option<V> {
+    fn try_insert(&self, key: &FKey, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
-    fn remove(&self, key: &usize) -> Option<V> {
-        self.table.remove(&(), key + NUM_FIX).map(|(_, v)| v)
+    fn remove(&self, key: &FKey) -> Option<V> {
+        self.table.remove(&(), key + NUM_FIX_K).map(|(_, v)| v)
     }
 
     #[inline(always)]
-    fn entries(&self) -> Vec<(usize, V)> {
+    fn entries(&self) -> Vec<(FKey, V)> {
         self.table
             .entries()
             .into_iter()
-            .map(|(_, k, _, v)| (k - NUM_FIX, v))
+            .map(|(k, _, _, v)| (k - NUM_FIX_K, v))
             .collect()
     }
 
     #[inline(always)]
-    fn contains_key(&self, key: &usize) -> bool {
-        self.table.get(&(), key + NUM_FIX, false).is_some()
+    fn contains_key(&self, key: &FKey) -> bool {
+        self.table.get(&(), key + NUM_FIX_K, false).is_some()
     }
 
     #[inline(always)]
@@ -1937,18 +1942,18 @@ pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = 
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: &usize, value: usize) -> Option<usize> {
+    fn insert_with_op(&self, op: InsertOp, key: &FKey, value: FVal) -> Option<FVal> {
         self.table
-            .insert(op, &(), None, key + NUM_FIX, value + NUM_FIX)
-            .map(|(v, _)| v - NUM_FIX)
+            .insert(op, &(), None, key + NUM_FIX_K, value + NUM_FIX_V)
+            .map(|(v, _)| v - NUM_FIX_V)
     }
 
-    pub fn get_from_mutex(&self, key: &usize) -> Option<usize> {
+    pub fn get_from_mutex(&self, key: &FKey) -> Option<FVal> {
         self.get(key).map(|v| v & WORD_MUTEX_DATA_BIT_MASK)
     }
 }
 
-impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for WordMap<ALLOC, H> {
+impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for WordMap<ALLOC, H> {
     fn with_capacity(cap: usize) -> Self {
         Self {
             table: Table::with_capacity(cap),
@@ -1956,38 +1961,38 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 
     #[inline(always)]
-    fn get(&self, key: &usize) -> Option<usize> {
+    fn get(&self, key: &FKey) -> Option<FVal> {
         self.table
-            .get(&(), key + NUM_FIX, false)
-            .map(|v| v.0 - NUM_FIX)
+            .get(&(), key + NUM_FIX_K, false)
+            .map(|v| v.0 - NUM_FIX_V)
     }
 
     #[inline(always)]
-    fn insert(&self, key: &usize, value: &usize) -> Option<usize> {
+    fn insert(&self, key: &FKey, value: &FVal) -> Option<FVal> {
         self.insert_with_op(InsertOp::UpsertFast, key, *value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &usize, value: &usize) -> Option<usize> {
+    fn try_insert(&self, key: &FKey, value: &FVal) -> Option<FVal> {
         self.insert_with_op(InsertOp::TryInsert, key, *value)
     }
 
     #[inline(always)]
-    fn remove(&self, key: &usize) -> Option<usize> {
+    fn remove(&self, key: &FKey) -> Option<FVal> {
         self.table
-            .remove(&(), key + NUM_FIX)
-            .map(|(v, _)| v - NUM_FIX)
+            .remove(&(), key + NUM_FIX_K)
+            .map(|(v, _)| v - NUM_FIX_V)
     }
-    fn entries(&self) -> Vec<(usize, usize)> {
+    fn entries(&self) -> Vec<(FKey, FVal)> {
         self.table
             .entries()
             .into_iter()
-            .map(|(k, v, _, _)| (k - NUM_FIX, v - NUM_FIX))
+            .map(|(k, v, _, _)| (k - NUM_FIX_K, v - NUM_FIX_V))
             .collect()
     }
 
     #[inline(always)]
-    fn contains_key(&self, key: &usize) -> bool {
+    fn contains_key(&self, key: &FKey) -> bool {
         self.get(key).is_some()
     }
 
@@ -2001,7 +2006,6 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<usize, usize> for Wo
     }
 }
 
-const WORD_MUTEX_DATA_BIT_MASK: usize = !0 << 2 >> 2;
 
 pub struct WordMutexGuard<
     'a,
@@ -2009,13 +2013,13 @@ pub struct WordMutexGuard<
     H: Hasher + Default = DefaultHasher,
 > {
     table: &'a WordTable<ALLOC, H>,
-    key: usize,
-    value: usize,
+    key: FKey,
+    value: FVal,
 }
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
-    fn create(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
-        let key = key + NUM_FIX;
+    fn create(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
+        let key = key + NUM_FIX_K;
         let value = 0;
         match table.insert(
             InsertOp::TryInsert,
@@ -2034,8 +2038,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             }
         }
     }
-    fn new(table: &'a WordTable<ALLOC, H>, key: usize) -> Option<Self> {
-        let key = key + NUM_FIX;
+    fn new(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
+        let key = key + NUM_FIX_K;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
@@ -2080,11 +2084,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             }
         }
         debug_assert_ne!(value, 0);
-        let value = value - NUM_FIX;
+        let value = value - NUM_FIX_V;
         Some(Self { table, key, value })
     }
 
-    pub fn remove(self) -> usize {
+    pub fn remove(self) -> FVal {
         trace!("Removing {}", self.key);
         let res = self.table.remove(&(), self.key).unwrap().0;
         mem::forget(self);
@@ -2093,7 +2097,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
 }
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for WordMutexGuard<'a, ALLOC, H> {
-    type Target = usize;
+    type Target = FVal;
 
     fn deref(&self) -> &Self::Target {
         &self.value
@@ -2110,7 +2114,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
-        self.value += NUM_FIX;
+        self.value += NUM_FIX_V;
         trace!(
             "Release lock for key {} with value {}",
             self.key,
@@ -2127,10 +2131,10 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
-    pub fn lock(&self, key: usize) -> Option<WordMutexGuard<ALLOC, H>> {
+    pub fn lock(&self, key: FKey) -> Option<WordMutexGuard<ALLOC, H>> {
         WordMutexGuard::new(&self.table, key)
     }
-    pub fn try_insert_locked(&self, key: usize) -> Option<WordMutexGuard<ALLOC, H>> {
+    pub fn try_insert_locked(&self, key: FKey) -> Option<WordMutexGuard<ALLOC, H>> {
         WordMutexGuard::create(&self.table, key)
     }
 }
@@ -2159,7 +2163,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         let value: V;
         loop {
             let swap_res = table.swap(
-                hash,
+                hash as FKey,
                 key,
                 move |fast_value| {
                     if fast_value != PLACEHOLDER_VAL - 1 {
@@ -2219,7 +2223,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         trace!("Release read lock for hash key {}", self.hash);
         let guard = crossbeam_epoch::pin();
         self.table.swap(
-            self.hash,
+            self.hash as FKey,
             &self.key,
             |fast_value| {
                 debug_assert!(fast_value > PLACEHOLDER_VAL);
@@ -2254,7 +2258,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         let value: V;
         loop {
             let swap_res = table.swap(
-                hash,
+                hash as FKey,
                 key,
                 move |fast_value| {
                     if fast_value == PLACEHOLDER_VAL {
@@ -2297,7 +2301,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 
     pub fn remove(self) -> V {
-        let res = self.table.remove(&self.key, self.hash).unwrap().1;
+        let res = self.table.remove(&self.key, self.hash as FKey).unwrap().1;
         mem::forget(self);
         res
     }
@@ -2331,7 +2335,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             InsertOp::Insert,
             &self.key,
             Some(&self.value),
-            hash,
+            hash as FKey,
             PLACEHOLDER_VAL,
         );
     }
@@ -2344,7 +2348,7 @@ pub struct ObjectMapReadGuard<
     H: Hasher + Default = DefaultHasher,
 > {
     table: &'a ObjectTable<V, ALLOC, H>,
-    key: usize,
+    key: FKey,
     value: V,
     _mark: PhantomData<H>,
 }
@@ -2352,11 +2356,11 @@ pub struct ObjectMapReadGuard<
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     ObjectMapReadGuard<'a, V, ALLOC, H>
 {
-    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: FKey) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
-        let key = key + NUM_FIX;
+        let key = key + NUM_FIX_K;
         loop {
             let swap_res = table.swap(
                 key,
@@ -2436,7 +2440,7 @@ pub struct ObjectMapWriteGuard<
     H: Hasher + Default = DefaultHasher,
 > {
     table: &'a ObjectTable<V, ALLOC, H>,
-    key: usize,
+    key: FKey,
     value: V,
     _mark: PhantomData<H>,
 }
@@ -2444,11 +2448,11 @@ pub struct ObjectMapWriteGuard<
 impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     ObjectMapWriteGuard<'a, V, ALLOC, H>
 {
-    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: usize) -> Option<Self> {
+    fn new(table: &'a ObjectTable<V, ALLOC, H>, key: FKey) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
-        let key = key + NUM_FIX;
+        let key = key + NUM_FIX_K;
         loop {
             let swap_res = table.swap(
                 key,
@@ -2550,19 +2554,19 @@ impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Ha
     }
 
     pub fn contains(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item);
+        let hash = hash_key::<T, H>(item) as FKey;
         self.table.get(item, hash, false).is_some()
     }
 
     pub fn insert(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item);
+        let hash = hash_key::<T, H>(item) as FKey;
         self.table
             .insert(InsertOp::TryInsert, item, None, hash, !0)
             .is_none()
     }
 
     pub fn remove(&self, item: &T) -> bool {
-        let hash = hash_key::<T, H>(item);
+        let hash = hash_key::<T, H>(item) as FKey;
         self.table.remove(item, hash).is_some()
     }
 
@@ -2616,8 +2620,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let k_num = Self::encode(key);
         let v_num = Self::encode(value);
         self.table
-            .insert(op, &(), None, k_num, v_num)
-            .map(|(fv, _)| Self::decode::<V>(fv))
+            .insert(op, &(), None, k_num as FKey, v_num as FVal)
+            .map(|(fv, _)| Self::decode::<V>(fv as usize))
     }
 
     // pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
@@ -2634,12 +2638,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             ptr::write(obj_ptr, d.clone());
         }
-        return num as usize + NUM_FIX;
+        return num as usize + NUM_FIX_V as usize;
     }
 
     #[inline(always)]
     fn decode<T: Clone>(num: usize) -> T {
-        let num = (num - NUM_FIX) as u64;
+        let num = (num - (NUM_FIX_V as usize)) as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
         let obj = aligned.data.clone();
@@ -2661,10 +2665,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let k_num = Self::encode(key);
+        let k_num = Self::encode(key) as FKey;
         self.table
             .get(&(), k_num, false)
-            .map(|(fv, _)| Self::decode::<V>(fv))
+            .map(|(fv, _)| Self::decode::<V>(fv as usize))
     }
 
     #[inline(always)]
@@ -2679,10 +2683,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let k_num = Self::encode(key);
+        let k_num = Self::encode(key) as FKey;
         self.table
             .remove(&(), k_num)
-            .map(|(fv, _)| Self::decode(fv))
+            .map(|(fv, _)| Self::decode(fv as usize))
     }
 
     #[inline(always)]
@@ -2690,13 +2694,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .entries()
             .into_iter()
-            .map(|(fk, fv, _, _)| (Self::decode(fk), Self::decode::<V>(fv)))
+            .map(|(fk, fv, _, _)| (Self::decode(fk as usize), Self::decode::<V>(fv as usize)))
             .collect()
     }
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let k_num = Self::encode(key);
+        let k_num = Self::encode(key) as FKey;
         self.table.get(&(), k_num, false).is_some()
     }
 
