@@ -160,11 +160,7 @@ impl<
                             trace!("Found sentinel, moving to new chunk for key {}", fkey);
                             break 'SPIN;
                         }
-                        LOCKED_VALUE | MIGRATING_VALUE => {
-                            backoff.spin();
-                            val = Self::get_fast_value(addr);
-                            continue 'SPIN;
-                        }
+                        // LOCKED_VALUE | MIGRATING_VALUE covered by 'get_from_chunk'
                         _ => {
                             let act_val = val.act_val();
                             let mut attachment = None;
@@ -192,11 +188,7 @@ impl<
                             EMPTY_VALUE | TOMBSTONE_VALUE => {
                                 break 'SPIN_NEW;
                             }
-                            LOCKED_VALUE | MIGRATING_VALUE => {
-                                backoff.spin();
-                                val = Self::get_fast_value(addr);
-                                continue 'SPIN_NEW;
-                            }
+                            // LOCKED_VALUE | MIGRATING_VALUE covered by 'get_from_chunk'
                             SENTINEL_VALUE => {
                                 warn!("Found sentinel in new chunks for key {}", fkey);
                                 backoff.spin();
