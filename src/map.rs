@@ -16,6 +16,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
+use num::Integer;
 
 pub struct EntryTemplate(usize, usize);
 
@@ -108,7 +109,7 @@ impl<
         H: Hasher + Default,
     > Table<K, V, A, ALLOC, H>
 {
-    const CAN_ATTACH: bool = can_attach::<K, V, A>();
+    const CAN_ATTACH: bool = can_attach::<K, V>();
 
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
@@ -573,7 +574,7 @@ impl<
         key: &K,
         fkey: usize,
         backoff: &Backoff,
-    ) -> Option<(FastValue<K, V, A>, usize, usize, A::Item)> {
+    ) -> Option<(FastValue<K, V>, usize, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -881,11 +882,11 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_value(entry_addr: usize) -> FastValue<K, V, A> {
+    fn get_fast_value(entry_addr: usize) -> FastValue<K, V> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<usize>();
         let val = unsafe { intrinsics::atomic_load_acq(addr as *mut usize) };
-        FastValue::<K, V, A>::new(val)
+        FastValue::<K, V>::new(val)
     }
 
     #[inline(always)]
@@ -918,7 +919,7 @@ impl<
         debug_assert!(entry_addr >= NUM_FIX);
         let addr = entry_addr + mem::size_of::<usize>();
         let new_value = if Self::CAN_ATTACH {
-            FastValue::<K, V, A>::next_version(original, value)
+            FastValue::<K, V>::next_version(original, value)
         } else {
             value
         };
@@ -1126,7 +1127,7 @@ impl<
         &self,
         fkey: usize,
         old_idx: usize,
-        fvalue: FastValue<K, V, A>,
+        fvalue: FastValue<K, V>,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
@@ -1218,12 +1219,12 @@ impl<
     }
 }
 
-struct FastValue<K, V, A: Attachment<K, V>> {
+struct FastValue<K, V> {
     val: usize,
-    _marker: PhantomData<(K, V, A)>,
+    _marker: PhantomData<(K, V)>,
 }
 
-impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
+impl<K, V> FastValue<K, V> {
     pub fn new(val: usize) -> Self {
         Self {
             val,
@@ -1233,7 +1234,7 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
 
     #[inline]
     fn act_val(&self) -> usize {
-        if can_attach::<K, V, A>() {
+        if can_attach::<K, V>() {
             self.val & FVAL_VAL_BIT_MASK
         } else {
             self.val
@@ -1242,7 +1243,7 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
 
     #[inline(always)]
     const fn next_version(old: usize, new: usize) -> usize {
-        debug_assert!(can_attach::<K, V, A>());
+        debug_assert!(can_attach::<K, V>());
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
     }
@@ -1436,7 +1437,7 @@ fn dfence() {
     fence(SeqCst);
 }
 
-const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
+const fn can_attach<K, V>() -> bool {
     mem::size_of::<(K, V)>() != 0
 }
 
