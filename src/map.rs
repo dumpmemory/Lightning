@@ -27,16 +27,39 @@ struct Consts<FK: Atom, FV: Atom> {
 }
 
 impl <FK: Atom, FV: Atom> Consts<FK, FV> {
-    const EMPTY_KEY: FK = FK::atom_from_usize(0);
 
-    const EMPTY_VALUE: FV = FV::atom_from_usize(0);
-    const TOMBSTONE_VALUE: FV = FV::atom_from_usize(1);
-    const LOCKED_VALUE: FV = FV::atom_from_usize(2);
-    const MIGRATING_VALUE: FV = FV::atom_from_usize(3);
-    const SENTINEL_VALUE: FV = FV::atom_from_usize(4);
+    fn empty_key() -> FK {
+        FK::atom_from_usize(0)
+    }
 
-    const VAL_TWO: FV = FV::atom_from_usize(2);
-    const VAL_BIT_MASK: FV = !FV::zero() << FV::one() >> FV::one();
+    fn tombstone_value() -> FV {
+        FV::atom_from_usize(1)
+    }
+
+    fn locked_value() -> FV {
+        FV::atom_from_usize(2)
+    }
+
+    fn migrating_value() -> FV {
+        FV::atom_from_usize(3)
+    }
+
+    fn sentinel_value() -> FV {
+        FV::atom_from_usize(4)
+    }
+
+    fn val_two() -> FV {
+        FV::atom_from_usize(2)
+    }
+
+    fn val_bit_mask() -> FV {
+        !FV::zero() << FV::one() >> FV::one()
+    }
+
+    fn inv_val_bit_mask() -> FV {
+        !Self::val_bit_mask()
+    }
+
     const INV_VAL_BIT_MASK: FV = !Self::VAL_BIT_MASK;
     const WORD_MUTEX_DATA_BIT_MASK: FV = !FV::zero() << Self::VAL_TWO >> Self::VAL_TWO;
     const MUTEX_BIT_MASK: FV = !Self::WORD_MUTEX_DATA_BIT_MASK & Self::VAL_BIT_MASK;
@@ -121,29 +144,29 @@ macro_rules! gen_const{
     };
 }
 
-macro_rules! gen_consts {
-    ($k: ident, $v: ident) => {
-        gen_const!(EMPTY_KEY, $k, $k, $v);
+// macro_rules! gen_consts {
+//     ($k: ident, $v: ident) => {
+//         gen_const!(EMPTY_KEY, $k, $k, $v);
 
-        gen_const!(EMPTY_VALUE, $v, $k, $v);
-        gen_const!(TOMBSTONE_VALUE, $v, $k, $v);
-        gen_const!(LOCKED_VALUE, $v, $k, $v);
-        gen_const!(MIGRATING_VALUE, $v, $k, $v);
-        gen_const!(SENTINEL_VALUE, $v, $k, $v);
-        gen_const!(VAL_BIT_MASK, $v, $k, $v);
-        gen_const!(INV_VAL_BIT_MASK, $v, $k, $v);
-        gen_const!(WORD_MUTEX_DATA_BIT_MASK, $v, $k, $v);
-        gen_const!(MUTEX_BIT_MASK, $v, $k, $v);
-        gen_const!(FVAL_VER_POS, $v, $k, $v);
-        gen_const!(FVAL_VER_BIT_MASK, $v, $k, $v);
-        gen_const!(FVAL_VAL_BIT_MASK, $v, $k, $v);
-        gen_const!(NUM_FIX_K, $k, $k, $v);
-        gen_const!(NUM_FIX_V, $v, $k, $v);
-        gen_const!(PLACEHOLDER_VAL, $v, $k, $v);
-        gen_const!(ENTRY_SIZE, usize, $k, $v);
+//         gen_const!(EMPTY_VALUE, $v, $k, $v);
+//         gen_const!(TOMBSTONE_VALUE, $v, $k, $v);
+//         gen_const!(LOCKED_VALUE, $v, $k, $v);
+//         gen_const!(MIGRATING_VALUE, $v, $k, $v);
+//         gen_const!(SENTINEL_VALUE, $v, $k, $v);
+//         gen_const!(VAL_BIT_MASK, $v, $k, $v);
+//         gen_const!(INV_VAL_BIT_MASK, $v, $k, $v);
+//         gen_const!(WORD_MUTEX_DATA_BIT_MASK, $v, $k, $v);
+//         gen_const!(MUTEX_BIT_MASK, $v, $k, $v);
+//         gen_const!(FVAL_VER_POS, $v, $k, $v);
+//         gen_const!(FVAL_VER_BIT_MASK, $v, $k, $v);
+//         gen_const!(FVAL_VAL_BIT_MASK, $v, $k, $v);
+//         gen_const!(NUM_FIX_K, $k, $k, $v);
+//         gen_const!(NUM_FIX_V, $v, $k, $v);
+//         gen_const!(PLACEHOLDER_VAL, $v, $k, $v);
+//         gen_const!(ENTRY_SIZE, usize, $k, $v);
         
-    };
-}
+//     };
+// }
 
 impl<
         FK: Atom, FV: Atom,
@@ -2873,6 +2896,7 @@ macro_rules! atom_types {
     ($($t: ty),+) => {
         $(
             impl const Atom for $t{
+                #[inline(always)]
                 fn atom_from_usize(n: usize) -> Self {
                     n as Self
                 }
