@@ -21,7 +21,6 @@ pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
 pub const VAL_BIT_MASK: FVal = !0 << 1 >> 1;
 pub const VAL_FLAGGED_MASK: FVal = !(!0 << NUM_FIX_V.trailing_zeros());
-pub const INV_VAL_BIT_MASK: FVal = !VAL_BIT_MASK;
 pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 pub const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
@@ -616,11 +615,12 @@ impl<
                                 // duplicate key discovered
                                 trace!("Inserting in place for {}", fkey);
                                 let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
-                                if Self::cas_value(addr, v.val, primed_fval) {
-                                    let prev_val = read_attachment.then(|| attachment.get_value());
+                                let prev_val = read_attachment.then(|| attachment.get_value());
+                                let val_to_store = Self::value_to_store(raw, fval);
+                                if Self::cas_value(addr, raw, primed_fval) {
                                     if Self::CAN_ATTACH {
                                         attachment.set_value(ov.clone());
-                                        Self::store_value(addr, v.val, fval);
+                                        Self::store_raw_value(addr, val_to_store);
                                     }
                                     return ModResult::Replaced(act_val, prev_val, idx);
                                 } else {
@@ -676,11 +676,11 @@ impl<
                                 if act_val == TOMBSTONE_VALUE {
                                     let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
                                     let prev_val = read_attachment.then(|| attachment.get_value());
+                                    let val_to_store = Self::value_to_store(raw, fval);
                                     if Self::cas_value(addr, v.val, primed_fval) {
                                         if Self::CAN_ATTACH {
                                             attachment.set_value((*oval).clone());
-                                            compiler_fence(Acquire);
-                                            Self::store_value(addr, v.val, fval);
+                                            Self::store_raw_value(addr, val_to_store);
                                         }
                                         return ModResult::Replaced(act_val, prev_val, idx);
                                     } else {
@@ -774,7 +774,7 @@ impl<
                                 attachment.set_key(key.clone());
                                 Self::store_key(addr, fkey);
                                 attachment.set_value((*val).clone());
-                                Self::store_value_raw(addr, fval);
+                                Self::store_raw_value(addr, fval);
                             } else {
                                 Self::store_key(addr, fkey);
                             }
@@ -915,18 +915,16 @@ impl<
     }
 
     #[inline]
-    fn store_value(entry_addr: usize, original: FVal, value: FVal) {
-        let addr = entry_addr + mem::size_of::<FKey>();
-        let new_value = if Self::CAN_ATTACH {
+    fn value_to_store(original: FVal, value: FVal) -> usize {
+        if Self::CAN_ATTACH {
             FastValue::next_version(original, value)
         } else {
-            value
-        };
-        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, new_value) };
+            0
+        }
     }
 
     #[inline]
-    fn store_value_raw(entry_addr: usize, value: FVal) {
+    fn store_raw_value(entry_addr: usize, value: FVal) {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) };
     }
