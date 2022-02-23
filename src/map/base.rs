@@ -231,10 +231,11 @@ impl<
             let epoch = self.now_epoch();
             // trace!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Acquire, &guard);
+            let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             if new_chunk.is_none() {
-                match self.check_migration(chunk_ptr, &guard) {
+                match self.check_migration(chunk_ptr, chunk, &guard) {
                     ResizeResult::Done | ResizeResult::SwapFailed => {
                         trace!("Retry insert due to resize");
                         backoff.spin();
@@ -247,7 +248,6 @@ impl<
                 warn!("Chunk ptrs does not consist with epoch");
                 continue;
             }
-            let chunk = unsafe { chunk_ptr.deref() };
             let modify_chunk = if let Some(new_chunk) = new_chunk {
                 new_chunk
             } else {
@@ -942,16 +942,16 @@ impl<
     fn check_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        if old_chunk_ptr.tag() == 1 {
-            return ResizeResult::SwapFailed;
-        }
-        let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        let occupation = old_chunk_ins.occupation.load(Relaxed);
-        let occu_limit = old_chunk_ins.occu_limit;
+        let occupation = old_chunk_ref.occupation.load(Relaxed);
+        let occu_limit = old_chunk_ref.occu_limit;
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
+        }
+        if old_chunk_ptr.tag() == 1 {
+            return ResizeResult::SwapFailed;
         }
         self.do_migration(old_chunk_ptr, guard)
     }
