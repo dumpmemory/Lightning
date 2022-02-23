@@ -513,17 +513,17 @@ impl<
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_copying(epoch: usize) -> bool {
         epoch | 1 == epoch
     }
 
-    #[inline(always)]
+    #[inline]
     fn epoch_changed(&self, epoch: usize) -> bool {
         self.now_epoch() != epoch
     }
 
-    #[inline(always)]
+    #[inline]
     fn new_chunk_ref<'a>(
         epoch: usize,
         new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
@@ -536,7 +536,7 @@ impl<
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) fn now_epoch(&self) -> usize {
         self.epoch.load(Acquire)
     }
@@ -583,7 +583,7 @@ impl<
         return None;
     }
 
-    #[inline(always)]
+    #[inline]
     fn modify_entry<'a>(
         &self,
         chunk: &'a Chunk<K, V, A, ALLOC>,
@@ -856,13 +856,13 @@ impl<
         return res;
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_fast_key(entry_addr: usize) -> FKey {
         debug_assert!(entry_addr > 0);
         unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
     }
 
-    #[inline(always)]
+    #[inline]
     fn get_fast_value(entry_addr: usize) -> FastValue {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
@@ -870,7 +870,7 @@ impl<
         FastValue::new(val)
     }
 
-    #[inline(always)]
+    #[inline]
     fn cas_tombstone(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe {
@@ -882,14 +882,14 @@ impl<
             .1
         }
     }
-    #[inline(always)]
+    #[inline]
     fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value).1 }
     }
 
-    #[inline(always)]
+    #[inline]
     fn cas_value_rt_new(entry_addr: usize, original: FVal, value: FVal) -> Option<FVal> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
@@ -900,7 +900,7 @@ impl<
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn store_value(entry_addr: usize, original: FVal, value: FVal) {
         let addr = entry_addr + mem::size_of::<FKey>();
         let new_value = if Self::CAN_ATTACH {
@@ -911,25 +911,25 @@ impl<
         unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, new_value) };
     }
 
-    #[inline(always)]
+    #[inline]
     fn store_value_raw(entry_addr: usize, value: FVal) {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) };
     }
 
-    #[inline(always)]
+    #[inline]
     fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, SENTINEL_VALUE) };
     }
 
-    #[inline(always)]
+    #[inline]
     fn store_key(addr: usize, fkey: FKey) {
         unsafe { intrinsics::atomic_store_rel(addr as *mut FKey, fkey) }
     }
 
-    #[inline(always)]
+    #[inline]
     fn cas_sentinel(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         let (val, done) = unsafe {
@@ -1105,7 +1105,7 @@ impl<
         return effective_copy;
     }
 
-    #[inline(always)]
+    #[inline]
     fn migrate_entry(
         &self,
         fkey: FKey,
@@ -1190,7 +1190,7 @@ impl<
         Self::is_copying(self.now_epoch())
     }
 
-    #[inline(always)]
+    #[inline]
     fn hash(fkey: FKey, key: &K) -> (FKey, usize) {
         if Self::WORD_KEY {
             debug_assert!(fkey > 0);
@@ -1201,7 +1201,7 @@ impl<
         }
     }
 
-    #[inline(always)]
+    #[inline]
     const fn if_attach_then_val<T: Copy>(then: T, els: T) -> T {
         if Self::CAN_ATTACH {
             then
@@ -1232,19 +1232,19 @@ impl FastValue {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn next_version(old: FVal, new: FVal) -> FVal {
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_locked(self) -> bool {
         let v = self.val;
         v & VAL_FLAGGED_MASK | 1 == v
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_valued(self) -> bool {
         self.val > TOMBSTONE_VALUE
     }
@@ -1289,7 +1289,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
     }
 
-    #[inline(always)]
+    #[inline]
     fn entry_addr(&self, idx: usize) -> usize {
         self.base + idx * ENTRY_SIZE
     }
@@ -1403,7 +1403,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<K, V, A, 
     }
 }
 
-#[inline(always)]
+#[inline]
 fn dealloc_mem<A: GlobalAlloc + Default + Default>(ptr: usize, size: usize) {
     let align = 64;
     let layout = Layout::from_size_align(size, align).unwrap();
@@ -1411,7 +1411,7 @@ fn dealloc_mem<A: GlobalAlloc + Default + Default>(ptr: usize, size: usize) {
     unsafe { alloc.dealloc(ptr as *mut u8, layout) }
 }
 
-#[inline(always)]
+#[inline]
 fn chunk_size_of(cap: usize) -> usize {
     cap * ENTRY_SIZE
 }
