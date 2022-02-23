@@ -1234,8 +1234,8 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
 
     #[inline(always)]
     fn is_locked(&self) -> bool {
-        let val = self.val;
-        self.val & VAL_FLAGGED_MASK | 1 == val 
+        let v = self.val;
+        v & VAL_FLAGGED_MASK | 1 == v
     }
 
     #[inline(always)]
