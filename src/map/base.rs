@@ -105,6 +105,7 @@ impl<
     > Table<K, V, A, ALLOC, H>
 {
     const CAN_ATTACH: bool = can_attach::<K, V, A>();
+    const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize) -> Self {
         if !is_power_of_2(cap) {
@@ -1128,8 +1129,12 @@ impl<
         let orig = curr_orig;
         // Make insertion for migration inlined, hopefully the ordering will be right
         let cap = new_chunk_ins.capacity;
-        // let (fkey, hash) = Self::hash(0, &key);
-        let mut idx = fkey as usize;
+        let hash = if Self::WORD_KEY {
+            hash_key::<_, H>(&fkey)
+        } else {
+            fkey
+        };
+        let mut idx = hash as usize;
         let cap_mask = new_chunk_ins.cap_mask();
         let mut count = 0;
         while count < cap {
@@ -1186,7 +1191,7 @@ impl<
 
     #[inline(always)]
     fn hash(fkey: FKey, key: &K) -> (FKey, usize) {
-        if mem::size_of::<K>() == 0 {
+        if Self::WORD_KEY {
             debug_assert!(fkey > 0);
             (fkey, hash_key::<_, H>(&fkey))
         } else {
