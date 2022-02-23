@@ -144,7 +144,7 @@ impl<
             {
                 'SPIN: loop {
                     let v = val.val;
-                    if v & VAL_FLAGGED_MASK != v {
+                    if val.is_valued() {
                         let act_val = val.act_val();
                         let mut attachment = None;
                         if Self::CAN_ATTACH && read_attachment {
@@ -177,29 +177,25 @@ impl<
                     self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
                 {
                     'SPIN_NEW: loop {
-                        match val.val {
-                            EMPTY_VALUE | TOMBSTONE_VALUE => {
-                                break 'SPIN_NEW;
-                            }
-                            // LOCKED_VALUE | MIGRATING_VALUE covered by 'get_from_chunk'
-                            SENTINEL_VALUE => {
-                                warn!("Found sentinel in new chunks for key {}", fkey);
-                                backoff.spin();
-                                continue 'OUTER;
-                            }
-                            _ => {
-                                let act_val = val.act_val();
-                                let mut attachment = None;
-                                if Self::CAN_ATTACH && read_attachment {
-                                    attachment = Some(aitem.get_value());
-                                    let new_val = Self::get_fast_value(addr);
-                                    if new_val.val != val.val {
-                                        val = new_val;
-                                        continue 'SPIN_NEW;
-                                    }
+                        let v = val.val;
+                        if val.is_valued() {
+                            let act_val = val.act_val();
+                            let mut attachment = None;
+                            if Self::CAN_ATTACH && read_attachment {
+                                attachment = Some(aitem.get_value());
+                                let new_val = Self::get_fast_value(addr);
+                                if new_val.val != val.val {
+                                    val = new_val;
+                                    continue 'SPIN_NEW;
                                 }
-                                return Some((act_val, attachment));
                             }
+                            return Some((act_val, attachment));
+                        } else if v == SENTINEL_VALUE {
+                            warn!("Found sentinel in new chunks for key {}", fkey);
+                            backoff.spin();
+                            continue 'OUTER;
+                        } else {
+                            break 'SPIN_NEW;
                         }
                     }
                 }
@@ -1240,6 +1236,12 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
     fn is_locked(&self) -> bool {
         let val = self.val;
         self.val & VAL_FLAGGED_MASK | 1 == val 
+    }
+
+    #[inline(always)]
+    fn is_valued(&self) -> bool {
+        let v = self.val;
+        v & VAL_FLAGGED_MASK != v
     }
 }
 
