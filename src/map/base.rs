@@ -21,7 +21,6 @@ pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
 pub const VAL_BIT_MASK: FVal = !0 << 1 >> 1;
 pub const VAL_FLAGGED_MASK: FVal = !(!0 << NUM_FIX_V.trailing_zeros());
-pub const VAL_FLAGGED_NT_MASK: FVal = !(!0 << TOMBSTONE_VALUE.trailing_zeros());
 pub const INV_VAL_BIT_MASK: FVal = !VAL_BIT_MASK;
 pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
@@ -145,7 +144,7 @@ impl<
                 'SPIN: loop {
                     let v = val.val;
                     if val.is_valued() {
-                        let act_val = val.act_val();
+                        let act_val = val.act_val::<K, V, A>();
                         let mut attachment = None;
                         if Self::CAN_ATTACH && read_attachment {
                             attachment = Some(aitem.get_value());
@@ -179,7 +178,7 @@ impl<
                     'SPIN_NEW: loop {
                         let v = val.val;
                         if val.is_valued() {
-                            let act_val = val.act_val();
+                            let act_val = val.act_val::<K, V, A>();
                             let mut attachment = None;
                             if Self::CAN_ATTACH && read_attachment {
                                 attachment = Some(aitem.get_value());
@@ -367,7 +366,7 @@ impl<
                 if let Some((old_parsed_val, old_addr, attachment)) =
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
-                    let old_fval = old_parsed_val.act_val();
+                    let old_fval = old_parsed_val.act_val::<K, V, A>();
                     if old_fval == LOCKED_VALUE {
                         backoff.spin();
                         continue;
@@ -553,7 +552,7 @@ impl<
         key: &K,
         fkey: FKey,
         backoff: &Backoff,
-    ) -> Option<(FastValue<K, V, A>, usize, A::Item)> {
+    ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
         let cap = chunk.capacity;
@@ -609,11 +608,8 @@ impl<
                 loop {
                     let v = Self::get_fast_value(addr);
                     let raw = v.val;
-                    if v.is_locked() {
-                        backoff.spin();
-                        continue;
-                    } else if raw & VAL_FLAGGED_NT_MASK != raw {
-                        let act_val = v.act_val();
+                    if raw >= TOMBSTONE_VALUE {
+                        let act_val = v.act_val::<K, V, A>();
                         match op {
                             ModOp::Insert(fval, ov) => {
                                 // Insert with attachment should prime value first when
@@ -645,7 +641,7 @@ impl<
                                 }
                             }
                             ModOp::Tombstone => {
-                                if act_val == TOMBSTONE_VALUE {
+                                if raw == TOMBSTONE_VALUE {
                                     // Already tombstone
                                     return ModResult::NotFound;
                                 }
@@ -831,7 +827,7 @@ impl<
             if k != EMPTY_KEY {
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = Self::get_fast_value(addr);
-                let act_val = val_res.act_val();
+                let act_val = val_res.act_val::<K, V, A>();
                 if act_val >= NUM_FIX_V {
                     let key = attachment.get_key();
                     let value = attachment.get_value();
@@ -867,11 +863,11 @@ impl<
     }
 
     #[inline(always)]
-    fn get_fast_value(entry_addr: usize) -> FastValue<K, V, A> {
+    fn get_fast_value(entry_addr: usize) -> FastValue {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
         let val = unsafe { intrinsics::atomic_load_acq(addr as *mut FVal) };
-        FastValue::<K, V, A>::new(val)
+        FastValue::new(val)
     }
 
     #[inline(always)]
@@ -908,7 +904,7 @@ impl<
     fn store_value(entry_addr: usize, original: FVal, value: FVal) {
         let addr = entry_addr + mem::size_of::<FKey>();
         let new_value = if Self::CAN_ATTACH {
-            FastValue::<K, V, A>::next_version(original, value)
+            FastValue::next_version(original, value)
         } else {
             value
         };
@@ -1065,7 +1061,7 @@ impl<
             let fkey = Self::get_fast_key(old_address);
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
-            match fvalue.act_val() {
+            match fvalue.val {
                 EMPTY_VALUE | TOMBSTONE_VALUE => {
                     if !Self::cas_sentinel(old_address, fvalue.val) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
@@ -1114,7 +1110,7 @@ impl<
         &self,
         fkey: FKey,
         old_idx: usize,
-        fvalue: FastValue<K, V, A>,
+        fvalue: FastValue,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
@@ -1216,21 +1212,19 @@ impl<
 }
 
 #[derive(Copy, Clone)]
-struct FastValue<K, V, A: Attachment<K, V>> {
-    val: FVal,
-    _marker: PhantomData<(K, V, A)>,
+struct FastValue {
+    val: FVal
 }
 
-impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
+impl FastValue {
     pub fn new(val: FVal) -> Self {
         Self {
-            val,
-            _marker: PhantomData,
+            val
         }
     }
 
     #[inline]
-    fn act_val(&self) -> FVal {
+    fn act_val<K, V, A: Attachment<K, V>>(&self) -> FVal {
         if can_attach::<K, V, A>() {
             self.val & FVAL_VAL_BIT_MASK
         } else {
@@ -1240,21 +1234,19 @@ impl<K, V, A: Attachment<K, V>> FastValue<K, V, A> {
 
     #[inline(always)]
     fn next_version(old: FVal, new: FVal) -> FVal {
-        debug_assert!(can_attach::<K, V, A>());
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
     }
 
     #[inline(always)]
-    fn is_locked(&self) -> bool {
+    fn is_locked(self) -> bool {
         let v = self.val;
         v & VAL_FLAGGED_MASK | 1 == v
     }
 
     #[inline(always)]
-    fn is_valued(&self) -> bool {
-        let v = self.val;
-        v & VAL_FLAGGED_MASK != v
+    fn is_valued(self) -> bool {
+        self.val > TOMBSTONE_VALUE
     }
 }
 
