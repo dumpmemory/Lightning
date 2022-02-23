@@ -738,6 +738,22 @@ impl<
                         return ModResult::Sentinel;
                     } else {
                         // Other tags (except tombstone and locks)
+                        if cfg!(debug_assertions) {
+                            match raw {
+                                LOCKED_VALUE => {
+                                    trace!("Spin on lock");
+                                }
+                                MIGRATING_VALUE => {
+                                    trace!("Spin on migration");
+                                }
+                                EMPTY_VALUE => {
+                                    trace!("Spin on empty");
+                                }
+                                _ => {
+                                    trace!("Spin on something else");
+                                }
+                            }
+                        }
                         backoff.spin();
                         continue;
                     }
@@ -756,10 +772,8 @@ impl<
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
                             if Self::CAN_ATTACH {
                                 attachment.set_key(key.clone());
-                                compiler_fence(Acquire);
                                 Self::store_key(addr, fkey);
                                 attachment.set_value((*val).clone());
-                                compiler_fence(Acquire);
                                 Self::store_value_raw(addr, fval);
                             } else {
                                 Self::store_key(addr, fkey);
