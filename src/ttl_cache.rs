@@ -5,7 +5,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::map::{InsertOp, ObjectTable};
+use crate::map::base::*;
+use crate::map::obj_map::WordObjectAttachment;
+
+type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
 
 pub struct TTLCache<
     V: Clone,
@@ -64,20 +67,15 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
                 },
                 &guard,
             ) {
-                crate::map::SwapResult::Succeed(_, _, _) => {}
+                SwapResult::Succeed(_, _, _) => {}
                 _ => {
                     backoff.spin();
                     continue;
                 }
             }
             if let Some(comp_v) = fallback(key) {
-                self.table.insert(
-                    InsertOp::Insert,
-                    &(),
-                    Some(&comp_v),
-                    key,
-                    new_ttl_val,
-                );
+                self.table
+                    .insert(InsertOp::Insert, &(), Some(&comp_v), key, new_ttl_val);
                 return Some(comp_v);
             } else {
                 self.table
