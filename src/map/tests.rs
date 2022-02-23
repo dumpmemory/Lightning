@@ -1,10 +1,9 @@
-
+use chashmap::CHashMap;
 use std::collections::HashMap;
 use std::{
     alloc::System,
     sync::{Mutex, RwLock},
 };
-use chashmap::CHashMap;
 use test::Bencher;
 
 use crate::map::*;

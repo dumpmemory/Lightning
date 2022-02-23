@@ -16,11 +16,11 @@ use std::hash::Hash;
 use std::ops::DerefMut;
 use std::os::raw::c_void;
 
-pub (crate) mod base;
-pub (crate) mod hash_map;
-pub (crate) mod hash_set;
-pub (crate) mod lite_map;
-pub (crate) mod obj_map;
+pub(crate) mod base;
+pub(crate) mod hash_map;
+pub(crate) mod hash_set;
+pub(crate) mod lite_map;
+pub(crate) mod obj_map;
 #[cfg(test)]
 mod tests;
 mod word_map;

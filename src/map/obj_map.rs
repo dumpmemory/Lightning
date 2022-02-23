@@ -9,7 +9,6 @@ impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     }
 }
 
-
 #[derive(Clone)]
 pub struct ObjectMap<
     V: Clone,
@@ -91,7 +90,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
     }
 }
 
-pub (crate) struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
+pub(crate) struct WordObjectAttachment<T, A: GlobalAlloc + Default> {
     obj_chunk: usize,
     shadow: PhantomData<(T, A)>,
 }

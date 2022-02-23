@@ -7,17 +7,17 @@ pub struct EntryTemplate(FKey, FVal);
 
 pub const EMPTY_KEY: FKey = 0;
 
-pub const EMPTY_VALUE: FVal     = 0b000; 
-pub const SENTINEL_VALUE: FVal = 0b010; 
+pub const EMPTY_VALUE: FVal = 0b000;
+pub const SENTINEL_VALUE: FVal = 0b010;
 
 // Last bit set indicates locking
-pub const LOCKED_VALUE: FVal    = 0b001;    
+pub const LOCKED_VALUE: FVal = 0b001;
 pub const MIGRATING_VALUE: FVal = 0b011;
 
-pub const TOMBSTONE_VALUE: FVal  = 0b100; 
+pub const TOMBSTONE_VALUE: FVal = 0b100;
 
-pub const NUM_FIX_K: FKey = 0b1000;     // = 8
-pub const NUM_FIX_V: FVal = 0b1000;     // = 8
+pub const NUM_FIX_K: FKey = 0b1000; // = 8
+pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
 pub const VAL_BIT_MASK: FVal = !0 << 1 >> 1;
 pub const VAL_FLAGGED_MASK: FVal = !(!0 << NUM_FIX_V.trailing_zeros());
@@ -538,7 +538,7 @@ impl<
     }
 
     #[inline(always)]
-    pub (crate) fn now_epoch(&self) -> usize {
+    pub(crate) fn now_epoch(&self) -> usize {
         self.epoch.load(Acquire)
     }
 
@@ -667,7 +667,8 @@ impl<
                                     if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                         return ModResult::Done(0, None, idx);
                                     } else {
-                                        let attachment = read_attachment.then(|| attachment.get_value());
+                                        let attachment =
+                                            read_attachment.then(|| attachment.get_value());
                                         return ModResult::Replaced(act_val, attachment, idx);
                                     }
                                 } else {
@@ -678,8 +679,7 @@ impl<
                             ModOp::AttemptInsert(fval, oval) => {
                                 if act_val == TOMBSTONE_VALUE {
                                     let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
-                                    let prev_val =
-                                        read_attachment.then(|| attachment.get_value());
+                                    let prev_val = read_attachment.then(|| attachment.get_value());
                                     if Self::cas_value(addr, v.val, primed_fval) {
                                         if Self::CAN_ATTACH {
                                             attachment.set_value((*oval).clone());
@@ -739,8 +739,9 @@ impl<
                             }
                         }
                     } else if raw == SENTINEL_VALUE {
-                        return ModResult::Sentinel
-                    } else { // Other tags (except tombstone and locks)
+                        return ModResult::Sentinel;
+                    } else {
+                        // Other tags (except tombstone and locks)
                         backoff.spin();
                         continue;
                     }
@@ -769,7 +770,10 @@ impl<
                             }
                             return ModResult::Done(0, None, idx);
                         } else {
-                            debug!("Retry insert to new slot, now val {}", Self::get_fast_value(addr).val);
+                            debug!(
+                                "Retry insert to new slot, now val {}",
+                                Self::get_fast_value(addr).val
+                            );
                             backoff.spin();
                             continue;
                         }
@@ -878,7 +882,8 @@ impl<
                 addr as *mut FVal,
                 original,
                 TOMBSTONE_VALUE,
-            ).1
+            )
+            .1
         }
     }
     #[inline(always)]
@@ -892,7 +897,11 @@ impl<
     fn cas_value_rt_new(entry_addr: usize, original: FVal, value: FVal) -> Option<FVal> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value).1.then(|| value) }
+        unsafe {
+            intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value)
+                .1
+                .then(|| value)
+        }
     }
 
     #[inline(always)]
@@ -928,11 +937,7 @@ impl<
     fn cas_sentinel(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         let (val, done) = unsafe {
-            intrinsics::atomic_cxchg_acqrel_failrelaxed(
-                addr as *mut FVal,
-                original,
-                SENTINEL_VALUE,
-            )
+            intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, SENTINEL_VALUE)
         };
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
@@ -1026,7 +1031,10 @@ impl<
         dfence();
         trace!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
-            old_chunk_ptr, new_chunk_ptr, old_cap, new_cap
+            old_chunk_ptr,
+            new_chunk_ptr,
+            old_cap,
+            new_cap
         );
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
@@ -1043,7 +1051,8 @@ impl<
     ) -> usize {
         trace!(
             "Migrating entries from {:?} to {:?}",
-            old_chunk_ins.base, new_chunk_ins.base
+            old_chunk_ins.base,
+            new_chunk_ins.base
         );
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
@@ -1198,7 +1207,11 @@ impl<
 
     #[inline(always)]
     const fn if_attach_then_val<T: Copy>(then: T, els: T) -> T {
-        if Self::CAN_ATTACH { then } else { els }
+        if Self::CAN_ATTACH {
+            then
+        } else {
+            els
+        }
     }
 }
 
@@ -1427,4 +1440,3 @@ impl<V> Debug for ModResult<V> {
         }
     }
 }
-

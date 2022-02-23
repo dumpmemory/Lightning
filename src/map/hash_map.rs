@@ -658,8 +658,8 @@ mod fat_tests {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use super::tests::*;
+    use super::*;
     use std::sync::Arc;
     use std::thread;
 
