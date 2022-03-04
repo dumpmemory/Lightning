@@ -141,13 +141,13 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     }
 
     #[inline(always)]
-    fn set_value(self, value: T) {
+    fn set_value(self, value: T, _old_fval: FVal) {
         let addr = self.addr;
         unsafe { ptr::write(addr as *mut T, value) }
     }
 
     #[inline(always)]
-    fn erase(self) {
+    fn erase(self, _old_fval: FVal) {
         drop(self.addr as *mut T)
     }
 

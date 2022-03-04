@@ -248,10 +248,10 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
     fn set_key(self, _key: ()) {}
 
     #[inline(always)]
-    fn set_value(self, _value: ()) {}
+    fn set_value(self, _value: (), _old_fval: FVal) {}
 
     #[inline(always)]
-    fn erase(self) {}
+    fn erase(self, _old_fval: FVal) {}
 
     #[inline(always)]
     fn probe(self, _value: &()) -> bool {

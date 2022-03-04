@@ -1,8 +1,5 @@
 use super::*;
 
-pub type FKey = usize;
-pub type FVal = usize;
-
 pub struct EntryTemplate(FKey, FVal);
 
 pub const EMPTY_KEY: FKey = 0;
@@ -618,8 +615,8 @@ impl<
                                 let prev_val = read_attachment.then(|| attachment.get_value());
                                 let val_to_store = Self::value_to_store(raw, fval);
                                 if Self::cas_value(addr, raw, primed_fval) {
+                                    attachment.set_value(ov.clone(), raw);
                                     if Self::FAT_VAL {
-                                        attachment.set_value(ov.clone());
                                         Self::store_raw_value(addr, val_to_store);
                                     }
                                     return ModResult::Replaced(act_val, prev_val, idx);
@@ -630,7 +627,7 @@ impl<
                             }
                             ModOp::Sentinel => {
                                 if Self::cas_sentinel(addr, v.val) {
-                                    attachment.erase();
+                                    attachment.erase(raw);
                                     if raw == 0 {
                                         return ModResult::Done(0, None, idx);
                                     } else {
@@ -653,7 +650,7 @@ impl<
                                 } else {
                                     // we have put tombstone on the value, get the attachment and erase it
                                     let value = read_attachment.then(|| attachment.get_value());
-                                    attachment.erase();
+                                    attachment.erase(raw);
                                     chunk.empty_entries.fetch_add(1, Relaxed);
                                     return ModResult::Replaced(act_val, value, idx);
                                 }
@@ -678,8 +675,8 @@ impl<
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     let val_to_store = Self::value_to_store(raw, fval);
                                     if Self::cas_value(addr, v.val, primed_fval) {
+                                        attachment.set_value((*oval).clone(), raw);
                                         if Self::FAT_VAL {
-                                            attachment.set_value((*oval).clone());
                                             Self::store_raw_value(addr, val_to_store);
                                         }
                                         return ModResult::Replaced(act_val, prev_val, idx);
@@ -773,7 +770,7 @@ impl<
                             if Self::FAT_VAL {
                                 attachment.set_key(key.clone());
                                 Self::store_key(addr, fkey);
-                                attachment.set_value((*val).clone());
+                                attachment.set_value((*val).clone(), 0);
                                 Self::store_raw_value(addr, fval);
                             } else {
                                 Self::store_key(addr, fkey);
@@ -1174,7 +1171,7 @@ impl<
                 }
                 if Self::cas_value(addr, EMPTY_VALUE, orig) {
                     new_attachment.set_key(key);
-                    new_attachment.set_value(value);
+                    new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, fkey);
                     // CAS to ensure sentinel into old chunk (spec)
@@ -1193,7 +1190,7 @@ impl<
         } else {
             return false;
         }
-        old_attachment.erase();
+        old_attachment.erase(fvalue.val);
         *effective_copy += 1;
         return true;
     }

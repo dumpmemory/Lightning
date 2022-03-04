@@ -89,14 +89,14 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
     }
 
     #[inline(always)]
-    fn set_value(self, value: V) {
+    fn set_value(self, value: V, _old_fval: FVal) {
         let addr = self.addr;
         let val_addr = addr + Self::VAL_OFFSET;
         unsafe { ptr::write(val_addr as *mut V, value) }
     }
 
     #[inline(always)]
-    fn erase(self) {
+    fn erase(self, _old_fval: FVal) {
         let addr = self.addr;
         // drop(addr as *mut K);
         drop((addr + Self::VAL_OFFSET) as *mut V);

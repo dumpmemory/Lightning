@@ -21,6 +21,10 @@ pub(crate) mod hash_map;
 pub(crate) mod hash_set;
 pub(crate) mod lite_map;
 pub(crate) mod obj_map;
+
+pub type FKey = usize;
+pub type FVal = usize;
+
 #[cfg(test)]
 mod tests;
 mod word_map;
@@ -94,8 +98,8 @@ pub trait AttachmentItem<K, V> {
     fn get_key(self) -> K;
     fn get_value(self) -> V;
     fn set_key(self, key: K);
-    fn set_value(self, value: V);
-    fn erase(self);
+    fn set_value(self, value: V, old_fval: FVal);
+    fn erase(self, old_fval: FVal);
     fn probe(self, probe_key: &K) -> bool;
     fn prep_write(self);
 }
