@@ -82,10 +82,6 @@ fn dfence() {
     fence(SeqCst);
 }
 
-const fn can_attach<K, V, A: Attachment<K, V>>() -> bool {
-    mem::size_of::<(K, V)>() != 0
-}
-
 pub trait Attachment<K, V> {
     type Item: AttachmentItem<K, V> + Copy;
     fn heap_size_of(cap: usize) -> usize;

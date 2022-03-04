@@ -102,7 +102,7 @@ impl<
         H: Hasher + Default,
     > Table<K, V, A, ALLOC, H>
 {
-    const CAN_ATTACH: bool = can_attach::<K, V, A>();
+    const FAT_VAL: bool = mem::size_of::<V>() != 0;
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize) -> Self {
@@ -145,7 +145,7 @@ impl<
                     if val.is_valued() {
                         let act_val = val.act_val::<K, V, A>();
                         let mut attachment = None;
-                        if Self::CAN_ATTACH && read_attachment {
+                        if Self::FAT_VAL && read_attachment {
                             attachment = Some(aitem.get_value());
                             let new_val = Self::get_fast_value(addr);
                             if new_val.val != val.val {
@@ -179,7 +179,7 @@ impl<
                         if val.is_valued() {
                             let act_val = val.act_val::<K, V, A>();
                             let mut attachment = None;
-                            if Self::CAN_ATTACH && read_attachment {
+                            if Self::FAT_VAL && read_attachment {
                                 attachment = Some(aitem.get_value());
                                 let new_val = Self::get_fast_value(addr);
                                 if new_val.val != val.val {
@@ -614,11 +614,11 @@ impl<
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
                                 trace!("Inserting in place for {}", fkey);
-                                let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                                let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                                 let prev_val = read_attachment.then(|| attachment.get_value());
                                 let val_to_store = Self::value_to_store(raw, fval);
                                 if Self::cas_value(addr, raw, primed_fval) {
-                                    if Self::CAN_ATTACH {
+                                    if Self::FAT_VAL {
                                         attachment.set_value(ov.clone());
                                         Self::store_raw_value(addr, val_to_store);
                                     }
@@ -674,17 +674,17 @@ impl<
                             }
                             ModOp::AttemptInsert(fval, oval) => {
                                 if act_val == TOMBSTONE_VALUE {
-                                    let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                                    let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     let val_to_store = Self::value_to_store(raw, fval);
                                     if Self::cas_value(addr, v.val, primed_fval) {
-                                        if Self::CAN_ATTACH {
+                                        if Self::FAT_VAL {
                                             attachment.set_value((*oval).clone());
                                             Self::store_raw_value(addr, val_to_store);
                                         }
                                         return ModResult::Replaced(act_val, prev_val, idx);
                                     } else {
-                                        if Self::CAN_ATTACH && read_attachment {
+                                        if Self::FAT_VAL && read_attachment {
                                             // Fast value changed, cannot obtain stable fat value
                                             backoff.spin();
                                             continue;
@@ -698,7 +698,7 @@ impl<
                                     fval,
                                     act_val,
                                 );
-                                    if Self::CAN_ATTACH
+                                    if Self::FAT_VAL
                                         && read_attachment
                                         && Self::get_fast_value(addr).val != v.val
                                     {
@@ -768,9 +768,9 @@ impl<
                             fval,
                             addr
                         );
-                        let primed_fval = Self::if_attach_then_val(LOCKED_VALUE, fval);
+                        let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
-                            if Self::CAN_ATTACH {
+                            if Self::FAT_VAL {
                                 attachment.set_key(key.clone());
                                 Self::store_key(addr, fkey);
                                 attachment.set_value((*val).clone());
@@ -845,7 +845,7 @@ impl<
                 if act_val >= NUM_FIX_V {
                     let key = attachment.get_key();
                     let value = attachment.get_value();
-                    if Self::CAN_ATTACH && Self::get_fast_value(addr).val != val_res.val {
+                    if Self::FAT_VAL && Self::get_fast_value(addr).val != val_res.val {
                         continue;
                     }
                     res.push((k, act_val, key, value))
@@ -916,7 +916,7 @@ impl<
 
     #[inline]
     fn value_to_store(original: FVal, value: FVal) -> usize {
-        if Self::CAN_ATTACH {
+        if Self::FAT_VAL {
             FastValue::next_version(original, value)
         } else {
             0
@@ -1214,8 +1214,8 @@ impl<
     }
 
     #[inline]
-    const fn if_attach_then_val<T: Copy>(then: T, els: T) -> T {
-        if Self::CAN_ATTACH {
+    const fn if_fat_val_then_val<T: Copy>(then: T, els: T) -> T {
+        if Self::FAT_VAL {
             then
         } else {
             els
@@ -1237,7 +1237,7 @@ impl FastValue {
 
     #[inline]
     fn act_val<K, V, A: Attachment<K, V>>(&self) -> FVal {
-        if can_attach::<K, V, A>() {
+        if mem::size_of::<V>() != 0 {
             self.val & FVAL_VAL_BIT_MASK
         } else {
             self.val
