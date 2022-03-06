@@ -93,7 +93,6 @@ pub trait Attachment<K, V> {
     fn heap_size_of(cap: usize) -> usize;
     fn new(heap_ptr: usize) -> Self;
     fn prefetch(&self, index: usize) -> Self::Item;
-    fn dealloc(&self);
 }
 
 pub trait AttachmentItem<K, V> {

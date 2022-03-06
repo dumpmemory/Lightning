@@ -49,9 +49,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     }
 
     #[inline(always)]
-    fn dealloc(&self) {}
-
-    #[inline(always)]
     fn prefetch(&self, index: usize) -> Self::Item {
         let addr = self.addr_by_index(index);
         unsafe {

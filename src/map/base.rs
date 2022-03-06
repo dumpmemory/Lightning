@@ -619,7 +619,11 @@ impl<
                                     if Self::FAT_VAL {
                                         Self::store_raw_value(addr, val_to_store);
                                     }
-                                    return ModResult::Replaced(act_val, prev_val, idx);
+                                    if raw != TOMBSTONE_VALUE {
+                                        return ModResult::Replaced(act_val, prev_val, idx);
+                                    } else {
+                                        return ModResult::Done(act_val, None, idx);
+                                    }
                                 } else {
                                     backoff.spin();
                                     continue;
@@ -767,8 +771,8 @@ impl<
                         );
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
+                            attachment.set_key(key.clone());
                             if Self::FAT_VAL {
-                                attachment.set_key(key.clone());
                                 Self::store_key(addr, fkey);
                                 attachment.set_value((*val).clone(), 0);
                                 Self::store_raw_value(addr, fval);
@@ -869,16 +873,12 @@ impl<
 
     #[inline]
     fn get_fast_key(entry_addr: usize) -> FKey {
-        debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
+        Chunk::<K, V, A, ALLOC>::get_fast_key(entry_addr)
     }
 
     #[inline]
     fn get_fast_value(entry_addr: usize) -> FastValue {
-        debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<FKey>();
-        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut FVal) };
-        FastValue::new(val)
+        Chunk::<K, V, A, ALLOC>::get_fast_value(entry_addr)
     }
 
     #[inline]
@@ -1048,6 +1048,9 @@ impl<
         ResizeResult::Done
     }
 
+
+
+
     fn migrate_entries(
         &self,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
@@ -1190,7 +1193,6 @@ impl<
         } else {
             return false;
         }
-        old_attachment.erase(fvalue.val);
         *effective_copy += 1;
         return true;
     }
@@ -1294,8 +1296,39 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);
         let chunk = &*ptr;
-        chunk.attachment.dealloc();
+        chunk.gc_entries();
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
+    }
+
+    fn gc_entries(&self) {
+        let mut old_address = self.base as usize;
+        let boundary = old_address + chunk_size_of(self.capacity);
+        let mut idx = 0;
+        while old_address < boundary {
+            let fvalue = Self::get_fast_value(old_address);
+            let fkey = Self::get_fast_key(old_address);
+            let val = fvalue.val;
+            if fkey != EMPTY_KEY && val >= NUM_FIX_V {
+                let attachment = self.attachment.prefetch(idx);
+                attachment.erase(val);
+            }
+            old_address += ENTRY_SIZE;
+            idx += 1;
+        }
+    }
+
+    #[inline]
+    fn get_fast_key(entry_addr: usize) -> FKey {
+        debug_assert!(entry_addr > 0);
+        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
+    }
+
+    #[inline]
+    fn get_fast_value(entry_addr: usize) -> FastValue {
+        debug_assert!(entry_addr > 0);
+        let addr = entry_addr + mem::size_of::<FKey>();
+        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut FVal) };
+        FastValue::new(val)
     }
 
     #[inline]

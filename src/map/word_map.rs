@@ -223,10 +223,7 @@ impl Attachment<(), ()> for WordAttachment {
     fn new(_heap_ptr: usize) -> Self {
         Self
     }
-
-    #[inline(always)]
-    fn dealloc(&self) {}
-
+    
     #[inline(always)]
     fn prefetch(&self, _index: usize) -> Self::Item {
         WordAttachmentItem
