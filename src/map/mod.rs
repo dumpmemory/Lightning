@@ -21,6 +21,7 @@ pub(crate) mod hash_map;
 pub(crate) mod hash_set;
 pub(crate) mod lite_map;
 pub(crate) mod obj_map;
+pub(crate) mod ptr_map;
 
 pub type FKey = usize;
 pub type FVal = usize;
@@ -31,6 +32,7 @@ mod word_map;
 
 type ObjAtom = u16;
 
+pub use ptr_map::*;
 pub use hash_map::*;
 pub use hash_set::*;
 pub use lite_map::*;

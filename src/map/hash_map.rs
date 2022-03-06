@@ -1,7 +1,7 @@
 use super::base::*;
 use super::*;
 
-pub type HashTable<K, V, ALLOC> = Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, DefaultHasher>;
+pub type HashTable<K, V, ALLOC, H> = Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, H>;
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     obj_chunk: usize,
@@ -130,7 +130,7 @@ pub struct HashMap<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: HashTable<K, V, ALLOC>,
+    table: HashTable<K, V, ALLOC, H>,
     shadow: PhantomData<H>,
 }
 
@@ -213,7 +213,7 @@ pub struct HashMapReadGuard<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: &'a HashTable<K, V, ALLOC>,
+    table: &'a HashTable<K, V, ALLOC, H>,
     hash: usize,
     key: K,
     value: V,
@@ -223,7 +223,7 @@ pub struct HashMapReadGuard<
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     HashMapReadGuard<'a, K, V, ALLOC, H>
 {
-    fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
+    fn new(table: &'a HashTable<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let hash = hash_key::<K, H>(&key);
@@ -308,7 +308,7 @@ pub struct HashMapWriteGuard<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: &'a HashTable<K, V, ALLOC>,
+    table: &'a HashTable<K, V, ALLOC, H>,
     hash: usize,
     key: K,
     value: V,
@@ -318,7 +318,7 @@ pub struct HashMapWriteGuard<
 impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     HashMapWriteGuard<'a, K, V, ALLOC, H>
 {
-    fn new(table: &'a HashTable<K, V, ALLOC>, key: &K) -> Option<Self> {
+    fn new(table: &'a HashTable<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let hash = hash_key::<K, H>(&key);

@@ -7,7 +7,7 @@ pub struct HashSet<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: HashTable<T, (), ALLOC>,
+    table: HashTable<T, (), ALLOC, H>,
     shadow: PhantomData<H>,
 }
 
