@@ -25,6 +25,7 @@ mod lfmap;
 mod fat_lfmap;
 mod obj_lfmap;
 mod lite_lfmap;
+mod ptr_lfmap;
 mod lockfree;
 mod scc;
 
@@ -257,6 +258,7 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
+        run_perf_test_set::<ptr_lfmap::TestTable>(file_name, "lightning - ptr", load, contention, stride),
         run_perf_test_set::<fat_lfmap::TestTable>(file_name, "lightning - fat", load, contention, stride),
         run_perf_test_set::<obj_lfmap::TestTable>(file_name, "lightning - obj", load, contention, stride),
         run_perf_test_set::<lite_lfmap::TestTable>(file_name, "lightning - lite", load, contention, stride),
