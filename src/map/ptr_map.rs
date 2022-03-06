@@ -19,8 +19,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
-        let guard = crossbeam_epoch::pin();
-        let v_num = Self::ref_val(value, &guard);
+        let v_num = Self::ref_val(value);
         self.table
             .insert(op, key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| Self::deref_val(fv as usize))
@@ -34,16 +33,16 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     // }
 
     #[inline(always)]
-    fn ref_val<T: Clone>(d: &T, guard: &Guard) -> usize {
-        let ptr = Owned::new(d.clone()).into_shared(&guard);
-        ptr.into_usize()
+    fn ref_val<T: Clone>(d: &T) -> usize {
+        unsafe {
+            T::init(d.clone())
+        }
     }
 
     #[inline(always)]
     fn deref_val<T: Clone>(num: usize) -> T {
         unsafe {
-            let ptr = Shared::<T>::from_usize(num);
-            ptr.deref().clone()
+            T::deref(num).clone()
         }
     }
 }
