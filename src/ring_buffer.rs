@@ -43,6 +43,14 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         self.push_general(data, &self.head, &self.tail, Self::decr, true)
     }
 
+    pub unsafe fn push_back_unsafe(&self, data: T) -> Result<ItemRef<T, N>, T> {
+        self.push_unsafe_general(data, &self.tail, &self.head, Self::incr, false)
+    }
+
+    pub unsafe fn push_front_unsafe(&self, data: T) -> Result<ItemRef<T, N>, T> {
+        self.push_unsafe_general(data, &self.head, &self.tail, Self::decr, true)
+    }
+
     #[inline(always)]
     fn push_general<S>(
         &self,
@@ -89,6 +97,14 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         self.pop_general(&self.tail, &self.head, Self::decr, true)
     }
 
+    pub unsafe fn pop_front_unsafe(&self) -> Option<T> {
+        self.pop_unsafe_general(&self.head, &self.tail, Self::incr, false)
+    }
+
+    pub unsafe fn pop_back_unsafe(&self) -> Option<T> {
+        self.pop_unsafe_general(&self.tail, &self.head, Self::decr, true)
+    }
+
     #[inline(always)]
     fn pop_general<S>(
         &self,
@@ -133,6 +149,72 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
             }
             backoff.spin();
         }
+    }
+
+    #[inline(always)]
+    fn pop_unsafe_general<S>(
+        &self,
+        target: &AtomicUsize,
+        other_side: &AtomicUsize,
+        shift: S,
+        ahead: bool,
+    ) -> Option<T>
+    where
+        S: Fn(usize) -> usize,
+    {
+        loop {
+            let target_val = target.load(Relaxed);
+            let other_val = other_side.load(Relaxed);
+            if target_val == other_val {
+                return None;
+            }
+            let new_target_val = shift(target_val);
+            let pos = if ahead { new_target_val } else { target_val }; // target value is always on step ahead
+            let flag = &self.flags[pos];
+            let obj = &self.elements[pos];
+            let flag_val = flag.load(Relaxed);
+            debug_assert_ne!(flag_val, EMPTY);
+            flag.store(EMPTY, Relaxed);
+            let mut res = T::default();
+            if flag_val != SENTINEL {
+                res = obj.replace(res);
+            }
+            target.store(new_target_val, Relaxed);
+            if flag_val != SENTINEL {
+                return Some(res);
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn push_unsafe_general<S>(
+        &self,
+        data: T,
+        target: &AtomicUsize,
+        other_side: &AtomicUsize,
+        shift: S,
+        ahead: bool,
+    ) -> Result<ItemRef<T, N>, T>
+    where
+        S: Fn(usize) -> usize,
+    {
+        let target_val = target.load(Relaxed);
+        let other_val = other_side.load(Relaxed);
+        let new_target_val = shift(target_val);
+        let pos = if ahead { new_target_val } else { target_val };
+        if new_target_val == other_val {
+            // overflow
+            return Err(data);
+        }
+        target.store(new_target_val, Relaxed);
+        let flag = &self.flags[pos];
+        let obj = &self.elements[pos];
+        obj.set(data);
+        flag.store(ACQUIRED, Relaxed);
+        return Ok(ItemRef {
+            buffer: self,
+            idx: pos,
+        });
     }
 
     pub fn peek_back(&self) -> Option<ItemRef<T, N>> {

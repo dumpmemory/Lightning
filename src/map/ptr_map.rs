@@ -19,6 +19,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
+        let guard = crossbeam_epoch::pin();
         let v_num = Self::ref_val(value);
         self.table
             .insert(op, key, Some(&()), 0 as FKey, v_num as FVal)
