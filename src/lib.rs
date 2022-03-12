@@ -12,6 +12,7 @@ extern crate static_assertions;
 // pub mod deque;
 pub mod linked_map;
 pub mod list;
+pub mod stack;
 pub mod lru_cache;
 pub mod map;
 pub mod ring_buffer;

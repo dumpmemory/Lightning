@@ -21,12 +21,7 @@ pub struct RingBuffer<T, const N: usize> {
 
 impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
-        let mut elements: [Cell<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
-        for ele in &mut elements {
-            unsafe {
-                std::ptr::write(ele.as_ptr(), T::default());
-            }
-        }
+        let elements: [Cell<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
