@@ -1,5 +1,13 @@
+use std::cell::Cell;
+
+use crate::obj_alloc;
+
 use super::base::*;
 use super::*;
+
+thread_local! {
+    static ALLOCATOR_ADDR: Cell<usize> = Cell::new(0);
+}
 
 pub type PtrTable<K, V, ALLOC, H> =
     Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H>;
@@ -11,16 +19,25 @@ pub struct PtrHashMap<
     H: Hasher + Default = DefaultHasher,
 > {
     table: PtrTable<K, V, ALLOC, H>,
+    allocator: obj_alloc::Allocator<V, 64>,
     shadow: PhantomData<(K, V, H)>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     PtrHashMap<K, V, ALLOC, H>
 {
+
+    #[inline(always)]
+    fn set_alloc_addr(&self) {
+        let ptr: *const obj_alloc::Allocator<V, 64> = &self.allocator;
+        ALLOCATOR_ADDR.with(|c| c.set(ptr as usize));
+    }
+
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
-        let guard = crossbeam_epoch::pin();
-        let v_num = Self::ref_val(value);
+        self.set_alloc_addr();
+        let _guard = self.allocator.pin();
+        let v_num = self.ref_val(value);
         self.table
             .insert(op, key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| Self::deref_val(fv as usize))
@@ -34,9 +51,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     // }
 
     #[inline(always)]
-    fn ref_val<T: Clone>(d: &T) -> usize {
+    fn ref_val(&self, d: &V) -> usize {
         unsafe {
-            T::init(d.clone())
+            let ptr = self.allocator.alloc();
+            ptr::write(ptr, d.clone());
+            ptr as usize
         }
     }
 
@@ -52,8 +71,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     for PtrHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
+        let alloc = obj_alloc::Allocator::new();
         Self {
             table: PtrTable::with_capacity(cap),
+            allocator: alloc,
             shadow: PhantomData,
         }
     }
@@ -71,6 +92,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn remove(&self, key: &K) -> Option<V> {
+        self.set_alloc_addr();
+        let _guard = self.allocator.pin();
         self.table.remove(key, 0).map(|(fv, _)| Self::deref_val(fv))
     }
 
@@ -91,6 +114,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn clear(&self) {
+        self.set_alloc_addr();
         self.table.clear();
     }
 }
@@ -162,11 +186,11 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
     fn erase(self, old_fval: FVal) {
         if old_fval >= NUM_FIX_V {
-            unsafe {
-                let guard = crossbeam_epoch::pin();
-                let ptr = Shared::<V>::from_usize(old_fval as usize);
-                guard.defer_destroy(ptr);
-            }
+            let alloc = unsafe {
+                &*(ALLOCATOR_ADDR.with(|c| c.get()) as *mut obj_alloc::Allocator<V, 64>)
+            };
+            let guard = alloc.pin();
+            guard.defer_free(old_fval as *mut V)
         }
     }
 
@@ -176,6 +200,12 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     }
 
     fn prep_write(self) {}
+}
+
+impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for PtrHashMap<K, V, ALLOC, H> {
+    fn drop(&mut self) {
+        self.set_alloc_addr()
+    }
 }
 
 impl<K: Clone, V: Clone> Copy for PtrValAttachmentItem<K, V> {}

@@ -84,7 +84,7 @@ pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
     new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
-    chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
+    pub chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     count: AtomicUsize,
     epoch: AtomicUsize,
     init_cap: usize,
