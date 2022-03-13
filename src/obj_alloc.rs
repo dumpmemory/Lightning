@@ -107,7 +107,8 @@ impl<T, const B: usize> SharedAlloc<T, B> {
 }
 
 impl<T, const B: usize> TLAllocInner<T, B> {
-    const BUMP_SIZE: usize = mem::size_of::<T>() as usize;
+
+    const OBJ_SIZE: usize = mem::size_of::<T>() as usize;
 
     pub fn new(buffer: usize, limit: usize, shared: Arc<SharedAlloc<T, B>>) -> Self {
         Self {
@@ -125,7 +126,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         if let Some(addr) = self.free_list.pop() {
             return addr;
         }
-        if self.buffer == self.buffer_limit {
+        if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
             let guard = crossbeam_epoch::pin();
             if let Some(mut new_free_buffer) = self.shared.free_objs(&guard) {
@@ -143,7 +144,8 @@ impl<T, const B: usize> TLAllocInner<T, B> {
             self.buffer_limit = new_limit;
         }
         let obj_addr = self.buffer;
-        self.buffer += Self::BUMP_SIZE;
+        self.buffer += Self::OBJ_SIZE;
+        debug_assert!(self.buffer <= self.buffer_limit);
         return obj_addr;
     }
 
@@ -230,6 +232,7 @@ impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
                     res = Some(overflow_buffer_node);
                     self.num_buffer -= 1;
                 }
+                debug_assert!(!self.head.is_null());
                 let new_buffer = Box::new(RingBufferNode {
                     buffer: RingBuffer::new(),
                     next: Atomic::from(Owned::from_raw(self.head)),

@@ -80,6 +80,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn get(&self, key: &K) -> Option<V> {
+        self.set_alloc_addr();
         self.table.get(key, 0, false).map(|(fv, _)| Self::deref_val(fv))
     }
 
@@ -98,6 +99,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn entries(&self) -> Vec<(K, V)> {
+        self.set_alloc_addr();
         self.table
             .entries()
             .into_iter()
@@ -106,6 +108,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn contains_key(&self, key: &K) -> bool {
+        self.set_alloc_addr();
         self.table.get(key, 0, false).is_some()
     }
 
