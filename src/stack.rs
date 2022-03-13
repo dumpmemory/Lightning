@@ -1,7 +1,9 @@
 // A lock-free stack
 
 use crossbeam_epoch::Atomic;
+use crossbeam_epoch::Guard;
 use crossbeam_epoch::Owned;
+use crossbeam_epoch::Shared;
 use std::sync::atomic::Ordering::*;
 
 use crate::ring_buffer::RingBuffer;
@@ -11,8 +13,8 @@ pub struct LinkedRingBufferStack<T, const B: usize> {
 }
 
 pub struct RingBufferNode<T, const N: usize> {
-    buffer: RingBuffer<T, N>,
-    next: Atomic<Self>,
+    pub buffer: RingBuffer<T, N>,
+    pub next: Atomic<Self>,
 }
 
 impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
@@ -33,13 +35,18 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
             let res = node.buffer.pop_front();
             if res.is_none() {
                 let next = node.next.load(Acquire, &guard);
-                let _ = self.head.compare_exchange(
-                    node_ptr,
-                    next,
-                    AcqRel,
-                    Relaxed,
-                    &guard,
-                );
+                if self
+                    .head
+                    .compare_exchange(node_ptr, next, AcqRel, Relaxed, &guard)
+                    .is_ok()
+                {
+                    while let Some(v) = node.buffer.pop_back() {
+                        self.push(v);
+                    }
+                    unsafe {
+                        guard.defer_destroy(node_ptr);
+                    }
+                }
             } else {
                 return res;
             }
@@ -53,31 +60,56 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
             if !node_ptr.is_null() {
                 let node = unsafe { node_ptr.deref() };
                 if let Err(v) = node.buffer.push_front(data) {
-                    data =  v;
+                    data = v;
                 } else {
                     return;
                 }
             }
             // Push into current buffer does not succeed. Need new buffer.
-            let _ = self.head.compare_exchange(node_ptr, Owned::new(RingBufferNode {
-                buffer: RingBuffer::new(), next: Atomic::from(node_ptr)
-            }), AcqRel, Relaxed, &guard);
+            let _ = self.head.compare_exchange(
+                node_ptr,
+                Owned::new(RingBufferNode {
+                    buffer: RingBuffer::new(),
+                    next: Atomic::from(node_ptr),
+                }),
+                AcqRel,
+                Relaxed,
+                &guard,
+            );
         }
     }
 
-    pub fn attach_buffer(&self, buffer: RingBuffer<T, B>) {
-        let guard = crossbeam_epoch::pin();
-        let new_node_ptr = Owned::new(RingBufferNode {
-            buffer, next: Atomic::null()
-        }).into_shared(&guard);
-        let new_node = unsafe {
-            new_node_ptr.deref()
-        };
+    pub fn attach_buffer<'a>(&self, new_node_ptr: Shared<'a, RingBufferNode<T, B>>, guard: &'a Guard) {
+        let new_node = unsafe { new_node_ptr.deref() };
         loop {
             let node_ptr = self.head.load(Acquire, &guard);
             new_node.next.store(node_ptr, Relaxed);
-            if self.head.compare_exchange(node_ptr, new_node_ptr, AcqRel, Relaxed, &guard).is_ok() {
+            if self
+                .head
+                .compare_exchange(node_ptr, new_node_ptr, AcqRel, Relaxed, &guard)
+                .is_ok()
+            {
                 break;
+            }
+        }
+    }
+
+    pub fn pop_buffer<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, RingBufferNode<T, B>>> {
+        loop {
+            unsafe {
+                let node_ptr = self.head.load(Acquire, guard);
+                if node_ptr.is_null() {
+                    return None;
+                }
+                let node = node_ptr.deref();
+                let next_ptr = node.next.load(Acquire, guard);
+                if self
+                    .head
+                    .compare_exchange(node_ptr, next_ptr, AcqRel, Relaxed, &guard)
+                    .is_ok()
+                {
+                    return Some(node_ptr);
+                }
             }
         }
     }
@@ -85,7 +117,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
 
 #[cfg(test)]
 mod test {
-    use std::{sync::Arc, thread, collections::HashSet};
+    use std::{collections::HashSet, sync::Arc, thread};
 
     use itertools::Itertools;
 
@@ -102,7 +134,6 @@ mod test {
             debug_assert_eq!(list.pop(), Some(i));
         }
     }
-
 
     #[test]
     pub fn multithread_push_pop() {

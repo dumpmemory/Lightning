@@ -2,6 +2,7 @@
 #![feature(allocator_api)]
 #![feature(const_fn_trait_bound)]
 #![feature(test)]
+#![feature(generic_const_exprs)]
 #[macro_use]
 extern crate log;
 extern crate alloc;
@@ -20,6 +21,7 @@ pub mod spin;
 pub mod ttl_cache;
 
 pub mod rand;
+pub mod obj_alloc;
 
 #[macro_use]
 mod par_list_test_macros;

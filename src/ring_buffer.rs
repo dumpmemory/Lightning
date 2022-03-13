@@ -30,6 +30,16 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    pub fn count(&self) -> usize {
+        let head = self.head.load(Acquire);
+        let tail = self.head.load(Acquire);
+        if head > tail {
+            head - tail
+        } else {
+            tail - head
+        }
+    }
+
     pub fn push_back(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_general(data, &self.tail, &self.head, Self::incr, false)
     }
