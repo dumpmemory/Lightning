@@ -85,6 +85,7 @@ pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
     new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     pub chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
+    attachment_init_meta: A::InitMeta,
     count: AtomicUsize,
     epoch: AtomicUsize,
     init_cap: usize,
@@ -102,25 +103,26 @@ impl<
     const FAT_VAL: bool = mem::size_of::<V>() != 0;
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
-    pub fn with_capacity(cap: usize) -> Self {
+    pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
         if !is_power_of_2(cap) {
             panic!("capacity is not power of 2");
         }
         // Each entry key value pair is 2 words
         // steal 1 bit in the MSB of value indicate Prime(1)
-        let chunk = Chunk::alloc_chunk(cap);
+        let chunk = Chunk::alloc_chunk(cap, &attachment_init_meta);
         Self {
             chunk: Atomic::new(ChunkPtr::new(chunk)),
             new_chunk: Atomic::null(),
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
             init_cap: cap,
+            attachment_init_meta,
             mark: PhantomData,
         }
     }
 
-    pub fn new() -> Self {
-        Self::with_capacity(64)
+    pub fn new(attachment_init_meta: A::InitMeta) -> Self {
+        Self::with_capacity(64, attachment_init_meta)
     }
 
     pub fn get(&self, key: &K, fkey: FKey, read_attachment: bool) -> Option<(FVal, Option<V>)> {
@@ -332,7 +334,10 @@ impl<
                 continue;
             }
             let len = self.len();
-            let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(self.init_cap)));
+            let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
+                self.init_cap,
+                &self.attachment_init_meta,
+            )));
             self.chunk.store(owned_new.into_shared(&guard), Release);
             self.new_chunk.store(Shared::null(), Release);
             dfence();
@@ -1005,9 +1010,12 @@ impl<
         }
         dfence();
         trace!("Resizing {:?}", old_chunk_ptr);
-        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(new_cap)))
-            .into_shared(guard)
-            .with_tag(0);
+        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
+            new_cap,
+            &self.attachment_init_meta,
+        )))
+        .into_shared(guard)
+        .with_tag(0);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         dfence();
         self.epoch.fetch_add(1, AcqRel);
@@ -1047,9 +1055,6 @@ impl<
         }
         ResizeResult::Done
     }
-
-
-
 
     fn migrate_entries(
         &self,
@@ -1224,14 +1229,12 @@ impl<
 
 #[derive(Copy, Clone)]
 struct FastValue {
-    val: FVal
+    val: FVal,
 }
 
 impl FastValue {
     pub fn new(val: FVal) -> Self {
-        Self {
-            val
-        }
+        Self { val }
     }
 
     #[inline]
@@ -1262,7 +1265,7 @@ impl FastValue {
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
-    fn alloc_chunk(capacity: usize) -> *mut Self {
+    fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 8);
         let self_size_aligned = self_size + self_align;
@@ -1285,7 +1288,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
                     total_size,
-                    attachment: A::new(attachment_base),
+                    attachment: A::new(attachment_base, attachment_meta),
                     shadow: PhantomData,
                 },
             )
@@ -1352,6 +1355,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             count: AtomicUsize::new(0),
             epoch: AtomicUsize::new(0),
             init_cap: self.init_cap,
+            attachment_init_meta: self.attachment_init_meta.clone(),
             mark: PhantomData,
         };
         let guard = crossbeam_epoch::pin();

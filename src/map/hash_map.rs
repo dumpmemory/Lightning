@@ -36,12 +36,13 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     for HashKVAttachment<K, V, A>
 {
     type Item = HashKVAttachmentItem<K, V>;
+    type InitMeta = ();
 
     fn heap_size_of(cap: usize) -> usize {
         cap * Self::PAIR_SIZE
     }
 
-    fn new(heap_ptr: usize) -> Self {
+    fn new(heap_ptr: usize, meta: &()) -> Self {
         Self {
             obj_chunk: heap_ptr,
             shadow: PhantomData,
@@ -154,7 +155,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     fn with_capacity(cap: usize) -> Self {
         Self {
-            table: Table::with_capacity(cap),
+            table: Table::with_capacity(cap, ()),
             shadow: PhantomData,
         }
     }

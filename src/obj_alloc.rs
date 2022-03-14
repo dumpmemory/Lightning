@@ -117,7 +117,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
             buffer_limit: limit,
             shared,
             guard_count: 0,
-            defer_free: vec![],
+            defer_free: Vec::with_capacity(64),
             _marker: PhantomData,
         }
     }
@@ -284,7 +284,7 @@ impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
         let alloc = unsafe { &mut *self.alloc };
         alloc.guard_count -= 1;
         if alloc.guard_count == 0 {
-            for ptr in mem::replace(&mut alloc.defer_free, vec![]) {
+            while let Some(ptr) = alloc.defer_free.pop() {
                 alloc.free(ptr);
             }
         }
@@ -295,6 +295,16 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
     pub fn defer_free(&self, ptr: *mut T) {
         let alloc = unsafe { &mut *self.alloc };
         alloc.defer_free.push(ptr as usize);
+    }
+
+    pub fn alloc(&self) -> *mut T {
+        let alloc = unsafe { &mut *self.alloc };
+        alloc.alloc() as *mut T
+    }
+
+    pub fn free(&self, addr: usize) {
+        let alloc = unsafe { &mut *self.alloc };
+        alloc.free(addr)
     }
 }
 

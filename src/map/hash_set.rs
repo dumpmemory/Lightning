@@ -14,7 +14,7 @@ pub struct HashSet<
 impl<T: Clone + Hash + Eq, ALLOC: GlobalAlloc + Default, H: Hasher + Default> HashSet<T, ALLOC, H> {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            table: Table::with_capacity(cap),
+            table: Table::with_capacity(cap, ()),
             shadow: PhantomData,
         }
     }

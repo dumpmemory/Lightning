@@ -76,7 +76,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         assert_eq!(Self::K_SIZE, 8);
         assert_eq!(Self::V_SIZE, 8);
         Self {
-            table: Table::with_capacity(cap),
+            table: Table::with_capacity(cap, ()),
             shadow: PhantomData,
         }
     }

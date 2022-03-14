@@ -33,7 +33,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for WordMap<ALLOC, H> {
     fn with_capacity(cap: usize) -> Self {
         Self {
-            table: Table::with_capacity(cap),
+            table: Table::with_capacity(cap, ()),
         }
     }
 
@@ -212,7 +212,9 @@ pub struct WordAttachmentItem;
 
 // this attachment basically do nothing and sized zero
 impl Attachment<(), ()> for WordAttachment {
+
     type Item = WordAttachmentItem;
+    type InitMeta = ();
 
     #[inline(always)]
     fn heap_size_of(_cap: usize) -> usize {
@@ -220,7 +222,7 @@ impl Attachment<(), ()> for WordAttachment {
     }
 
     #[inline(always)]
-    fn new(_heap_ptr: usize) -> Self {
+    fn new(_heap_ptr: usize, meta: &()) -> Self {
         Self
     }
     

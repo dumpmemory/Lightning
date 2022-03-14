@@ -40,7 +40,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
 {
     fn with_capacity(cap: usize) -> Self {
         Self {
-            table: Table::with_capacity(cap),
+            table: Table::with_capacity(cap, ()),
         }
     }
 
@@ -103,13 +103,14 @@ pub struct WordObjectAttachmentItem<T> {
 
 impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachment<T, A> {
     type Item = WordObjectAttachmentItem<T>;
+    type InitMeta = ();
 
     fn heap_size_of(cap: usize) -> usize {
         let obj_size = mem::size_of::<T>();
         cap * obj_size
     }
 
-    fn new(heap_ptr: usize) -> Self {
+    fn new(heap_ptr: usize, meta: &()) -> Self {
         Self {
             obj_chunk: heap_ptr,
             shadow: PhantomData,

@@ -21,7 +21,7 @@ pub struct TTLCache<
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, ALLOC, H> {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            table: ObjectTable::with_capacity(cap),
+            table: ObjectTable::with_capacity(cap, ()),
         }
     }
     pub fn get<F: Fn(usize) -> Option<V>>(
