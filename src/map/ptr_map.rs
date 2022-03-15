@@ -5,8 +5,7 @@ use crate::obj_alloc::{self, AllocGuard, Allocator};
 use super::base::*;
 use super::*;
 
-pub type PtrTable<K, V, ALLOC, H> =
-    Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H>;
+pub type PtrTable<K, V, ALLOC, H> = Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H>;
 
 pub struct PtrHashMap<
     K: Clone + Hash + Eq,
@@ -53,9 +52,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn deref_val<T: Clone>(num: usize) -> T {
-        unsafe {
-            T::deref(num).clone()
-        }
+        unsafe { T::deref(num).clone() }
     }
 }
 
@@ -65,9 +62,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn with_capacity(cap: usize) -> Self {
         let mut alloc = Box::new(obj_alloc::Allocator::new());
         let alloc_ptr: *mut Allocator<V, 64> = &mut *alloc.as_mut();
-        let attachment_init_meta = PtrValAttachmentMeta {
-            alloc: alloc_ptr
-        };
+        let attachment_init_meta = PtrValAttachmentMeta { alloc: alloc_ptr };
         Self {
             table: PtrTable::with_capacity(cap, attachment_init_meta),
             allocator: alloc,
@@ -76,7 +71,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn get(&self, key: &K) -> Option<V> {
-        self.table.get(key, 0, false).map(|(fv, _)| Self::deref_val(fv))
+        self.table
+            .get(key, 0, false)
+            .map(|(fv, _)| Self::deref_val(fv))
     }
 
     fn insert(&self, key: &K, value: &V) -> Option<V> {
@@ -129,11 +126,11 @@ pub struct PtrValAttachmentItem<K, V> {
 
 #[derive(Clone)]
 pub struct PtrValAttachmentMeta<V> {
-    alloc: *mut obj_alloc::Allocator<V, 64>
+    alloc: *mut obj_alloc::Allocator<V, 64>,
 }
 
-unsafe impl <V> Send for PtrValAttachmentMeta<V> {}
-unsafe impl <V> Sync for PtrValAttachmentMeta<V> {}
+unsafe impl<V> Send for PtrValAttachmentMeta<V> {}
+unsafe impl<V> Sync for PtrValAttachmentMeta<V> {}
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> PtrValAttachment<K, V, A> {
     const KEY_SIZE: usize = mem::size_of::<K>();
@@ -148,7 +145,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
 {
     type Item = PtrValAttachmentItem<K, V>;
     type InitMeta = PtrValAttachmentMeta<V>;
-
 
     fn heap_size_of(cap: usize) -> usize {
         cap * Self::KEY_SIZE // only keys on the heap
@@ -194,11 +190,8 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
     fn erase(self, old_fval: FVal) {
         if old_fval >= NUM_FIX_V {
-            let alloc = unsafe {
-                &*(self.alloc as *mut obj_alloc::Allocator<V, 64>)
-            };
-            let guard = alloc.pin();
-            guard.free(old_fval);
+            let alloc = unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, 64>) };
+            alloc.free(old_fval as *mut V);
         }
     }
 
@@ -406,7 +399,7 @@ mod ptr_map {
             }
         });
     }
-    
+
     const VAL_SIZE: usize = 2048;
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];

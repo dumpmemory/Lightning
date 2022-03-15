@@ -212,7 +212,6 @@ pub struct WordAttachmentItem;
 
 // this attachment basically do nothing and sized zero
 impl Attachment<(), ()> for WordAttachment {
-
     type Item = WordAttachmentItem;
     type InitMeta = ();
 
@@ -225,7 +224,7 @@ impl Attachment<(), ()> for WordAttachment {
     fn new(_heap_ptr: usize, meta: &()) -> Self {
         Self
     }
-    
+
     #[inline(always)]
     fn prefetch(&self, _index: usize) -> Self::Item {
         WordAttachmentItem

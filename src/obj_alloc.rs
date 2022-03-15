@@ -2,9 +2,9 @@
 
 use std::{cell::UnsafeCell, marker::PhantomData, mem, sync::Arc};
 
+use crate::thread_local::ThreadLocal;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::sync::atomic::Ordering::Relaxed;
-use thread_local::ThreadLocal;
 
 use crate::{
     ring_buffer::RingBuffer,
@@ -107,7 +107,6 @@ impl<T, const B: usize> SharedAlloc<T, B> {
 }
 
 impl<T, const B: usize> TLAllocInner<T, B> {
-
     const OBJ_SIZE: usize = mem::size_of::<T>() as usize;
 
     pub fn new(buffer: usize, limit: usize, shared: Arc<SharedAlloc<T, B>>) -> Self {
@@ -166,7 +165,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
                 .push((self.buffer, self.buffer_limit))
         }
 
-        // return free list 
+        // return free list
         let local_free = &mut self.free_list;
         let head = local_free.head;
         let guard = crossbeam_epoch::pin();

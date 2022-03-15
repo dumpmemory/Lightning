@@ -32,11 +32,11 @@ mod word_map;
 
 type ObjAtom = u16;
 
-pub use ptr_map::*;
 pub use hash_map::*;
 pub use hash_set::*;
 pub use lite_map::*;
 pub use obj_map::*;
+pub use ptr_map::*;
 pub use word_map::*;
 
 pub trait Map<K, V: Clone> {
@@ -89,10 +89,9 @@ fn dfence() {
 }
 
 pub trait Attachment<K, V> {
-
     type InitMeta: Clone;
     type Item: AttachmentItem<K, V> + Copy;
-    
+
     fn heap_size_of(cap: usize) -> usize;
     fn new(heap_ptr: usize, meta: &Self::InitMeta) -> Self;
     fn prefetch(&self, index: usize) -> Self::Item;

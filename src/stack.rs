@@ -4,6 +4,7 @@ use crossbeam_epoch::Atomic;
 use crossbeam_epoch::Guard;
 use crossbeam_epoch::Owned;
 use crossbeam_epoch::Shared;
+use std::mem;
 use std::sync::atomic::Ordering::*;
 
 use crate::ring_buffer::RingBuffer;
@@ -21,6 +22,14 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
     pub fn new() -> Self {
         Self {
             head: Atomic::null(),
+        }
+    }
+
+    pub const fn const_new() -> Self {
+        unsafe {
+            Self {
+                head: mem::transmute(0usize),
+            }
         }
     }
 
@@ -79,7 +88,11 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
         }
     }
 
-    pub fn attach_buffer<'a>(&self, new_node_ptr: Shared<'a, RingBufferNode<T, B>>, guard: &'a Guard) {
+    pub fn attach_buffer<'a>(
+        &self,
+        new_node_ptr: Shared<'a, RingBufferNode<T, B>>,
+        guard: &'a Guard,
+    ) {
         let new_node = unsafe { new_node_ptr.deref() };
         loop {
             let node_ptr = self.head.load(Acquire, &guard);
@@ -114,6 +127,9 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
         }
     }
 }
+
+unsafe impl<T, const B: usize> Sync for LinkedRingBufferStack<T, B> {}
+unsafe impl<T, const B: usize> Send for LinkedRingBufferStack<T, B> {}
 
 #[cfg(test)]
 mod test {

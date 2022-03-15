@@ -38,7 +38,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let k_num = Self::encode(key);
         let v_num = Self::encode(value);
         self.table
-            .insert(op, &(), None, k_num as FKey, v_num as FVal)
+            .insert(op, &(), Some(&()), k_num as FKey, v_num as FVal)
             .map(|(fv, _)| Self::decode::<V>(fv as usize))
     }
 
