@@ -6,6 +6,7 @@ use super::base::*;
 use super::*;
 
 pub type PtrTable<K, V, ALLOC, H> = Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H>;
+const ALLOC_BUFFER_SIZE: usize = 256;
 
 pub struct PtrHashMap<
     K: Clone + Hash + Eq,
@@ -14,7 +15,7 @@ pub struct PtrHashMap<
     H: Hasher + Default = DefaultHasher,
 > {
     table: PtrTable<K, V, ALLOC, H>,
-    allocator: Box<obj_alloc::Allocator<V, 64>>,
+    allocator: Box<obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>>,
     shadow: PhantomData<(K, V, H)>,
 }
 
@@ -42,7 +43,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     // }
 
     #[inline(always)]
-    fn ref_val(&self, d: &V, guard: &AllocGuard<V, 64>) -> usize {
+    fn ref_val(&self, d: &V, guard: &AllocGuard<V, ALLOC_BUFFER_SIZE>) -> usize {
         unsafe {
             let ptr = guard.alloc();
             ptr::write(ptr, d.clone());
@@ -61,7 +62,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     fn with_capacity(cap: usize) -> Self {
         let mut alloc = Box::new(obj_alloc::Allocator::new());
-        let alloc_ptr: *mut Allocator<V, 64> = &mut *alloc.as_mut();
+        let alloc_ptr: *mut Allocator<V, ALLOC_BUFFER_SIZE> = &mut *alloc.as_mut();
         let attachment_init_meta = PtrValAttachmentMeta { alloc: alloc_ptr };
         Self {
             table: PtrTable::with_capacity(cap, attachment_init_meta),
@@ -113,20 +114,20 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 #[derive(Clone)]
 pub struct PtrValAttachment<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> {
     key_chunk: usize,
-    alloc: *mut obj_alloc::Allocator<V, 64>,
+    alloc: *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>,
     _marker: PhantomData<(K, V, A)>,
 }
 
 #[derive(Clone)]
 pub struct PtrValAttachmentItem<K, V> {
     addr: usize,
-    alloc: *mut obj_alloc::Allocator<V, 64>,
+    alloc: *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>,
     _marker: PhantomData<(K, V)>,
 }
 
 #[derive(Clone)]
 pub struct PtrValAttachmentMeta<V> {
-    alloc: *mut obj_alloc::Allocator<V, 64>,
+    alloc: *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>,
 }
 
 unsafe impl<V> Send for PtrValAttachmentMeta<V> {}
@@ -190,7 +191,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
     fn erase(self, old_fval: FVal) {
         if old_fval >= NUM_FIX_V {
-            let alloc = unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, 64>) };
+            let alloc = unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
             alloc.free(old_fval as *mut V);
         }
     }
