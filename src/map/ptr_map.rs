@@ -1,5 +1,3 @@
-use std::cell::Cell;
-
 use crate::obj_alloc::{self, AllocGuard, Allocator};
 
 use super::base::*;

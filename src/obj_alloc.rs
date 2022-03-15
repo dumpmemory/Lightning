@@ -343,7 +343,6 @@ impl <T: Default, const N: usize> RingBuffer<T, N> {
             return Err(data);
         }
         self.elements[pos].set(data);
-        self.flags[pos].store(ACQUIRED, Relaxed);
         self.tail.store(pos + 1, Relaxed);
         Ok(())
     }
@@ -354,7 +353,6 @@ impl <T: Default, const N: usize> RingBuffer<T, N> {
         }
         pos -= 1;
         let val = self.elements[pos].take();
-        self.flags[pos].store(EMPTY, Relaxed);
         self.tail.store(pos, Relaxed);
         Some(val)
     } 
