@@ -9,14 +9,14 @@ use crossbeam_utils::Backoff;
 
 const EMPTY: u8 = 0;
 const SENTINEL: u8 = 1;
-const ACQUIRED: u8 = 2;
+pub const ACQUIRED: u8 = 2;
 const EMPTY_SLOT: AtomicU8 = AtomicU8::new(EMPTY);
 
 pub struct RingBuffer<T, const N: usize> {
-    head: AtomicUsize,
-    tail: AtomicUsize,
-    elements: [Cell<T>; N],
-    flags: [AtomicU8; N],
+    pub head: AtomicUsize,
+    pub tail: AtomicUsize,
+    pub elements: [Cell<T>; N],
+    pub flags: [AtomicU8; N],
 }
 
 impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {

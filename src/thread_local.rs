@@ -35,7 +35,7 @@ impl<T> ThreadLocal<T> {
     pub fn new() -> Self {
         Self {
             fast_map: unsafe { mem::transmute([0usize; FAST_THREADS]) },
-            reserve_map: LiteHashMap::with_capacity(num_cpus::get()),
+            reserve_map: LiteHashMap::with_capacity(num_cpus::get().next_power_of_two()),
             _marker: PhantomData,
         }
     }

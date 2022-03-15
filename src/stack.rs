@@ -41,7 +41,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
                 return None;
             }
             let node = unsafe { node_ptr.deref() };
-            let res = node.buffer.pop_front();
+            let res = node.buffer.pop_back();
             if res.is_none() {
                 let next = node.next.load(Acquire, &guard);
                 if self
@@ -49,7 +49,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
                     .compare_exchange(node_ptr, next, AcqRel, Relaxed, &guard)
                     .is_ok()
                 {
-                    while let Some(v) = node.buffer.pop_back() {
+                    while let Some(v) = node.buffer.pop_front() {
                         self.push(v);
                     }
                     unsafe {
@@ -68,7 +68,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
             let node_ptr = self.head.load(Acquire, &guard);
             if !node_ptr.is_null() {
                 let node = unsafe { node_ptr.deref() };
-                if let Err(v) = node.buffer.push_front(data) {
+                if let Err(v) = node.buffer.push_back(data) {
                     data = v;
                 } else {
                     return;
