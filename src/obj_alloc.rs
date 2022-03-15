@@ -128,7 +128,9 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         }
         if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
-            let guard = crossbeam_epoch::pin();
+            let guard = unsafe {
+                crossbeam_epoch::unprotected()
+            };
             if let Some(mut new_free_buffer) = self.shared.free_objs(&guard) {
                 let mut free_buffer = unsafe { new_free_buffer.deref_mut() };
                 if let Some(ptr) = free_buffer.buffer.pop_front() {
@@ -224,7 +226,7 @@ impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
             if let Err(val) = (&*self.head).buffer.lite_push_back(val) {
                 // Current buffer is full, need a new one
                 if self.num_buffer >= Self::MAX_BUFFERS {
-                    let guard = crossbeam_epoch::pin();
+                    let guard = crossbeam_epoch::unprotected();
                     let overflow_buffer_node = Owned::from_raw(self.head);
                     let next_head: *mut RingBufferNode<T, B> =
                         &mut (*(&*self.head).next.load(Relaxed, &guard).deref_mut());
@@ -258,7 +260,7 @@ impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
                     return head_pop;
                 }
                 // Need to pop from next buffer
-                let guard = crossbeam_epoch::pin();
+                let guard = crossbeam_epoch::unprotected();
                 let next_buffer = (&*self.head).next.load(Relaxed, &guard);
                 if next_buffer.is_null() {
                     return None;
@@ -311,7 +313,7 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
 impl<T, const B: usize> Drop for Allocator<T, B> {
     fn drop(&mut self) {
         unsafe {
-            let guard = crossbeam_epoch::pin();
+            let guard = crossbeam_epoch::unprotected();
             while let Some(b) = self.shared.all_buffers.pop_buffer(&guard) {
                 let b = b.deref();
                 while let Some(alloc_bufer) = b.buffer.lite_pop_back() {
