@@ -62,10 +62,6 @@ impl<T> ThreadLocal<T> {
             return &*(obj_ptr as *const T);
         }
     }
-
-    fn fast_map_size() -> usize {
-        num_cpus::get() * 4
-    }
 }
 
 impl ThreadMeta {
