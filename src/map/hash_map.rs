@@ -42,7 +42,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
         cap * Self::PAIR_SIZE
     }
 
-    fn new(heap_ptr: usize, meta: &()) -> Self {
+    fn new(heap_ptr: usize, _meta: &()) -> Self {
         Self {
             obj_chunk: heap_ptr,
             shadow: PhantomData,

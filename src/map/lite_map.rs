@@ -8,15 +8,6 @@ struct AlignedLiteObj<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T> AlignedLiteObj<T> {
-    pub fn new(obj: T) -> Self {
-        Self {
-            data: obj,
-            _marker: PhantomData,
-        }
-    }
-}
-
 pub struct LiteHashMap<
     K: Clone + Hash + Eq,
     V: Clone,

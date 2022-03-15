@@ -3,7 +3,7 @@
 use crate::map::{Map, PassthroughHasher};
 use crate::{map::LiteHashMap, stack::LinkedRingBufferStack};
 use std::alloc::System;
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell};
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::*;
