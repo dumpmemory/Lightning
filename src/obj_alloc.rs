@@ -55,6 +55,7 @@ impl<T, const B: usize> Allocator<T, B> {
 
     pub fn free(&self, addr: *mut T) {
         let tl_alloc = self.tl_alloc();
+        
         unsafe {
             let alloc_ref = &mut *tl_alloc.get();
             alloc_ref.free(addr as usize)
