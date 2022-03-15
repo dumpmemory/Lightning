@@ -12,17 +12,19 @@ use std::{mem, ptr};
 static GLOBAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FREE_LIST: LinkedRingBufferStack<u64, 64> = LinkedRingBufferStack::const_new();
 
+
 thread_local! {
   static THREAD_META: ThreadMeta = ThreadMeta::new();
 }
 
 struct ThreadMeta {
     hash: u64,
-    freed_maps: RefCell<Vec<Box<Fn()>>>,
 }
 
+const FAST_THREADS: usize = 512;
+
 pub struct ThreadLocal<T> {
-    fast_map: *mut [Cell<usize>],
+    fast_map: [Cell<usize>; FAST_THREADS],
     reserve_map: LiteHashMap<u64, usize, System, PassthroughHasher>,
     _marker: PhantomData<T>,
 }
@@ -31,16 +33,8 @@ impl<T> ThreadLocal<T> {
     const OBJ_SIZE: usize = mem::size_of::<T>();
 
     pub fn new() -> Self {
-        let fast_map_size = Self::fast_map_size();
-        let fast_map_data_size = fast_map_size * mem::size_of::<usize>();
-        let fast_map_alloc = unsafe { libc::malloc(fast_map_data_size) };
-        let fast_map = unsafe {
-            libc::memset(fast_map_alloc, 0, fast_map_data_size);
-            ptr::slice_from_raw_parts(fast_map_alloc as *const usize, fast_map_size)
-                as *mut [Cell<usize>]
-        };
         Self {
-            fast_map: fast_map,
+            fast_map: unsafe { mem::transmute([0usize; FAST_THREADS]) },
             reserve_map: LiteHashMap::with_capacity(num_cpus::get()),
             _marker: PhantomData,
         }
@@ -50,9 +44,8 @@ impl<T> ThreadLocal<T> {
         unsafe {
             let hash = ThreadMeta::get_hash();
             let idx = hash as usize;
-            let fast_map = &mut *self.fast_map;
-            let obj_ptr = if idx < fast_map.len() {
-                let cell = &fast_map[idx];
+            let obj_ptr = if idx < self.fast_map.len() {
+                let cell = &self.fast_map[idx];
                 if cell.get() == 0 {
                     let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
                     ptr::write(ptr, new());
@@ -82,7 +75,6 @@ impl ThreadMeta {
             .unwrap_or_else(|| GLOBAL_COUNTER.fetch_add(1, AcqRel));
         ThreadMeta {
             hash,
-            freed_maps: RefCell::new(vec![]),
         }
     }
 
@@ -94,9 +86,6 @@ impl ThreadMeta {
 impl Drop for ThreadMeta {
     fn drop(&mut self) {
         FREE_LIST.push(self.hash);
-        for free_map in self.freed_maps.borrow().iter() {
-            free_map()
-        }
     }
 }
 
@@ -107,8 +96,7 @@ impl<T> Drop for ThreadLocal<T> {
                 libc::free(v as *mut libc::c_void);
             }
         }
-        let fast_map = unsafe { &mut *self.fast_map };
-        for cell in fast_map.iter() {
+        for cell in self.fast_map.iter() {
             let addr = cell.get();
             if addr == 0 {
                 continue;
@@ -118,13 +106,6 @@ impl<T> Drop for ThreadLocal<T> {
             }
             cell.set(0);
         }
-        let fast_map_ptr = self.fast_map as *mut libc::c_void as usize;
-        THREAD_META.with(move |m| {
-            let mut free_maps = m.freed_maps.borrow_mut();
-            free_maps.push(Box::new(move || unsafe {
-                libc::free(fast_map_ptr as *mut libc::c_void);
-            }))
-        });
     }
 }
 
