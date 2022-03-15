@@ -7,8 +7,8 @@ use crossbeam_utils::Backoff;
 
 // A lock-free double sided ring buffer
 
-const EMPTY: u8 = 0;
-const SENTINEL: u8 = 1;
+pub const EMPTY: u8 = 0;
+pub const SENTINEL: u8 = 1;
 pub const ACQUIRED: u8 = 2;
 const EMPTY_SLOT: AtomicU8 = AtomicU8::new(EMPTY);
 
