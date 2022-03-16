@@ -122,7 +122,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> HashKVAttachment<
     }
 }
 
-pub struct HashMap<
+pub struct LockingHashMap<
     K: Clone + Hash + Eq,
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
@@ -133,7 +133,7 @@ pub struct HashMap<
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-    HashMap<K, V, ALLOC, H>
+    LockingHashMap<K, V, ALLOC, H>
 {
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
@@ -151,7 +151,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
-    for HashMap<K, V, ALLOC, H>
+    for LockingHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
         Self {
@@ -416,7 +416,7 @@ mod fat_tests {
 
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];
-    pub type FatHashMap = HashMap<Key, Value, System>;
+    pub type FatHashMap = LockingHashMap<Key, Value, System>;
 
     #[test]
     fn no_resize() {
@@ -664,7 +664,7 @@ mod test {
     #[test]
     fn parallel_hash_map_rwlock() {
         let _ = env_logger::try_init();
-        let map_cont = super::HashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
+        let map_cont = super::LockingHashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
         map.insert(&1, &Obj::new(0));
         let mut threads = vec![];
@@ -687,7 +687,7 @@ mod test {
     #[test]
     fn parallel_hashmap_hybrid() {
         let _ = env_logger::try_init();
-        let map = Arc::new(super::HashMap::<u32, Obj>::with_capacity(4));
+        let map = Arc::new(super::LockingHashMap::<u32, Obj>::with_capacity(4));
         for i in 5..128u32 {
             map.insert(&i, &Obj::new((i * 10) as usize));
         }

@@ -39,26 +39,27 @@ impl<T> ThreadLocal<T> {
         }
     }
 
-    pub fn get_or<F: Fn() -> T>(&self, new: F) -> &T {
+    pub fn get_or<F: Fn() -> T>(&self, new: F) -> Option<&T> {
         unsafe {
-            let hash = ThreadMeta::get_hash();
-            let idx = hash as usize;
-            let obj_ptr = if idx < self.fast_map.len() {
-                let cell = &self.fast_map[idx];
-                if cell.get() == 0 {
-                    let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
-                    ptr::write(ptr, new());
-                    cell.set(ptr as usize);
-                }
-                cell.get()
-            } else {
-                self.reserve_map.get_or_insert(&hash, move || {
-                    let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
-                    ptr::write(ptr, new());
-                    ptr as usize
-                })
-            };
-            return &*(obj_ptr as *const T);
+            ThreadMeta::get_hash().map(|hash| {
+                let idx = hash as usize;
+                let obj_ptr = if idx < self.fast_map.len() {
+                    let cell = &self.fast_map[idx];
+                    if cell.get() == 0 {
+                        let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
+                        ptr::write(ptr, new());
+                        cell.set(ptr as usize);
+                    }
+                    cell.get()
+                } else {
+                    self.reserve_map.get_or_insert(&hash, move || {
+                        let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
+                        ptr::write(ptr, new());
+                        ptr as usize
+                    })
+                };
+                &*(obj_ptr as *const T)
+            })
         }
     }
 }
@@ -71,8 +72,8 @@ impl ThreadMeta {
         ThreadMeta { hash }
     }
 
-    pub fn get_hash() -> u64 {
-        THREAD_META.with(|m| m.hash)
+    pub fn get_hash() -> Option<u64> {
+        THREAD_META.try_with(|m| m.hash).ok()
     }
 }
 

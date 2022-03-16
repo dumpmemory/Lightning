@@ -1,27 +1,22 @@
 // A lock-free stack
-
-use crossbeam_epoch::Atomic;
-use crossbeam_epoch::Guard;
-use crossbeam_epoch::Owned;
-use crossbeam_epoch::Shared;
 use std::mem;
-use std::sync::atomic::Ordering::*;
 
+use crate::aarc::{AtomicArc, Arc};
 use crate::ring_buffer::RingBuffer;
 
 pub struct LinkedRingBufferStack<T, const B: usize> {
-    head: Atomic<RingBufferNode<T, B>>,
+    head: AtomicArc<RingBufferNode<T, B>>,
 }
 
 pub struct RingBufferNode<T, const N: usize> {
     pub buffer: RingBuffer<T, N>,
-    pub next: Atomic<Self>,
+    pub next: AtomicArc<Self>,
 }
 
 impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
     pub fn new() -> Self {
         Self {
-            head: Atomic::null(),
+            head: AtomicArc::null(),
         }
     }
 
@@ -34,26 +29,20 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
     }
 
     pub fn pop(&self) -> Option<T> {
-        let guard = crossbeam_epoch::pin();
         loop {
-            let node_ptr = self.head.load(Acquire, &guard);
-            if node_ptr.is_null() {
+            let node = self.head.load();
+            if node.is_null() {
                 return None;
             }
-            let node = unsafe { node_ptr.deref() };
             let res = node.buffer.pop_back();
             if res.is_none() {
-                let next = node.next.load(Acquire, &guard);
+                let next = node.next.load();
                 if self
                     .head
-                    .compare_exchange(node_ptr, next, AcqRel, Relaxed, &guard)
-                    .is_ok()
+                    .compare_exchange_is_ok(&node, &next)
                 {
                     while let Some(v) = node.buffer.pop_front() {
                         self.push(v);
-                    }
-                    unsafe {
-                        guard.defer_destroy(node_ptr);
                     }
                 }
             } else {
@@ -63,11 +52,9 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
     }
 
     pub fn push(&self, mut data: T) {
-        let guard = crossbeam_epoch::pin();
         loop {
-            let node_ptr = self.head.load(Acquire, &guard);
-            if !node_ptr.is_null() {
-                let node = unsafe { node_ptr.deref() };
+            let node = self.head.load();
+            if !node.is_null() {
                 if let Err(v) = node.buffer.push_back(data) {
                     data = v;
                 } else {
@@ -75,31 +62,27 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
                 }
             }
             // Push into current buffer does not succeed. Need new buffer.
-            let _ = self.head.compare_exchange(
-                node_ptr,
-                Owned::new(RingBufferNode {
-                    buffer: RingBuffer::new(),
-                    next: Atomic::from(node_ptr),
-                }),
-                AcqRel,
-                Relaxed,
-                &guard,
+            let new_node = RingBufferNode {
+                buffer: RingBuffer::new(),
+                next: AtomicArc::from_rc(node.clone()),
+            };
+            let _ = self.head.compare_exchange_value_is_ok(
+                &node,
+                new_node
             );
         }
     }
 
     pub fn attach_buffer<'a>(
         &self,
-        new_node_ptr: Shared<'a, RingBufferNode<T, B>>,
-        guard: &'a Guard,
+        new_node: Arc<RingBufferNode<T, B>>,
     ) {
-        let new_node = unsafe { new_node_ptr.deref() };
         loop {
-            let node_ptr = self.head.load(Acquire, &guard);
-            new_node.next.store(node_ptr, Relaxed);
+            let node = self.head.load();
+            new_node.next.store_ref(node.clone());
             if self
                 .head
-                .compare_exchange(node_ptr, new_node_ptr, AcqRel, Relaxed, &guard)
+                .compare_exchange(&node, &new_node)
                 .is_ok()
             {
                 break;
@@ -107,22 +90,18 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
         }
     }
 
-    pub fn pop_buffer<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, RingBufferNode<T, B>>> {
+    pub fn pop_buffer<'a>(&self) -> Option<Arc<RingBufferNode<T, B>>> {
         loop {
-            unsafe {
-                let node_ptr = self.head.load(Acquire, guard);
-                if node_ptr.is_null() {
-                    return None;
-                }
-                let node = node_ptr.deref();
-                let next_ptr = node.next.load(Acquire, guard);
-                if self
-                    .head
-                    .compare_exchange(node_ptr, next_ptr, AcqRel, Relaxed, &guard)
-                    .is_ok()
-                {
-                    return Some(node_ptr);
-                }
+            let node = self.head.load();
+            if node.is_null() {
+                return None;
+            }
+            let next = node.next.load();
+            if self
+                .head
+                .compare_exchange_is_ok(&node, &next)
+            {
+                return Some(node);
             }
         }
     }

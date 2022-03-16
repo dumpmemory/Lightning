@@ -73,7 +73,7 @@ fn lite_lfmap(b: &mut Bencher) {
 #[bench]
 fn fat_lfmap(b: &mut Bencher) {
     let _ = env_logger::try_init();
-    let map = super::HashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
+    let map = super::LockingHashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
     let mut i = 5;
     b.iter(|| {
         map.insert(&i, &i);

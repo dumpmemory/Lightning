@@ -1,12 +1,12 @@
 // A supposed to be fast and lock-free object allocator without size class
 
-use std::{cell::UnsafeCell, marker::PhantomData, mem, sync::Arc};
+use std::{cell::UnsafeCell, marker::PhantomData, mem};
 
 use crate::{
+    aarc::{Arc, AtomicArc},
     ring_buffer::{ACQUIRED, EMPTY},
     thread_local::ThreadLocal,
 };
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::sync::atomic::Ordering::Relaxed;
 
 use crate::{
@@ -49,7 +49,7 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     pub fn alloc(&self) -> *mut T {
-        let tl_alloc = self.tl_alloc();
+        let tl_alloc = self.tl_alloc().expect("Cannot alloc for no tl");
         unsafe {
             let alloc_ref = &mut *tl_alloc.get();
             alloc_ref.alloc() as *mut T
@@ -57,8 +57,7 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     pub fn free(&self, addr: *mut T) {
-        let tl_alloc = self.tl_alloc();
-
+        let tl_alloc = self.tl_alloc().expect("Cannot free for no tl");
         unsafe {
             let alloc_ref = &mut *tl_alloc.get();
             alloc_ref.free(addr as usize)
@@ -66,7 +65,7 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     pub fn pin(&self) -> AllocGuard<T, B> {
-        let tl_alloc = self.tl_alloc();
+        let tl_alloc = self.tl_alloc().expect("Cannot pin for no tl");
         unsafe {
             let alloc_ref = &mut *tl_alloc.get();
             alloc_ref.guard_count += 1;
@@ -77,7 +76,7 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     #[inline(always)]
-    fn tl_alloc(&self) -> &TLAlloc<T, B> {
+    fn tl_alloc(&self) -> Option<&TLAlloc<T, B>> {
         self.thread
             .get_or(|| TLAlloc::new(0, 0, self.shared.clone()))
     }
@@ -105,8 +104,8 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         (ptr, ptr + Self::BUMP_SIZE)
     }
 
-    fn free_objs<'a>(&self, guard: &'a Guard) -> Option<Shared<'a, RingBufferNode<usize, B>>> {
-        self.free_obj.pop_buffer(guard)
+    fn free_objs<'a>(&self) -> Option<Arc<RingBufferNode<usize, B>>> {
+        self.free_obj.pop_buffer()
     }
 }
 
@@ -131,13 +130,11 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         }
         if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
-            let guard = unsafe { crossbeam_epoch::unprotected() };
-            if let Some(mut new_free_buffer) = self.shared.free_objs(&guard) {
-                let mut free_buffer = unsafe { new_free_buffer.deref_mut() };
+            if let Some(free_buffer) = self.shared.free_objs() {
                 if let Some(ptr) = free_buffer.buffer.pop_front() {
                     debug_assert_eq!(self.free_list.num_buffer, 0);
-                    free_buffer.next = Atomic::null();
-                    self.free_list.head = new_free_buffer.as_raw() as *mut RingBufferNode<usize, B>;
+                    free_buffer.next.store_ref(Arc::null());
+                    self.free_list.head = free_buffer;
                     self.free_list.num_buffer += 1;
                     return ptr;
                 }
@@ -157,10 +154,9 @@ impl<T, const B: usize> TLAllocInner<T, B> {
             warn!("Freeing address out of limit: {}", addr);
         }
         if let Some(overflow_buffer) = self.free_list.push(addr) {
-            let guard = crossbeam_epoch::pin();
             self.shared
                 .free_obj
-                .attach_buffer(overflow_buffer.into_shared(&guard), &guard);
+                .attach_buffer(overflow_buffer);
         }
     }
 
@@ -174,23 +170,16 @@ impl<T, const B: usize> TLAllocInner<T, B> {
 
         // return free list
         let local_free = &mut self.free_list;
-        let head = local_free.head;
-        let guard = crossbeam_epoch::pin();
+        let head = &local_free.head;
         if !head.is_null() {
-            unsafe {
-                let head_ptr = Owned::from_raw(head).into_shared(&guard);
-                let head = head_ptr.deref();
-                self.shared.free_obj.attach_buffer(head_ptr, &guard);
-                let mut next_ptr = head.next.load(Relaxed, &guard);
-                while !next_ptr.is_null() {
-                    let next = next_ptr.deref();
-                    if next.buffer.count() > 0 {
-                        self.shared.free_obj.attach_buffer(next_ptr, &guard);
-                    }
-                    let next_next = next.next.load(Relaxed, &guard);
-                    assert_ne!(next_ptr, next_next);
-                    next_ptr = next_next;
+            self.shared.free_obj.attach_buffer(head.clone());
+            let mut next = head.next.load();
+            while !next.is_null() {
+                let next_next = next.next.load();
+                if next.buffer.count() > 0 {
+                    self.shared.free_obj.attach_buffer(next);
                 }
+                next = next_next;
             }
         }
     }
@@ -205,7 +194,7 @@ impl<T, const B: usize> Drop for TLAllocInner<T, B> {
 }
 
 struct TLBufferedStack<T, const B: usize> {
-    head: *mut RingBufferNode<T, B>,
+    head: Arc<RingBufferNode<T, B>>,
     num_buffer: usize,
 }
 
@@ -213,70 +202,55 @@ impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
     const MAX_BUFFERS: usize = 32;
     pub fn new() -> Self {
         Self {
-            head: 0 as *mut RingBufferNode<T, B>,
+            head: Arc::null(),
             num_buffer: 0,
         }
     }
 
-    pub fn push(&mut self, val: T) -> Option<Owned<RingBufferNode<T, B>>> {
-        unsafe {
-            let mut res = None;
-            if self.head.is_null() {
-                self.head = Box::into_raw(Box::new(RingBufferNode {
-                    buffer: RingBuffer::new(),
-                    next: Atomic::null(),
-                }));
-            }
-            if let Err(val) = (&*self.head).buffer.lite_push_back(val) {
-                // Current buffer is full, need a new one
-                if self.num_buffer >= Self::MAX_BUFFERS {
-                    let guard = crossbeam_epoch::unprotected();
-                    let overflow_buffer_node = Owned::from_raw(self.head);
-                    let next_head: *mut RingBufferNode<T, B> =
-                        &mut (*(&*self.head).next.load(Relaxed, &guard).deref_mut());
-                    self.head = next_head;
-                    res = Some(overflow_buffer_node);
-                    self.num_buffer -= 1;
-                }
-                debug_assert!(!self.head.is_null());
-                let new_buffer = Box::new(RingBufferNode {
-                    buffer: RingBuffer::new(),
-                    next: Atomic::from(Owned::from_raw(self.head)),
-                });
-                let _ = new_buffer.buffer.push_back(val);
-                let new_ptr = Box::into_raw(new_buffer);
-                debug_assert_ne!(self.head, new_ptr);
-                self.head = new_ptr;
-                self.num_buffer += 1;
-            }
-            return res;
+    pub fn push(&mut self, val: T) -> Option<Arc<RingBufferNode<T, B>>> {
+        let mut res = None;
+        if self.head.is_null() {
+            self.head = Arc::new(RingBufferNode {
+                buffer: RingBuffer::new(),
+                next: AtomicArc::null(),
+            });
         }
+        if let Err(val) = self.head.buffer.lite_push_back(val) {
+            // Current buffer is full, need a new one
+            if self.num_buffer >= Self::MAX_BUFFERS {
+                let head_next = self.head.next.load();
+                let overflow_buffer_node = mem::replace(&mut self.head, head_next);
+                res = Some(overflow_buffer_node);
+                self.num_buffer -= 1;
+            }
+            debug_assert!(!self.head.is_null());
+            let new_buffer = RingBufferNode {
+                buffer: RingBuffer::new(),
+                next: AtomicArc::from_rc(self.head.clone()),
+            };
+            let _ = new_buffer.buffer.push_back(val);
+            self.head = Arc::new(new_buffer);
+            self.num_buffer += 1;
+        }
+        return res;
     }
 
     pub fn pop(&mut self) -> Option<T> {
         if self.head.is_null() {
             return None;
         }
-        unsafe {
-            loop {
-                let head_pop = (&*self.head).buffer.lite_pop_back();
-                if head_pop.is_some() {
-                    return head_pop;
-                }
-                // Need to pop from next buffer
-                let guard = crossbeam_epoch::unprotected();
-                let next_buffer = (&*self.head).next.load(Relaxed, &guard);
-                if next_buffer.is_null() {
-                    return None;
-                }
-                debug_assert_ne!(self.head, next_buffer.as_raw() as *mut RingBufferNode<T, B>);
-                let old_head = mem::replace(
-                    &mut self.head,
-                    next_buffer.as_raw() as *mut RingBufferNode<T, B>,
-                );
-                self.num_buffer -= 1;
-                Box::from_raw(old_head); // May need to optimize this
+        loop {
+            let head_pop = self.head.buffer.lite_pop_back();
+            if head_pop.is_some() {
+                return head_pop;
             }
+            // Need to pop from next buffer
+            let next_buffer = self.head.next.load();
+            if next_buffer.is_null() {
+                return None;
+            }
+            mem::replace(&mut self.head, next_buffer);
+            self.num_buffer -= 1;
         }
     }
 }
@@ -317,9 +291,7 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
 impl<T, const B: usize> Drop for Allocator<T, B> {
     fn drop(&mut self) {
         unsafe {
-            let guard = crossbeam_epoch::unprotected();
-            while let Some(b) = self.shared.all_buffers.pop_buffer(&guard) {
-                let b = b.deref();
+            while let Some(b) = self.shared.all_buffers.pop_buffer() {
                 while let Some(alloc_bufer) = b.buffer.lite_pop_back() {
                     libc::free(alloc_bufer as *mut libc::c_void);
                 }

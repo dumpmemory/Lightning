@@ -110,6 +110,15 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 }
 
+unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Send
+    for PtrHashMap<K, V, ALLOC, H>
+{
+}
+unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Sync
+    for PtrHashMap<K, V, ALLOC, H>
+{
+}
+
 #[derive(Clone)]
 pub struct PtrValAttachment<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> {
     key_chunk: usize,
@@ -309,13 +318,9 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
         let fval = self.map.ref_val(&self.value, &guard) & WORD_MUTEX_DATA_BIT_MASK;
-        self.map.table.insert(
-            InsertOp::Insert,
-            &self.key,
-            Some(&()),
-            0,
-            fval,
-        );
+        self.map
+            .table
+            .insert(InsertOp::Insert, &self.key, Some(&()), 0, fval);
     }
 }
 

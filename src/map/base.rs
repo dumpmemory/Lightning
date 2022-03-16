@@ -1409,7 +1409,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
             if !new_chunk_ptr.is_null() {
                 guard.defer_destroy(new_chunk_ptr);
             }
-            guard.flush();
         }
     }
 }

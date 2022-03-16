@@ -1,6 +1,6 @@
 // A concurrent linked hash map, fast and lock-free on iterate
 use crate::list::{LinkedRingBufferList, ListIter};
-use crate::map::{HashMap, HashMapWriteGuard, Map};
+use crate::map::{Map, PtrHashMap, PtrMutexGuard};
 use crate::ring_buffer::ItemPtr;
 use std::hash::Hash;
 
@@ -8,14 +8,14 @@ use std::hash::Hash;
 pub struct KVPair<K: Clone + Default, V: Clone + Default>(pub K, pub V);
 
 pub struct LinkedHashMap<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
-    map: HashMap<K, ItemPtr<KVPair<K, V>, N>>,
+    map: PtrHashMap<K, ItemPtr<KVPair<K, V>, N>>,
     list: LinkedRingBufferList<KVPair<K, V>, N>,
 }
 
 impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedHashMap<K, V, N> {
     pub fn with_capacity(cap: usize) -> Self {
         LinkedHashMap {
-            map: HashMap::with_capacity(cap),
+            map: PtrHashMap::with_capacity(cap),
             list: LinkedRingBufferList::new(),
         }
     }
@@ -42,7 +42,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     pub fn get(&self, key: &K) -> Option<V> {
         self.map
-            .read(key)
+            .lock(key)
             .map(|l| unsafe { (&*l).deref().clone().1 })
     }
 
@@ -56,7 +56,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     #[inline(always)]
     pub fn get_to_general(&self, key: &K, forwarding: bool) -> Option<V> {
-        self.map.write(key).and_then(|mut l| {
+        self.map.lock(key).and_then(|mut l| {
             let pair = unsafe { l.deref() }.clone();
             let new_ref = if forwarding {
                 self.list.push_front(pair)
@@ -71,8 +71,8 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map
-            .write(key)
-            .and_then(|l| unsafe { HashMapWriteGuard::remove(l).remove().map(|KVPair(_, v)| v) })
+            .lock(key)
+            .and_then(|l| unsafe { PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v) })
     }
 
     pub fn pop_front(&self) -> Option<KVPair<K, V>> {
@@ -93,9 +93,9 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
             };
             if let Some(pair) = list_item {
                 if let Some(KVPair(k, v)) = pair.deref() {
-                    if let Some(l) = self.map.write(&k) {
+                    if let Some(l) = self.map.lock(&k) {
                         unsafe {
-                            HashMapWriteGuard::remove(l).remove();
+                            PtrMutexGuard::remove(l).remove();
                             return Some(KVPair(k, v));
                         }
                     }
