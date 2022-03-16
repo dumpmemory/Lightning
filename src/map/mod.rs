@@ -17,7 +17,7 @@ use std::ops::DerefMut;
 use std::os::raw::c_void;
 
 pub(crate) mod base;
-pub(crate) mod hash_map;
+pub(crate) mod fat_map;
 pub(crate) mod hash_set;
 pub(crate) mod lite_map;
 pub(crate) mod obj_map;
@@ -30,9 +30,7 @@ pub type FVal = usize;
 mod tests;
 mod word_map;
 
-type ObjAtom = u16;
-
-pub use hash_map::*;
+pub use fat_map::*;
 pub use hash_set::*;
 pub use lite_map::*;
 pub use obj_map::*;

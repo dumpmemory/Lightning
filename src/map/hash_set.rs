@@ -1,5 +1,5 @@
 use super::base::*;
-use super::hash_map::HashTable;
+use super::fat_map::HashTable;
 use super::*;
 
 pub struct HashSet<
