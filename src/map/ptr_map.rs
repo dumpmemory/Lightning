@@ -189,7 +189,8 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
     fn erase(self, old_fval: FVal) {
         if old_fval >= NUM_FIX_V {
-            let alloc = unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
+            let alloc =
+                unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
             alloc.free(old_fval as *mut V);
         }
     }
@@ -204,20 +205,31 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
 impl<K: Clone, V: Clone> Copy for PtrValAttachmentItem<K, V> {}
 
-pub struct PtrMutexGuard<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
+pub struct PtrMutexGuard<
+    'a,
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
+> {
     map: &'a PtrHashMap<K, V, ALLOC, H>,
     key: K,
     value: V,
 }
 
-impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> PtrMutexGuard<'a, K, V, ALLOC, H> {
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    PtrMutexGuard<'a, K, V, ALLOC, H>
+{
     fn new(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
         loop {
-            let swap_res = map.table.swap(0, key, move |fast_value| {
-                let locked_val = fast_value | MUTEX_BIT_MASK;
+            let swap_res = map.table.swap(
+                0,
+                key,
+                move |fast_value| {
+                    let locked_val = fast_value | MUTEX_BIT_MASK;
                     if fast_value == locked_val {
                         // Locked, unchanged
                         None
@@ -225,7 +237,9 @@ impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hashe
                         // Obtain lock
                         Some(locked_val)
                     }
-            }, &guard);
+                },
+                &guard,
+            );
             match swap_res {
                 SwapResult::Succeed(val, _idx, _chunk) => {
                     value = map.deref_val(val & WORD_MUTEX_DATA_BIT_MASK);
@@ -254,16 +268,18 @@ impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hashe
             0,
             fvalue | MUTEX_BIT_MASK,
         ) {
-            None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
-                Some(Self { map, key: key.clone(), value: value.clone() })
-            }
-            _ => {
-                None
-            }
+            None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
+                map,
+                key: key.clone(),
+                value: value.clone(),
+            }),
+            _ => None,
         }
     }
 }
-impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref for PtrMutexGuard<'a, K, V, ALLOC, H> {
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
+{
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
@@ -271,12 +287,16 @@ impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hashe
     }
 }
 
-impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut for PtrMutexGuard<'a, K, V, ALLOC, H> {
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
-impl <'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for PtrMutexGuard<'a, K, V, ALLOC, H> {
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
+{
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
         self.map.table.insert(

@@ -2,7 +2,10 @@
 
 use std::{cell::UnsafeCell, marker::PhantomData, mem, sync::Arc};
 
-use crate::{thread_local::ThreadLocal, ring_buffer::{ACQUIRED, EMPTY}};
+use crate::{
+    ring_buffer::{ACQUIRED, EMPTY},
+    thread_local::ThreadLocal,
+};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -55,7 +58,7 @@ impl<T, const B: usize> Allocator<T, B> {
 
     pub fn free(&self, addr: *mut T) {
         let tl_alloc = self.tl_alloc();
-        
+
         unsafe {
             let alloc_ref = &mut *tl_alloc.get();
             alloc_ref.free(addr as usize)
@@ -128,9 +131,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         }
         if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
-            let guard = unsafe {
-                crossbeam_epoch::unprotected()
-            };
+            let guard = unsafe { crossbeam_epoch::unprotected() };
             if let Some(mut new_free_buffer) = self.shared.free_objs(&guard) {
                 let mut free_buffer = unsafe { new_free_buffer.deref_mut() };
                 if let Some(ptr) = free_buffer.buffer.pop_front() {
@@ -336,7 +337,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
     }
 }
 
-impl <T: Default, const N: usize> RingBuffer<T, N> {
+impl<T: Default, const N: usize> RingBuffer<T, N> {
     fn lite_push_back(&self, data: T) -> Result<(), T> {
         let pos = self.tail.load(Relaxed);
         if pos >= self.elements.len() {
@@ -355,5 +356,5 @@ impl <T: Default, const N: usize> RingBuffer<T, N> {
         let val = self.elements[pos].take();
         self.tail.store(pos, Relaxed);
         Some(val)
-    } 
+    }
 }

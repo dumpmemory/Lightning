@@ -3,7 +3,7 @@
 use crate::map::{Map, PassthroughHasher};
 use crate::{map::LiteHashMap, stack::LinkedRingBufferStack};
 use std::alloc::System;
-use std::cell::{Cell};
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::*;
@@ -11,7 +11,6 @@ use std::{mem, ptr};
 
 static GLOBAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FREE_LIST: LinkedRingBufferStack<u64, 64> = LinkedRingBufferStack::const_new();
-
 
 thread_local! {
   static THREAD_META: ThreadMeta = ThreadMeta::new();
@@ -69,9 +68,7 @@ impl ThreadMeta {
         let hash = FREE_LIST
             .pop()
             .unwrap_or_else(|| GLOBAL_COUNTER.fetch_add(1, AcqRel));
-        ThreadMeta {
-            hash,
-        }
+        ThreadMeta { hash }
     }
 
     pub fn get_hash() -> u64 {
