@@ -33,12 +33,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             })
     }
 
-    // pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
-    //     HashMapWriteGuard::new(&self.table, key)
-    // }
-    // pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
-    //     HashMapReadGuard::new(&self.table, key)
-    // }
+    pub fn lock(&self, key: &K) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
+        PtrMutexGuard::new(&self, key)
+    }
+
+    pub fn insert_locked(&self, key: &K, value: &V) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
+        PtrMutexGuard::create(&self, key, value)
+    }
 
     #[inline(always)]
     fn ref_val(&self, d: &V, guard: &AllocGuard<V, ALLOC_BUFFER_SIZE>) -> usize {
@@ -275,6 +276,14 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             }),
             _ => None,
         }
+    }
+
+    pub fn remove(self) -> V {
+        let fval = self.map.table.remove(&self.key, 0).unwrap().0;
+        let r = self.map.deref_val(fval);
+        self.map.allocator.free(fval as *mut V);
+        mem::forget(self);
+        return r;
     }
 }
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
