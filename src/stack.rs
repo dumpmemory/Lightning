@@ -1,7 +1,7 @@
 // A lock-free stack
 use std::mem;
 
-use crate::aarc::{AtomicArc, Arc};
+use crate::aarc::{Arc, AtomicArc};
 use crate::ring_buffer::RingBuffer;
 
 pub struct LinkedRingBufferStack<T, const B: usize> {
@@ -37,10 +37,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
             let res = node.buffer.pop_back();
             if res.is_none() {
                 let next = node.next.load();
-                if self
-                    .head
-                    .compare_exchange_is_ok(&node, &next)
-                {
+                if self.head.compare_exchange_is_ok(&node, &next) {
                     while let Some(v) = node.buffer.pop_front() {
                         self.push(v);
                     }
@@ -66,25 +63,15 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
                 buffer: RingBuffer::new(),
                 next: AtomicArc::from_rc(node.clone()),
             };
-            let _ = self.head.compare_exchange_value_is_ok(
-                &node,
-                new_node
-            );
+            let _ = self.head.compare_exchange_value_is_ok(&node, new_node);
         }
     }
 
-    pub fn attach_buffer<'a>(
-        &self,
-        new_node: Arc<RingBufferNode<T, B>>,
-    ) {
+    pub fn attach_buffer<'a>(&self, new_node: Arc<RingBufferNode<T, B>>) {
         loop {
             let node = self.head.load();
             new_node.next.store_ref(node.clone());
-            if self
-                .head
-                .compare_exchange(&node, &new_node)
-                .is_ok()
-            {
+            if self.head.compare_exchange(&node, &new_node).is_ok() {
                 break;
             }
         }
@@ -97,10 +84,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
                 return None;
             }
             let next = node.next.load();
-            if self
-                .head
-                .compare_exchange_is_ok(&node, &next)
-            {
+            if self.head.compare_exchange_is_ok(&node, &next) {
                 return Some(node);
             }
         }

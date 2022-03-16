@@ -65,7 +65,7 @@ impl<T> AtomicArc<T> {
 
     pub fn from_rc(rc: Arc<T>) -> Self {
         let res = Self {
-            ptr: AtomicPtr::new(rc.ptr as *mut Inner<T>)
+            ptr: AtomicPtr::new(rc.ptr as *mut Inner<T>),
         };
         mem::forget(rc);
         return res;
@@ -73,7 +73,7 @@ impl<T> AtomicArc<T> {
 
     pub fn null() -> Self {
         Self {
-            ptr: AtomicPtr::new(0 as *mut Inner<T>)
+            ptr: AtomicPtr::new(0 as *mut Inner<T>),
         }
     }
 
@@ -110,11 +110,11 @@ impl<T> AtomicArc<T> {
                 decr_ref(current);
                 incr_ref(new.ptr);
                 Ok(())
-            },
+            }
             Err(current) => {
                 incr_ref(current);
                 Err(Arc::from_ptr(current))
-            },
+            }
         }
     }
 
@@ -129,47 +129,39 @@ impl<T> AtomicArc<T> {
                 decr_ref(current);
                 incr_ref(new.ptr);
                 true
-            },
-            Err(_current) => {
-                false
-            },
+            }
+            Err(_current) => false,
         }
     }
 
     pub fn compare_exchange_value(&self, current: &Arc<T>, new: T) -> Result<(), Arc<T>> {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        match self.ptr.compare_exchange(
-            current.ptr as *mut Inner<T>,
-            new,
-            AcqRel,
-            Acquire,
-        ) {
+        match self
+            .ptr
+            .compare_exchange(current.ptr as *mut Inner<T>, new, AcqRel, Acquire)
+        {
             Ok(current) => {
                 decr_ref(current);
                 Ok(())
-            },
+            }
             Err(current) => {
                 incr_ref(current);
                 Err(Arc::from_ptr(current))
-            },
+            }
         }
     }
 
     pub fn compare_exchange_value_is_ok(&self, current: &Arc<T>, new: T) -> bool {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        match self.ptr.compare_exchange(
-            current.ptr as *mut Inner<T>,
-            new,
-            AcqRel,
-            Acquire,
-        ) {
+        match self
+            .ptr
+            .compare_exchange(current.ptr as *mut Inner<T>, new, AcqRel, Acquire)
+        {
             Ok(current) => {
                 decr_ref(current);
                 true
-            },
-            Err(_current) => {
-                false
-            },
+            }
+            Err(_current) => false,
         }
     }
 }

@@ -154,9 +154,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
             warn!("Freeing address out of limit: {}", addr);
         }
         if let Some(overflow_buffer) = self.free_list.push(addr) {
-            self.shared
-                .free_obj
-                .attach_buffer(overflow_buffer);
+            self.shared.free_obj.attach_buffer(overflow_buffer);
         }
     }
 

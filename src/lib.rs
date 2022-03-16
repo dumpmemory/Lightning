@@ -20,10 +20,10 @@ pub mod spin;
 pub mod stack;
 pub mod ttl_cache;
 
+pub mod aarc;
 pub mod obj_alloc;
 pub mod rand;
 pub mod thread_local;
-pub mod aarc;
 
 #[macro_use]
 mod par_list_test_macros;
