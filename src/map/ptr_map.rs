@@ -44,8 +44,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn ref_val(&self, d: &V, guard: &AllocGuard<V, ALLOC_BUFFER_SIZE>) -> usize {
         unsafe {
-            let ptr = guard.alloc();
-            ptr::write(ptr, d.clone());
+            let ptr = guard.alloc() as usize;
+            ptr::write(ptr as *mut V, d.clone());
             ptr as usize
         }
     }
@@ -189,6 +189,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     }
 
     fn erase(self, old_fval: FVal) {
+        let old_fval = old_fval & WORD_MUTEX_DATA_BIT_MASK;
         if old_fval >= NUM_FIX_V {
             let alloc =
                 unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
@@ -279,9 +280,8 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 
     pub fn remove(self) -> V {
-        let fval = self.map.table.remove(&self.key, 0).unwrap().0;
+        let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
         let r = self.map.deref_val(fval);
-        self.map.allocator.free(fval as *mut V);
         mem::forget(self);
         return r;
     }
@@ -308,12 +308,13 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
 {
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
+        let fval = self.map.ref_val(&self.value, &guard) & WORD_MUTEX_DATA_BIT_MASK;
         self.map.table.insert(
             InsertOp::Insert,
             &self.key,
             Some(&()),
             0,
-            self.map.ref_val(&self.value, &guard) & WORD_MUTEX_DATA_BIT_MASK,
+            fval,
         );
     }
 }
@@ -468,7 +469,7 @@ mod ptr_map {
                               k
                           );
                           assert_eq!(map.get(&key), None, "Remove recursion");
-                          // assert!(map.read(&key).is_none(), "Remove recursion with lock");
+                          assert!(map.lock(&key).is_none(), "Remove recursion with lock");
                           map.insert(&key, &value);
                       }
                       if j % 3 == 0 {
@@ -532,5 +533,68 @@ mod ptr_map {
             r[i] = *b
         }
         r
+    }
+
+    #[test]
+    fn parallel_ptr_map_multi_mutex() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(16));
+        let mut threads = vec![];
+        let num_threads = 16;
+        let test_load = 4096;
+        let update_load = 128;
+        for thread_id in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let target = thread_id;
+                for i in 0..test_load {
+                    let key = target * 1000000 + i;
+                    {
+                        let mut mutex = map.insert_locked(&key, &0).unwrap();
+                        *mutex = 1;
+                    }
+                    for j in 1..update_load {
+                        assert!(
+                            map.get(&key).is_some(),
+                            "Pre getting value for mutex, key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
+                        let val = {
+                            let mut mutex = map.lock(&key).expect(&format!(
+                                "Locking key {}, copying {}",
+                                key,
+                                map.table.now_epoch()
+                            ));
+                            assert_eq!(*mutex, j);
+                            *mutex += 1;
+                            *mutex
+                        };
+                        assert!(
+                            map.get(&key).is_some(),
+                            "Post getting value for mutex, key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
+                        if j % 7 == 0 {
+                            {
+                                let mutex = map.lock(&key).expect(&format!(
+                                    "Remove locking key {}, copying {}",
+                                    key,
+                                    map.table.now_epoch()
+                                ));
+                                mutex.remove();
+                            }
+                            assert!(map.lock(&key).is_none());
+                            *map.insert_locked(&key, &0).unwrap() = val;
+                        }
+                    }
+                    assert_eq!(*map.lock(&key).unwrap(), update_load);
+                }
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
     }
 }

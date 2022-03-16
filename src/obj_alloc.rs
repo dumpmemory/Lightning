@@ -153,6 +153,9 @@ impl<T, const B: usize> TLAllocInner<T, B> {
     }
 
     pub fn free(&mut self, addr: usize) {
+        if cfg!(test) && addr > self.buffer_limit {
+            warn!("Freeing address out of limit: {}", addr);
+        }
         if let Some(overflow_buffer) = self.free_list.push(addr) {
             let guard = crossbeam_epoch::pin();
             self.shared
