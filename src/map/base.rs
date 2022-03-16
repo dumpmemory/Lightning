@@ -1299,10 +1299,11 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);
         let chunk = &*ptr;
-        chunk.gc_entries();
+        // chunk.gc_entries();
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
     }
 
+    #[warn(dead_code)]
     fn gc_entries(&self) {
         let mut old_address = self.base as usize;
         let boundary = old_address + chunk_size_of(self.capacity);
