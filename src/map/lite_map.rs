@@ -175,7 +175,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             }
         }
         let key = key.clone();
-        Some(Self { map, value, fkey: k_num })
+        Some(Self {
+            map,
+            value,
+            fkey: k_num,
+        })
     }
 
     fn create(map: &'a LiteHashMap<K, V, ALLOC, H>, key: &K, value: &V) -> Option<Self> {
@@ -191,7 +195,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,
                 value: value.clone(),
-                fkey: k_num
+                fkey: k_num,
             }),
             _ => None,
         }
