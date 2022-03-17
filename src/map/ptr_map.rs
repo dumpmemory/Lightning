@@ -144,6 +144,7 @@ unsafe impl<V> Sync for PtrValAttachmentMeta<V> {}
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> PtrValAttachment<K, V, A> {
     const KEY_SIZE: usize = mem::size_of::<K>();
 
+    #[inline(always)]
     fn addr_by_index(&self, index: usize) -> usize {
         self.key_chunk + index * Self::KEY_SIZE
     }
@@ -167,10 +168,11 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         }
     }
 
+    // Should not inline
     fn prefetch(&self, index: usize) -> Self::Item {
         let addr = self.addr_by_index(index);
         unsafe {
-            intrinsics::prefetch_read_data(addr as *const K, 2);
+            intrinsics::prefetch_read_data(addr as *const K, 3);
         }
         PtrValAttachmentItem {
             addr,
@@ -181,6 +183,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentItem<K, V> {
+    
     fn get_key(self) -> K {
         let addr = self.addr;
         unsafe { (*(addr as *mut K)).clone() }
@@ -193,7 +196,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
         unsafe { ptr::write_volatile(addr as *mut K, key) }
     }
 
-    fn set_value(self, _value: (), old_fval: FVal) {
+    fn set_value(self, _value: (), _old_fval: FVal) {
         // self.erase(old_fval)
     }
 
