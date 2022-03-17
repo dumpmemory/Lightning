@@ -44,6 +44,7 @@ impl<T, const B: usize> Allocator<T, B> {
         }
     }
 
+    #[inline(always)]
     pub fn alloc(&self) -> *mut T {
         let tl_alloc = self.tl_alloc().expect("Cannot alloc for no tl");
         unsafe {
@@ -52,6 +53,7 @@ impl<T, const B: usize> Allocator<T, B> {
         }
     }
 
+    #[inline(always)]
     pub fn free(&self, addr: *mut T) {
         let tl_alloc = self.tl_alloc().expect("Cannot free for no tl");
         unsafe {
@@ -60,6 +62,7 @@ impl<T, const B: usize> Allocator<T, B> {
         }
     }
 
+    #[inline(always)]
     pub fn pin(&self) -> AllocGuard<T, B> {
         let tl_alloc = self.tl_alloc().expect("Cannot pin for no tl");
         unsafe {
@@ -91,6 +94,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         }
     }
 
+    #[inline(always)]
     fn alloc_buffer(&self) -> (usize, usize) {
         if let Some(pair) = self.free_buffer.pop() {
             return pair;
@@ -100,6 +104,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         (ptr, ptr + Self::BUMP_SIZE)
     }
 
+    #[inline(always)]
     fn free_objs(&self) -> Option<Arc<ThreadLocalPage<B>>> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
@@ -115,11 +120,14 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         }
     }
 
+    #[inline(always)]
     fn attach_objs(&self, objs: &Arc<ThreadLocalPage<B>>) {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let head = self.free_obj.load();
-            objs.next.store_ref(head.clone());
+            unsafe {
+                objs.as_mut().next = AtomicArc::from_rc(head.clone());
+            }
             if self.free_obj.compare_exchange_is_ok(&head, objs) {
                 return;
             }
@@ -143,6 +151,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         }
     }
 
+    #[inline(always)]
     pub fn alloc(&mut self) -> usize {
         if let Some(addr) = self.free_list.pop() {
             return addr;
@@ -171,6 +180,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         return obj_addr;
     }
 
+    #[inline(always)]
     pub fn free(&mut self, addr: usize) {
         if cfg!(test) && addr > self.buffer_limit {
             warn!("Freeing address out of limit: {}", addr);
@@ -180,6 +190,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         }
     }
 
+    #[inline(always)]
     pub fn return_resources(&mut self) {
         // Return buffer space
         if self.buffer != self.buffer_limit {
@@ -208,6 +219,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
 unsafe impl<T, const B: usize> Send for TLAllocInner<T, B> {}
 
 impl<T, const B: usize> Drop for TLAllocInner<T, B> {
+    #[inline(always)]
     fn drop(&mut self) {
         self.return_resources();
     }
@@ -227,6 +239,7 @@ impl<const B: usize> TLBufferedStack<B> {
         }
     }
 
+    #[inline(always)]
     pub fn push(&mut self, val: usize) -> Option<Arc<ThreadLocalPage<B>>> {
         let mut res = None;
         if self.head.is_null() {
@@ -252,6 +265,7 @@ impl<const B: usize> TLBufferedStack<B> {
         return res;
     }
 
+    #[inline(always)]
     pub fn pop(&mut self) -> Option<usize> {
         if self.head.is_null() {
             return None;
@@ -279,6 +293,7 @@ pub struct AllocGuard<T, const B: usize> {
 }
 
 impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
+    #[inline(always)]
     fn drop(&mut self) {
         let alloc = unsafe { &mut *self.alloc };
         alloc.guard_count -= 1;
@@ -291,16 +306,20 @@ impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
 }
 
 impl<'a, T, const B: usize> AllocGuard<T, B> {
+    
+    #[inline(always)]
     pub fn defer_free(&self, ptr: *mut T) {
         let alloc = unsafe { &mut *self.alloc };
         alloc.defer_free.push(ptr as usize);
     }
 
+    #[inline(always)]
     pub fn alloc(&self) -> *mut T {
         let alloc = unsafe { &mut *self.alloc };
         alloc.alloc() as *mut T
     }
 
+    #[inline(always)]
     pub fn free(&self, addr: usize) {
         let alloc = unsafe { &mut *self.alloc };
         alloc.free(addr)
@@ -308,6 +327,7 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
 }
 
 impl<T, const B: usize> Drop for Allocator<T, B> {
+    #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             while let Some(b) = self.shared.all_buffers.pop_buffer() {
@@ -320,12 +340,14 @@ impl<T, const B: usize> Drop for Allocator<T, B> {
 }
 
 impl<T, const B: usize> TLAlloc<T, B> {
+    #[inline(always)]
     pub fn new(buffer: usize, limit: usize, shared: Arc<SharedAlloc<T, B>>) -> Self {
         Self {
             inner: UnsafeCell::new(TLAllocInner::new(buffer, limit, shared)),
         }
     }
 
+    #[inline(always)]
     fn get(&self) -> *mut TLAllocInner<T, B> {
         self.inner.get()
     }
@@ -338,6 +360,7 @@ struct ThreadLocalPage<const B: usize> {
 }
 
 impl<const B: usize> ThreadLocalPage<B> {
+    #[inline(always)]
     fn new() -> Self {
         Self {
             buffer: [0usize; B],
@@ -346,6 +369,7 @@ impl<const B: usize> ThreadLocalPage<B> {
         }
     }
 
+    #[inline(always)]
     fn push_back(&mut self, addr: usize) -> Result<(), usize> {
         if self.pos >= B {
             return Err(addr);
@@ -354,6 +378,8 @@ impl<const B: usize> ThreadLocalPage<B> {
         self.pos += 1;
         Ok(())
     }
+
+    #[inline(always)]
     fn pop_back(&mut self) -> Option<usize> {
         if self.pos == 0 {
             return None;

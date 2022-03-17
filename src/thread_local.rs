@@ -38,7 +38,8 @@ impl<T> ThreadLocal<T> {
             _marker: PhantomData,
         }
     }
-
+    
+    #[inline(always)]
     pub fn get_or<F: Fn() -> T>(&self, new: F) -> Option<&T> {
         unsafe {
             ThreadMeta::get_hash().map(|hash| {
@@ -72,6 +73,7 @@ impl ThreadMeta {
         ThreadMeta { hash }
     }
 
+    #[inline(always)]
     pub fn get_hash() -> Option<u64> {
         THREAD_META.try_with(|m| m.hash).ok()
     }
@@ -84,6 +86,8 @@ impl Drop for ThreadMeta {
 }
 
 impl<T> Drop for ThreadLocal<T> {
+
+    #[inline(always)]
     fn drop(&mut self) {
         for (_, v) in self.reserve_map.entries() {
             unsafe {

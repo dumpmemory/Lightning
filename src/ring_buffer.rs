@@ -30,6 +30,7 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    #[inline(always)]
     pub fn count(&self) -> usize {
         let head = self.head.load(Acquire);
         let tail = self.head.load(Acquire);
@@ -40,18 +41,22 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    #[inline(always)]
     pub fn push_back(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_general(data, &self.tail, &self.head, Self::incr, false)
     }
 
+    #[inline(always)]
     pub fn push_front(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_general(data, &self.head, &self.tail, Self::decr, true)
     }
 
+    #[inline(always)]
     pub unsafe fn push_back_unsafe(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_unsafe_general(data, &self.tail, &self.head, Self::incr, false)
     }
 
+    #[inline(always)]
     pub unsafe fn push_front_unsafe(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_unsafe_general(data, &self.head, &self.tail, Self::decr, true)
     }
@@ -94,18 +99,22 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    #[inline(always)]
     pub fn pop_front(&self) -> Option<T> {
         self.pop_general(&self.head, &self.tail, Self::incr, false)
     }
 
+    #[inline(always)]
     pub fn pop_back(&self) -> Option<T> {
         self.pop_general(&self.tail, &self.head, Self::decr, true)
     }
 
+    #[inline(always)]
     pub unsafe fn pop_front_unsafe(&self) -> Option<T> {
         self.pop_unsafe_general(&self.head, &self.tail, Self::incr, false)
     }
 
+    #[inline(always)]
     pub unsafe fn pop_back_unsafe(&self) -> Option<T> {
         self.pop_unsafe_general(&self.tail, &self.head, Self::decr, true)
     }
@@ -222,11 +231,13 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         });
     }
 
+    #[inline(always)]
     pub fn peek_back(&self) -> Option<ItemRef<T, N>> {
         let tail = self.tail.load(Acquire);
         self.peek_general(tail, &self.head, Self::decr, true)
     }
 
+    #[inline(always)]
     pub fn peek_front(&self) -> Option<ItemRef<T, N>> {
         let head = self.head.load(Acquire);
         self.peek_general(head, &self.tail, Self::incr, false)
@@ -299,10 +310,12 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         res
     }
 
+    #[inline(always)]
     fn incr(num: usize) -> usize {
         (num + 1) % N
     }
 
+    #[inline(always)]
     fn decr(num: usize) -> usize {
         if num == 0 {
             N - 1
