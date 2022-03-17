@@ -27,6 +27,10 @@ impl<T> Arc<T> {
     pub fn is_null(&self) -> bool {
         self.ptr.is_null()
     }
+
+    pub unsafe fn as_mut(&self) -> &mut T {
+        &mut (*(self.ptr as *mut Inner<T>)).val
+    }
 }
 
 impl<T> Deref for Arc<T> {
@@ -163,6 +167,10 @@ impl<T> AtomicArc<T> {
             }
             Err(_current) => false,
         }
+    }
+
+    pub unsafe fn as_mut(&self) -> &mut T {
+        &mut (*self.ptr.load(Relaxed)).val
     }
 }
 

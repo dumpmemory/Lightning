@@ -1,17 +1,13 @@
 // A supposed to be fast and lock-free object allocator without size class
 
 use std::{cell::UnsafeCell, marker::PhantomData, mem};
-
 use crate::{
     aarc::{Arc, AtomicArc},
-    ring_buffer::{ACQUIRED, EMPTY},
     thread_local::ThreadLocal,
 };
-use std::sync::atomic::Ordering::Relaxed;
 
 use crate::{
-    ring_buffer::RingBuffer,
-    stack::{LinkedRingBufferStack, RingBufferNode},
+    stack::{LinkedRingBufferStack},
 };
 
 pub struct Allocator<T, const B: usize> {
@@ -26,7 +22,7 @@ pub struct TLAlloc<T, const B: usize> {
 pub struct TLAllocInner<T, const B: usize> {
     buffer: usize,
     buffer_limit: usize,
-    free_list: TLBufferedStack<usize, B>,
+    free_list: TLBufferedStack<B>,
     shared: Arc<SharedAlloc<T, B>>,
     guard_count: usize,
     defer_free: Vec<usize>,
@@ -34,7 +30,7 @@ pub struct TLAllocInner<T, const B: usize> {
 }
 
 pub struct SharedAlloc<T, const B: usize> {
-    free_obj: LinkedRingBufferStack<usize, B>,
+    free_obj: AtomicArc<ThreadLocalPage<B>>,
     free_buffer: LinkedRingBufferStack<(usize, usize), B>,
     all_buffers: LinkedRingBufferStack<usize, B>,
     _marker: PhantomData<T>,
@@ -88,7 +84,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
 
     fn new() -> Self {
         Self {
-            free_obj: LinkedRingBufferStack::new(),
+            free_obj: AtomicArc::new(ThreadLocalPage::new()),
             free_buffer: LinkedRingBufferStack::new(),
             all_buffers: LinkedRingBufferStack::new(),
             _marker: PhantomData,
@@ -104,8 +100,31 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         (ptr, ptr + Self::BUMP_SIZE)
     }
 
-    fn free_objs<'a>(&self) -> Option<Arc<RingBufferNode<usize, B>>> {
-        self.free_obj.pop_buffer()
+    fn free_objs(&self) -> Option<Arc<ThreadLocalPage<B>>> {
+        let backoff = crossbeam_utils::Backoff::new();
+        loop {
+            let head = self.free_obj.load();
+            if head.is_null() {
+                return None;
+            }
+            let next = head.next.load();
+            if self.free_obj.compare_exchange_is_ok(&head, &next) {
+                return Some(head);
+            }
+            backoff.spin();
+        }
+    }
+
+    fn attach_objs(&self, objs: &Arc<ThreadLocalPage<B>>) {
+        let backoff = crossbeam_utils::Backoff::new();
+        loop {
+            let head = self.free_obj.load();
+            objs.next.store_ref(head.clone());
+            if self.free_obj.compare_exchange_is_ok(&head, objs) {
+                return;
+            }
+            backoff.spin();
+        }
     }
 }
 
@@ -131,12 +150,15 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
             if let Some(free_buffer) = self.shared.free_objs() {
-                if let Some(ptr) = free_buffer.buffer.pop_front() {
-                    debug_assert_eq!(self.free_list.num_buffer, 0);
-                    free_buffer.next.store_ref(Arc::null());
-                    self.free_list.head = free_buffer;
-                    self.free_list.num_buffer += 1;
-                    return ptr;
+                unsafe {
+                    let free_buffer_ref = free_buffer.as_mut();
+                    if let Some(ptr) = free_buffer_ref.pop_back() {
+                        debug_assert_eq!(self.free_list.num_buffer, 0);
+                        free_buffer_ref.next = AtomicArc::null();
+                        self.free_list.head = free_buffer;
+                        self.free_list.num_buffer += 1;
+                        return ptr;
+                    }
                 }
             }
             let (new_buffer, new_limit) = self.shared.alloc_buffer();
@@ -154,7 +176,7 @@ impl<T, const B: usize> TLAllocInner<T, B> {
             warn!("Freeing address out of limit: {}", addr);
         }
         if let Some(overflow_buffer) = self.free_list.push(addr) {
-            self.shared.free_obj.attach_buffer(overflow_buffer);
+            self.shared.attach_objs(&overflow_buffer);
         }
     }
 
@@ -170,12 +192,12 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         let local_free = &mut self.free_list;
         let head = &local_free.head;
         if !head.is_null() {
-            self.shared.free_obj.attach_buffer(head.clone());
+            self.shared.attach_objs(&head);
             let mut next = head.next.load();
             while !next.is_null() {
                 let next_next = next.next.load();
-                if next.buffer.count() > 0 {
-                    self.shared.free_obj.attach_buffer(next);
+                if next.pos > 0 {
+                    self.shared.attach_objs(&next);
                 }
                 next = next_next;
             }
@@ -191,12 +213,12 @@ impl<T, const B: usize> Drop for TLAllocInner<T, B> {
     }
 }
 
-struct TLBufferedStack<T, const B: usize> {
-    head: Arc<RingBufferNode<T, B>>,
+struct TLBufferedStack<const B: usize> {
+    head: Arc<ThreadLocalPage<B>>,
     num_buffer: usize,
 }
 
-impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
+impl<const B: usize> TLBufferedStack<B> {
     const MAX_BUFFERS: usize = 32;
     pub fn new() -> Self {
         Self {
@@ -205,40 +227,39 @@ impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
         }
     }
 
-    pub fn push(&mut self, val: T) -> Option<Arc<RingBufferNode<T, B>>> {
+    pub fn push(&mut self, val: usize) -> Option<Arc<ThreadLocalPage<B>>> {
         let mut res = None;
         if self.head.is_null() {
-            self.head = Arc::new(RingBufferNode {
-                buffer: RingBuffer::new(),
-                next: AtomicArc::null(),
-            });
+            self.head = Arc::new(ThreadLocalPage::new());
         }
-        if let Err(val) = self.head.buffer.lite_push_back(val) {
-            // Current buffer is full, need a new one
-            if self.num_buffer >= Self::MAX_BUFFERS {
-                let head_next = self.head.next.load();
-                let overflow_buffer_node = mem::replace(&mut self.head, head_next);
-                res = Some(overflow_buffer_node);
-                self.num_buffer -= 1;
+        unsafe {
+            if let Err(val) = self.head.as_mut().push_back(val) {
+                // Current buffer is full, need a new one
+                if self.num_buffer >= Self::MAX_BUFFERS {
+                    let head_next = self.head.next.load();
+                    let overflow_buffer_node = mem::replace(&mut self.head, head_next);
+                    res = Some(overflow_buffer_node);
+                    self.num_buffer -= 1;
+                }
+                debug_assert!(!self.head.is_null());
+                let mut new_buffer = ThreadLocalPage::new();
+                let _ = new_buffer.push_back(val);
+                new_buffer.next = AtomicArc::from_rc(self.head.clone());
+                self.head = Arc::new(new_buffer);
+                self.num_buffer += 1;
             }
-            debug_assert!(!self.head.is_null());
-            let new_buffer = RingBufferNode {
-                buffer: RingBuffer::new(),
-                next: AtomicArc::from_rc(self.head.clone()),
-            };
-            let _ = new_buffer.buffer.push_back(val);
-            self.head = Arc::new(new_buffer);
-            self.num_buffer += 1;
         }
         return res;
     }
 
-    pub fn pop(&mut self) -> Option<T> {
+    pub fn pop(&mut self) -> Option<usize> {
         if self.head.is_null() {
             return None;
         }
         loop {
-            let head_pop = self.head.buffer.lite_pop_back();
+            let head_pop = unsafe {
+                self.head.as_mut().pop_back()
+            };
             if head_pop.is_some() {
                 return head_pop;
             }
@@ -247,7 +268,7 @@ impl<T: Clone + Default, const B: usize> TLBufferedStack<T, B> {
             if next_buffer.is_null() {
                 return None;
             }
-            mem::replace(&mut self.head, next_buffer);
+            self.head = next_buffer;
             self.num_buffer -= 1;
         }
     }
@@ -290,7 +311,7 @@ impl<T, const B: usize> Drop for Allocator<T, B> {
     fn drop(&mut self) {
         unsafe {
             while let Some(b) = self.shared.all_buffers.pop_buffer() {
-                while let Some(alloc_bufer) = b.buffer.lite_pop_back() {
+                while let Some(alloc_bufer) = b.buffer.pop_back() {
                     libc::free(alloc_bufer as *mut libc::c_void);
                 }
             }
@@ -310,24 +331,35 @@ impl<T, const B: usize> TLAlloc<T, B> {
     }
 }
 
-impl<T: Default, const N: usize> RingBuffer<T, N> {
-    fn lite_push_back(&self, data: T) -> Result<(), T> {
-        let pos = self.tail.load(Relaxed);
-        if pos >= self.elements.len() {
-            return Err(data);
+struct ThreadLocalPage<const B: usize> {
+    buffer: [usize; B],
+    pos: usize,
+    next: AtomicArc<Self>,
+}
+
+impl<const B: usize> ThreadLocalPage<B> {
+    fn new() -> Self {
+        Self {
+            buffer: [0usize; B],
+            pos: 0,
+            next: AtomicArc::null(),
         }
-        self.elements[pos].set(data);
-        self.tail.store(pos + 1, Relaxed);
+    }
+
+    fn push_back(&mut self, addr: usize) -> Result<(), usize> {
+        if self.pos >= B {
+            return Err(addr);
+        }
+        self.buffer[self.pos] = addr;
+        self.pos += 1;
         Ok(())
     }
-    fn lite_pop_back(&self) -> Option<T> {
-        let mut pos = self.tail.load(Relaxed);
-        if pos == 0 {
+    fn pop_back(&mut self) -> Option<usize> {
+        if self.pos == 0 {
             return None;
         }
-        pos -= 1;
-        let val = self.elements[pos].take();
-        self.tail.store(pos, Relaxed);
+        self.pos -= 1;
+        let val = self.buffer[self.pos];
         Some(val)
     }
 }
