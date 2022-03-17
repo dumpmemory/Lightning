@@ -174,7 +174,6 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 }
             }
         }
-        let key = key.clone();
         Some(Self {
             map,
             value,
