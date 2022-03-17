@@ -26,22 +26,23 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
-        let k_num = Self::encode(key);
-        let v_num = Self::encode(value);
+        let k_num = self.encode(key);
+        let v_num = self.encode(value);
         self.table
             .insert(op, &(), Some(&()), k_num as FKey, v_num as FVal)
-            .map(|(fv, _)| Self::decode::<V>(fv as usize))
+            .map(|(fv, _)| self.decode::<V>(fv as usize))
     }
 
-    // pub fn write(&self, key: &K) -> Option<HashMapWriteGuard<K, V, ALLOC, H>> {
-    //     HashMapWriteGuard::new(&self.table, key)
-    // }
-    // pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
-    //     HashMapReadGuard::new(&self.table, key)
-    // }
+    pub fn lock(&self, key: &K) -> Option<LiteMutexGuard<K, V, ALLOC, H>> {
+        LiteMutexGuard::new(&self, key)
+    }
+
+    pub fn insert_locked(&self, key: &K, value: &V) -> Option<LiteMutexGuard<K, V, ALLOC, H>> {
+        LiteMutexGuard::create(&self, key, value)
+    }
 
     #[inline(always)]
-    fn encode<T: Clone>(d: &T) -> usize {
+    fn encode<T: Clone>(&self, d: &T) -> usize {
         let mut num: u64 = 0;
         let obj_ptr = &mut num as *mut u64 as *mut T;
         unsafe {
@@ -51,7 +52,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn decode<T: Clone>(num: usize) -> T {
+    fn decode<T: Clone>(&self, num: usize) -> T {
         let num = (num - (NUM_FIX_V as usize)) as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
@@ -74,10 +75,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let k_num = Self::encode(key) as FKey;
+        let k_num = self.encode(key) as FKey;
         self.table
             .get(&(), k_num, false)
-            .map(|(fv, _)| Self::decode::<V>(fv as usize))
+            .map(|(fv, _)| self.decode::<V>(fv as usize))
     }
 
     #[inline(always)]
@@ -92,10 +93,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let k_num = Self::encode(key) as FKey;
+        let k_num = self.encode(key) as FKey;
         self.table
             .remove(&(), k_num)
-            .map(|(fv, _)| Self::decode(fv as usize))
+            .map(|(fv, _)| self.decode(fv as usize))
     }
 
     #[inline(always)]
@@ -103,13 +104,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .entries()
             .into_iter()
-            .map(|(fk, fv, _, _)| (Self::decode(fk as usize), Self::decode::<V>(fv as usize)))
+            .map(|(fk, fv, _, _)| (self.decode(fk as usize), self.decode::<V>(fv as usize)))
             .collect()
     }
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let k_num = Self::encode(key) as FKey;
+        let k_num = self.encode(key) as FKey;
         self.table.get(&(), k_num, false).is_some()
     }
 
@@ -120,6 +121,115 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     fn clear(&self) {
         self.table.clear();
+    }
+}
+
+pub struct LiteMutexGuard<
+    'a,
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
+> {
+    map: &'a LiteHashMap<K, V, ALLOC, H>,
+    fkey: usize,
+    value: V,
+}
+
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    LiteMutexGuard<'a, K, V, ALLOC, H>
+{
+    fn new(map: &'a LiteHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
+        let backoff = crossbeam_utils::Backoff::new();
+        let guard = crossbeam_epoch::pin();
+        let k_num = map.encode(key);
+        let value;
+        loop {
+            let swap_res = map.table.swap(
+                k_num,
+                &(),
+                move |fast_value| {
+                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    if fast_value == locked_val {
+                        // Locked, unchanged
+                        None
+                    } else {
+                        // Obtain lock
+                        Some(locked_val)
+                    }
+                },
+                &guard,
+            );
+            match swap_res {
+                SwapResult::Succeed(val, _idx, _chunk) => {
+                    value = map.decode(val & WORD_MUTEX_DATA_BIT_MASK);
+                    break;
+                }
+                SwapResult::Failed | SwapResult::Aborted => {
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::NotFound => {
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            map,
+            value,
+            fkey: k_num,
+        })
+    }
+
+    fn create(map: &'a LiteHashMap<K, V, ALLOC, H>, key: &K, value: &V) -> Option<Self> {
+        let k_num = map.encode(key);
+        let fvalue = map.encode(value);
+        match map.table.insert(
+            InsertOp::TryInsert,
+            &(),
+            Some(&()),
+            k_num,
+            fvalue | MUTEX_BIT_MASK,
+        ) {
+            None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
+                map,
+                value: value.clone(),
+                fkey: k_num,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn remove(self) -> V {
+        let fval = self.map.table.remove(&(), self.fkey).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
+        return self.map.decode(fval);
+    }
+}
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+    for LiteMutexGuard<'a, K, V, ALLOC, H>
+{
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+    for LiteMutexGuard<'a, K, V, ALLOC, H>
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for LiteMutexGuard<'a, K, V, ALLOC, H>
+{
+    fn drop(&mut self) {
+        let fval = self.map.encode(&self.value) & WORD_MUTEX_DATA_BIT_MASK;
+        self.map
+            .table
+            .insert(InsertOp::Insert, &(), Some(&()), self.fkey, fval);
     }
 }
 

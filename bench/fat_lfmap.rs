@@ -1,16 +1,16 @@
 use bustle::*;
-use lightning::map::{Map, HashMap};
+use lightning::map::{Map, LockingHashMap};
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct TestTable(Arc<HashMap<usize, usize, System, DefaultHasher>>);
+pub struct TestTable(Arc<LockingHashMap<usize, usize, System, DefaultHasher>>);
 
 impl Collection for TestTable {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
-        Self(Arc::new(HashMap::with_capacity(capacity)))
+        Self(Arc::new(LockingHashMap::with_capacity(capacity)))
     }
 
     fn pin(&self) -> Self::Handle {
