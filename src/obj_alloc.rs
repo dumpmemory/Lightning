@@ -327,7 +327,6 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
 }
 
 impl<T, const B: usize> Drop for Allocator<T, B> {
-    #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             while let Some(b) = self.shared.all_buffers.pop_buffer() {
