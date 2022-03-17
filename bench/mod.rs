@@ -259,8 +259,8 @@ pub type PerfPlotData = Vec<(
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
         run_perf_test_set::<ptr_lfmap::TestTable>(file_name, "lightning - ptr", load, contention, stride),
-        run_perf_test_set::<obj_lfmap::TestTable>(file_name, "lightning - obj", load, contention, stride),
         run_perf_test_set::<lite_lfmap::TestTable>(file_name, "lightning - lite", load, contention, stride),
+        run_perf_test_set::<obj_lfmap::TestTable>(file_name, "lightning - obj", load, contention, stride),
         run_perf_test_set::<fat_lfmap::TestTable>(file_name, "lightning - lock", load, contention, stride),
         run_perf_test_set::<lfmap::TestTable>(file_name, "lightning - base", load, contention, stride),
         run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
