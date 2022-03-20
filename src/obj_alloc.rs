@@ -1,29 +1,23 @@
 // A supposed to be fast and lock-free object allocator without size class
 
-use std::{cell::UnsafeCell, marker::PhantomData, mem};
 use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
+use std::{marker::PhantomData, mem};
 
-use crate::{
-    stack::{LinkedRingBufferStack},
-};
+use crate::stack::LinkedRingBufferStack;
 
 pub struct Allocator<T, const B: usize> {
-    shared: Arc<SharedAlloc<T, B>>,
+    shared: *const SharedAlloc<T, B>,
     thread: ThreadLocal<TLAlloc<T, B>>,
 }
 
 pub struct TLAlloc<T, const B: usize> {
-    inner: UnsafeCell<TLAllocInner<T, B>>,
-}
-
-pub struct TLAllocInner<T, const B: usize> {
     buffer: usize,
     buffer_limit: usize,
     free_list: TLBufferedStack<B>,
-    shared: Arc<SharedAlloc<T, B>>,
+    shared: *const SharedAlloc<T, B>,
     guard_count: usize,
     defer_free: Vec<usize>,
     _marker: PhantomData<T>,
@@ -39,7 +33,7 @@ pub struct SharedAlloc<T, const B: usize> {
 impl<T, const B: usize> Allocator<T, B> {
     pub fn new() -> Self {
         Self {
-            shared: Arc::new(SharedAlloc::new()),
+            shared: Box::into_raw(Box::new(SharedAlloc::new())),
             thread: ThreadLocal::new(),
         }
     }
@@ -47,37 +41,27 @@ impl<T, const B: usize> Allocator<T, B> {
     #[inline(always)]
     pub fn alloc(&self) -> *mut T {
         let tl_alloc = self.tl_alloc().expect("Cannot alloc for no tl");
-        unsafe {
-            let alloc_ref = &mut *tl_alloc.get();
-            alloc_ref.alloc() as *mut T
-        }
+        tl_alloc.alloc() as *mut T
     }
 
     #[inline(always)]
     pub fn free(&self, addr: *mut T) {
         let tl_alloc = self.tl_alloc().expect("Cannot free for no tl");
-        unsafe {
-            let alloc_ref = &mut *tl_alloc.get();
-            alloc_ref.free(addr as usize)
-        }
+        tl_alloc.free(addr as usize)
     }
 
     #[inline(always)]
     pub fn pin(&self) -> AllocGuard<T, B> {
         let tl_alloc = self.tl_alloc().expect("Cannot pin for no tl");
-        unsafe {
-            let alloc_ref = &mut *tl_alloc.get();
-            alloc_ref.guard_count += 1;
-            AllocGuard {
-                alloc: tl_alloc.get(),
-            }
+        tl_alloc.guard_count += 1;
+        AllocGuard {
+            alloc: tl_alloc as *const TLAlloc<T, B> as *mut TLAlloc<T, B>,
         }
     }
 
     #[inline(always)]
-    fn tl_alloc(&self) -> Option<&TLAlloc<T, B>> {
-        self.thread
-            .get_or(|| TLAlloc::new(0, 0, self.shared.clone()))
+    fn tl_alloc(&self) -> Option<&mut TLAlloc<T, B>> {
+        self.thread.get_or(|| TLAlloc::new(0, 0, self.shared))
     }
 }
 
@@ -136,10 +120,11 @@ impl<T, const B: usize> SharedAlloc<T, B> {
     }
 }
 
-impl<T, const B: usize> TLAllocInner<T, B> {
+impl<T, const B: usize> TLAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<T>() as usize;
 
-    pub fn new(buffer: usize, limit: usize, shared: Arc<SharedAlloc<T, B>>) -> Self {
+    #[inline(always)]
+    pub fn new(buffer: usize, limit: usize, shared: *const SharedAlloc<T, B>) -> Self {
         Self {
             free_list: TLBufferedStack::new(),
             buffer,
@@ -158,8 +143,8 @@ impl<T, const B: usize> TLAllocInner<T, B> {
         }
         if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
-            if let Some(free_buffer) = self.shared.free_objs() {
-                unsafe {
+            unsafe {
+                if let Some(free_buffer) = (&*self.shared).free_objs() {
                     let free_buffer_ref = free_buffer.as_mut();
                     if let Some(ptr) = free_buffer_ref.pop_back() {
                         debug_assert_eq!(self.free_list.num_buffer, 0);
@@ -169,10 +154,10 @@ impl<T, const B: usize> TLAllocInner<T, B> {
                         return ptr;
                     }
                 }
+                let (new_buffer, new_limit) = (&*self.shared).alloc_buffer();
+                self.buffer = new_buffer;
+                self.buffer_limit = new_limit;
             }
-            let (new_buffer, new_limit) = self.shared.alloc_buffer();
-            self.buffer = new_buffer;
-            self.buffer_limit = new_limit;
         }
         let obj_addr = self.buffer;
         self.buffer += Self::OBJ_SIZE;
@@ -186,39 +171,43 @@ impl<T, const B: usize> TLAllocInner<T, B> {
             warn!("Freeing address out of limit: {}", addr);
         }
         if let Some(overflow_buffer) = self.free_list.push(addr) {
-            self.shared.attach_objs(&overflow_buffer);
+            unsafe {
+                (&*self.shared).attach_objs(&overflow_buffer);
+            }
         }
     }
 
     #[inline(always)]
     pub fn return_resources(&mut self) {
         // Return buffer space
-        if self.buffer != self.buffer_limit {
-            self.shared
-                .free_buffer
-                .push((self.buffer, self.buffer_limit))
-        }
+        unsafe {
+            if self.buffer != self.buffer_limit {
+                (&*self.shared)
+                    .free_buffer
+                    .push((self.buffer, self.buffer_limit))
+            }
 
-        // return free list
-        let local_free = &mut self.free_list;
-        let head = &local_free.head;
-        if !head.is_null() {
-            self.shared.attach_objs(&head);
-            let mut next = head.next.load();
-            while !next.is_null() {
-                let next_next = next.next.load();
-                if next.pos > 0 {
-                    self.shared.attach_objs(&next);
+            // return free list
+            let local_free = &mut self.free_list;
+            let head = &local_free.head;
+            if !head.is_null() {
+                (&*self.shared).attach_objs(&head);
+                let mut next = head.next.load();
+                while !next.is_null() {
+                    let next_next = next.next.load();
+                    if next.pos > 0 {
+                        (&*self.shared).attach_objs(&next);
+                    }
+                    next = next_next;
                 }
-                next = next_next;
             }
         }
     }
 }
 
-unsafe impl<T, const B: usize> Send for TLAllocInner<T, B> {}
+unsafe impl<T, const B: usize> Send for TLAlloc<T, B> {}
 
-impl<T, const B: usize> Drop for TLAllocInner<T, B> {
+impl<T, const B: usize> Drop for TLAlloc<T, B> {
     #[inline(always)]
     fn drop(&mut self) {
         self.return_resources();
@@ -232,6 +221,8 @@ struct TLBufferedStack<const B: usize> {
 
 impl<const B: usize> TLBufferedStack<B> {
     const MAX_BUFFERS: usize = 32;
+
+    #[inline(always)]
     pub fn new() -> Self {
         Self {
             head: Arc::null(),
@@ -271,9 +262,7 @@ impl<const B: usize> TLBufferedStack<B> {
             return None;
         }
         loop {
-            let head_pop = unsafe {
-                self.head.as_mut().pop_back()
-            };
+            let head_pop = unsafe { self.head.as_mut().pop_back() };
             if head_pop.is_some() {
                 return head_pop;
             }
@@ -289,7 +278,7 @@ impl<const B: usize> TLBufferedStack<B> {
 }
 
 pub struct AllocGuard<T, const B: usize> {
-    alloc: *mut TLAllocInner<T, B>,
+    alloc: *mut TLAlloc<T, B>,
 }
 
 impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
@@ -306,7 +295,6 @@ impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
 }
 
 impl<'a, T, const B: usize> AllocGuard<T, B> {
-    
     #[inline(always)]
     pub fn defer_free(&self, ptr: *mut T) {
         let alloc = unsafe { &mut *self.alloc };
@@ -329,26 +317,13 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
 impl<T, const B: usize> Drop for Allocator<T, B> {
     fn drop(&mut self) {
         unsafe {
-            while let Some(b) = self.shared.all_buffers.pop_buffer() {
+            while let Some(b) = (&*self.shared).all_buffers.pop_buffer() {
                 while let Some(alloc_bufer) = b.buffer.pop_back() {
                     libc::free(alloc_bufer as *mut libc::c_void);
                 }
             }
+            Box::from_raw(self.shared as *mut SharedAlloc<T, B>);
         }
-    }
-}
-
-impl<T, const B: usize> TLAlloc<T, B> {
-    #[inline(always)]
-    pub fn new(buffer: usize, limit: usize, shared: Arc<SharedAlloc<T, B>>) -> Self {
-        Self {
-            inner: UnsafeCell::new(TLAllocInner::new(buffer, limit, shared)),
-        }
-    }
-
-    #[inline(always)]
-    fn get(&self) -> *mut TLAllocInner<T, B> {
-        self.inner.get()
     }
 }
 

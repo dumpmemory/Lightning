@@ -40,7 +40,7 @@ impl<T> ThreadLocal<T> {
     }
     
     #[inline(always)]
-    pub fn get_or<F: Fn() -> T>(&self, new: F) -> Option<&T> {
+    pub fn get_or<F: Fn() -> T>(&self, new: F) -> Option<&mut T> {
         unsafe {
             ThreadMeta::get_hash().map(|hash| {
                 let idx = hash as usize;
@@ -59,7 +59,7 @@ impl<T> ThreadLocal<T> {
                         ptr as usize
                     })
                 };
-                &*(obj_ptr as *const T)
+                &mut *(obj_ptr as *mut T)
             })
         }
     }
