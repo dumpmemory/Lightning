@@ -195,11 +195,24 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub unsafe fn as_mut(&self) -> &mut T {
-        &mut (*self.ptr.load(Relaxed)).val
+        let inner: &mut Inner<T> = mem::transmute_copy(&self.ptr);
+        &mut inner.val
+    }
+
+    #[inline(always)]
+    pub fn into_arc(self) -> Arc<T> {
+        unsafe {
+            mem::transmute(self)
+        }
+    }
+
+    #[inline(always)]
+    pub (crate) unsafe fn inner(&self) -> *mut Inner<T> {
+        mem::transmute_copy(&self.ptr)  
     }
 }
 
-struct Inner<T> {
+pub (crate) struct Inner<T> {
     val: T,
     count: AtomicUsize,
 }

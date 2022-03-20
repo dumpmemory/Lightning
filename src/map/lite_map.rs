@@ -119,6 +119,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table.len()
     }
 
+    #[inline(always)]
     fn clear(&self) {
         self.table.clear();
     }
