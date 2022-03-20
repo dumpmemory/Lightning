@@ -1,5 +1,5 @@
 use super::PerfPlotData;
-use humansize::{FileSize, file_size_opts::CONVENTIONAL};
+use humansize::{file_size_opts::CONVENTIONAL, FileSize};
 use plotters::prelude::*;
 use std::collections::HashMap;
 
@@ -36,7 +36,10 @@ pub fn draw_perf_plots(data: PerfPlotData) {
 
 pub fn plot_throughput(
     title: &String,
-    data: &Vec<(&'static str, &Vec<(usize, Option<bustle::Measurement>, usize)>)>,
+    data: &Vec<(
+        &'static str,
+        &Vec<(usize, Option<bustle::Measurement>, usize)>,
+    )>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()
@@ -97,7 +100,10 @@ pub fn plot_throughput(
 
 pub fn plot_max_mem(
     title: &String,
-    data: &Vec<(&'static str, &Vec<(usize, Option<bustle::Measurement>, usize)>)>,
+    data: &Vec<(
+        &'static str,
+        &Vec<(usize, Option<bustle::Measurement>, usize)>,
+    )>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let x_scale = data
         .iter()

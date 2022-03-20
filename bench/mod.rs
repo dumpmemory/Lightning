@@ -20,13 +20,13 @@ mod chashmap;
 mod cht;
 mod contrie;
 mod dashmap;
+mod fat_lfmap;
 mod flurry;
 mod lfmap;
-mod fat_lfmap;
-mod obj_lfmap;
 mod lite_lfmap;
-mod ptr_lfmap;
 mod lockfree;
+mod obj_lfmap;
+mod ptr_lfmap;
 mod scc;
 
 mod plot;
@@ -48,10 +48,7 @@ fn main() {
             App::new("runtime")
                 .about("Measure runtime of the data structures")
                 .arg(
-                    Arg::new(CONTENTION)
-                        .short('c')
-                        .long("contention")
-                        // .about("Sets whether to run benchmarks under different contentions"),
+                    Arg::new(CONTENTION).short('c').long("contention"), // .about("Sets whether to run benchmarks under different contentions"),
                 )
                 .arg(
                     Arg::new(LOAD)
@@ -258,11 +255,41 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
-        run_perf_test_set::<ptr_lfmap::TestTable>(file_name, "lightning - ptr", load, contention, stride),
-        run_perf_test_set::<lite_lfmap::TestTable>(file_name, "lightning - lite", load, contention, stride),
-        run_perf_test_set::<obj_lfmap::TestTable>(file_name, "lightning - obj", load, contention, stride),
-        run_perf_test_set::<fat_lfmap::TestTable>(file_name, "lightning - lock", load, contention, stride),
-        run_perf_test_set::<lfmap::TestTable>(file_name, "lightning - base", load, contention, stride),
+        run_perf_test_set::<ptr_lfmap::TestTable>(
+            file_name,
+            "lightning - ptr",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<lite_lfmap::TestTable>(
+            file_name,
+            "lightning - lite",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<obj_lfmap::TestTable>(
+            file_name,
+            "lightning - obj",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<fat_lfmap::TestTable>(
+            file_name,
+            "lightning - lock",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<lfmap::TestTable>(
+            file_name,
+            "lightning - base",
+            load,
+            contention,
+            stride,
+        ),
         run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
         run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
         run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
@@ -323,10 +350,10 @@ fn run_perf_test_set<'a, T: Collection>(
         (
             ds_name,
             vec![
-                // ("full", full), 
-                ("hi", hi), 
-                ("mi", mi), 
-                ("lo", lo)
+                // ("full", full),
+                ("hi", hi),
+                ("mi", mi),
+                ("lo", lo),
             ],
         )
     } else {
@@ -390,9 +417,7 @@ fn run_and_measure_mix<T: Collection>(
     cont: f64,
     stride: usize,
 ) -> Vec<(usize, Option<Measurement>, usize)> {
-    let page_size = unsafe {
-        sysconf(libc::_SC_PAGESIZE)
-    } as usize;
+    let page_size = unsafe { sysconf(libc::_SC_PAGESIZE) } as usize;
     let steps = 4;
     let mut threads = (steps..=num_cpus::get())
         .step_by(stride)
@@ -503,7 +528,7 @@ pub unsafe fn fork<F: FnOnce()>(child_func: F) -> libc::pid_t {
 mod tests {
     use bustle::{Mix, Workload};
 
-    use crate::{run_and_measure_mix, obj_lfmap};
+    use crate::{obj_lfmap, run_and_measure_mix};
 
     #[test]
     fn obj_map_oversize() {
