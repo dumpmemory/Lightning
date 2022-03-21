@@ -1,5 +1,5 @@
 use bustle::*;
-use lightning::map::{Map, LockingHashMap};
+use lightning::map::{LockingHashMap, Map};
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;

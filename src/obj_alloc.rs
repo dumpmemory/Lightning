@@ -1,5 +1,7 @@
 // A supposed to be fast and lock-free object allocator without size class
 
+use crossbeam_epoch::Atomic;
+
 use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
@@ -40,19 +42,19 @@ impl<T, const B: usize> Allocator<T, B> {
 
     #[inline(always)]
     pub fn alloc(&self) -> *mut T {
-        let tl_alloc = self.tl_alloc().expect("Cannot alloc for no tl");
+        let tl_alloc = self.tl_alloc();
         tl_alloc.alloc() as *mut T
     }
 
     #[inline(always)]
     pub fn free(&self, addr: *mut T) {
-        let tl_alloc = self.tl_alloc().expect("Cannot free for no tl");
+        let tl_alloc = self.tl_alloc();
         tl_alloc.free(addr as usize)
     }
 
     #[inline(always)]
     pub fn pin(&self) -> AllocGuard<T, B> {
-        let tl_alloc = self.tl_alloc().expect("Cannot pin for no tl");
+        let tl_alloc = self.tl_alloc();
         tl_alloc.guard_count += 1;
         AllocGuard {
             alloc: tl_alloc as *const TLAlloc<T, B> as *mut TLAlloc<T, B>,
@@ -60,7 +62,7 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     #[inline(always)]
-    fn tl_alloc(&self) -> Option<&mut TLAlloc<T, B>> {
+    fn tl_alloc(&self) -> &mut TLAlloc<T, B> {
         self.thread.get_or(|| TLAlloc::new(0, 0, self.shared))
     }
 }
@@ -220,12 +222,12 @@ struct TLBufferedStack<const B: usize> {
 }
 
 impl<const B: usize> TLBufferedStack<B> {
-    const MAX_BUFFERS: usize = 32;
+    const MAX_BUFFERS: usize = 64;
 
     #[inline(always)]
     pub fn new() -> Self {
         Self {
-            head: Arc::null(),
+            head: Arc::new(ThreadLocalPage::new()),
             num_buffer: 0,
         }
     }
@@ -233,14 +235,14 @@ impl<const B: usize> TLBufferedStack<B> {
     #[inline(always)]
     pub fn push(&mut self, val: usize) -> Option<Arc<ThreadLocalPage<B>>> {
         let mut res = None;
-        if self.head.is_null() {
-            self.head = Arc::new(ThreadLocalPage::new());
-        }
         unsafe {
             if let Err(val) = self.head.as_mut().push_back(val) {
                 // Current buffer is full, need a new one
                 if self.num_buffer >= Self::MAX_BUFFERS {
-                    let head_next = self.head.next.load();
+                    let head_next = {
+                        let head_mut = self.head.as_mut();
+                        mem::replace(&mut head_mut.next, AtomicArc::null()).into_arc()
+                    };
                     let overflow_buffer_node = mem::replace(&mut self.head, head_next);
                     res = Some(overflow_buffer_node);
                     self.num_buffer -= 1;
@@ -258,21 +260,21 @@ impl<const B: usize> TLBufferedStack<B> {
 
     #[inline(always)]
     pub fn pop(&mut self) -> Option<usize> {
-        if self.head.is_null() {
-            return None;
-        }
         loop {
             let head_pop = unsafe { self.head.as_mut().pop_back() };
             if head_pop.is_some() {
                 return head_pop;
             }
             // Need to pop from next buffer
-            let next_buffer = self.head.next.load();
-            if next_buffer.is_null() {
-                return None;
+            unsafe {
+                if self.head.next.inner().is_null() {
+                    return None;
+                }
+                let next_node =
+                    mem::replace(&mut self.head.as_mut().next, AtomicArc::null()).into_arc();
+                self.head = next_node;
+                self.num_buffer -= 1;
             }
-            self.head = next_buffer;
-            self.num_buffer -= 1;
         }
     }
 }
@@ -359,7 +361,6 @@ impl<const B: usize> ThreadLocalPage<B> {
             return None;
         }
         self.pos -= 1;
-        let val = self.buffer[self.pos];
-        Some(val)
+        Some(self.buffer[self.pos])
     }
 }

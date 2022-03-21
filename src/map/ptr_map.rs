@@ -70,25 +70,30 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         }
     }
 
+    #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
         self.table
             .get(key, 0, false)
             .map(|(fv, _)| self.deref_val(fv))
     }
 
+    #[inline(always)]
     fn insert(&self, key: &K, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
+    #[inline(always)]
     fn try_insert(&self, key: &K, value: &V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
+    #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let _guard = self.allocator.pin();
+        let guard = self.allocator.pin();
         self.table.remove(key, 0).map(|(fv, _)| self.deref_val(fv))
     }
 
+    #[inline(always)]
     fn entries(&self) -> Vec<(K, V)> {
         self.table
             .entries()
@@ -97,14 +102,17 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .collect()
     }
 
+    #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
         self.table.get(key, 0, false).is_some()
     }
 
+    #[inline(always)]
     fn len(&self) -> usize {
         self.table.len()
     }
 
+    #[inline(always)]
     fn clear(&self) {
         self.table.clear();
     }
