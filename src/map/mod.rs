@@ -40,23 +40,23 @@ pub use word_map::*;
 pub trait Map<K, V: Clone> {
     fn with_capacity(cap: usize) -> Self;
     fn get(&self, key: &K) -> Option<V>;
-    fn insert(&self, key: &K, value: &V) -> Option<V>;
+    fn insert(&self, key: K, value: V) -> Option<V>;
     // Return None if insertion successful
-    fn try_insert(&self, key: &K, value: &V) -> Option<V>;
+    fn try_insert(&self, key: K, value: V) -> Option<V>;
     fn remove(&self, key: &K) -> Option<V>;
     fn entries(&self) -> Vec<(K, V)>;
     fn contains_key(&self, key: &K) -> bool;
     fn len(&self) -> usize;
     // The func function should  be pure and have no side effect
-    fn get_or_insert<F: Fn() -> V>(&self, key: &K, func: F) -> V {
+    fn get_or_insert<F: Fn() -> V>(&self, key: K, func: F) -> V {
         loop {
-            if self.contains_key(key) {
-                if let Some(value) = self.get(key) {
+            if self.contains_key(&key) {
+                if let Some(value) = self.get(&key) {
                     return value;
                 }
             } else {
                 let value = func();
-                if let Some(value) = self.try_insert(key, &value) {
+                if let Some(value) = self.try_insert(key, value.clone()) {
                     return value;
                 }
                 return value;

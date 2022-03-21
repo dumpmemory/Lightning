@@ -20,9 +20,9 @@ pub struct ObjectMap<
 
 impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, ALLOC, H> {
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: &FKey, value: &V) -> Option<V> {
+    fn insert_with_op(&self, op: InsertOp, key: FKey, value: V) -> Option<V> {
         self.table
-            .insert(op, &(), Some(value), key + NUM_FIX_K, PLACEHOLDER_VAL)
+            .insert(op, &(), Some(&value), key + NUM_FIX_K, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
@@ -52,12 +52,12 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
     }
 
     #[inline(always)]
-    fn insert(&self, key: &FKey, value: &V) -> Option<V> {
+    fn insert(&self, key: FKey, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &FKey, value: &V) -> Option<V> {
+    fn try_insert(&self, key: FKey, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
@@ -380,7 +380,7 @@ mod test {
         let _ = env_logger::try_init();
         let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(&1, &Obj::new(0));
+        map.insert(1, Obj::new(0));
         let mut threads = vec![];
         let num_threads = 256;
         for i in 0..num_threads {
@@ -403,7 +403,7 @@ mod test {
         let _ = env_logger::try_init();
         let map = ObjectMap::<Obj>::with_capacity(16);
         for i in 5..2048 {
-            map.insert(&i, &Obj::new(i));
+            map.insert(i, Obj::new(i));
         }
         for i in 5..2048 {
             match map.get(&i) {
@@ -418,14 +418,14 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(ObjectMap::<Obj>::with_capacity(4));
         for i in 5..128 {
-            map.insert(&i, &Obj::new(i * 10));
+            map.insert(i, Obj::new(i * 10));
         }
         let mut threads = vec![];
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
-                    map.insert(&(i * 10 + j), &Obj::new(10));
+                    map.insert(i * 10 + j, Obj::new(10));
                 }
             }));
         }

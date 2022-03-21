@@ -19,7 +19,7 @@ pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = 
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: &FKey, value: FVal) -> Option<FVal> {
+    fn insert_with_op(&self, op: InsertOp, key: FKey, value: FVal) -> Option<FVal> {
         self.table
             .insert(op, &(), None, key + NUM_FIX_K, value + NUM_FIX_V)
             .map(|(v, _)| v - NUM_FIX_V)
@@ -45,13 +45,13 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
     }
 
     #[inline(always)]
-    fn insert(&self, key: &FKey, value: &FVal) -> Option<FVal> {
-        self.insert_with_op(InsertOp::UpsertFast, key, *value)
+    fn insert(&self, key: FKey, value: FVal) -> Option<FVal> {
+        self.insert_with_op(InsertOp::UpsertFast, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &FKey, value: &FVal) -> Option<FVal> {
-        self.insert_with_op(InsertOp::TryInsert, key, *value)
+    fn try_insert(&self, key: FKey, value: FVal) -> Option<FVal> {
+        self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
@@ -271,7 +271,7 @@ mod test {
         let _ = env_logger::try_init();
         let table = WordMap::<System>::with_capacity(16);
         for i in 50..60 {
-            assert_eq!(table.insert(&i, &i), None);
+            assert_eq!(table.insert(i, i), None);
         }
         for i in 50..60 {
             assert_eq!(table.get(&i), Some(i));
@@ -286,7 +286,7 @@ mod test {
         let _ = env_logger::try_init();
         let map = WordMap::<System>::with_capacity(16);
         for i in 5..2048 {
-            map.insert(&i, &(i * 2));
+            map.insert(i, i * 2);
         }
         for i in 5..2048 {
             match map.get(&i) {
@@ -302,13 +302,13 @@ mod test {
         let map = Arc::new(WordMap::<System>::with_capacity(65536));
         let mut threads = vec![];
         for i in 5..99 {
-            map.insert(&i, &(i * 10));
+            map.insert(i, i * 10);
         }
         for i in 100..900 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
-                    map.insert(&(i * 100 + j), &(i * j));
+                    map.insert(i * 100 + j, i * j);
                 }
             }));
         }
@@ -352,7 +352,7 @@ mod test {
                           assert_eq!(map.get(&key), Some(value - 1));
                       }
                       let pre_insert_epoch = map.table.now_epoch();
-                      map.insert(&key, &value);
+                      map.insert(key, value);
                       let post_insert_epoch = map.table.now_epoch();
                       for l in 1..128 {
                           let pre_fail_get_epoch = map.table.now_epoch();
@@ -391,12 +391,12 @@ mod test {
                           );
                           assert_eq!(map.get(&key), None, "Remove recursion");
                           assert!(map.lock(key).is_none(), "Remove recursion with lock");
-                          map.insert(&key, &value);
+                          map.insert(key, value);
                       }
                       if j % 3 == 0 {
                           let new_value = value + 7;
                           let pre_insert_epoch = map.table.now_epoch();
-                          map.insert(&key, &new_value);
+                          map.insert(key, new_value);
                           let post_insert_epoch = map.table.now_epoch();
                           assert_eq!(
                               map.get(&key), 
@@ -404,7 +404,7 @@ mod test {
                               "Checking immediate update, key {}, epoch {} to {}",
                               key, pre_insert_epoch, post_insert_epoch
                           );
-                          map.insert(&key, &value);
+                          map.insert(key, value);
                       }
                   }
               }
@@ -441,14 +441,14 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
         for i in 5..128 {
-            map.insert(&i, &(i * 10));
+            map.insert(i, i * 10);
         }
         let mut threads = vec![];
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
-                    map.insert(&(i * 10 + j), &10);
+                    map.insert(i * 10 + j, 10);
                 }
             }));
         }
@@ -474,7 +474,7 @@ mod test {
     fn parallel_word_map_mutex() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
-        map.insert(&1, &0);
+        map.insert(1, 0);
         let mut threads = vec![];
         let num_threads = 256;
         for _ in 0..num_threads {

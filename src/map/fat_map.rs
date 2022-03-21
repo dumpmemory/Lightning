@@ -136,9 +136,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     LockingHashMap<K, V, ALLOC, H>
 {
     #[inline(always)]
-    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
+    pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
         self.table
-            .insert(op, key, Some(value), 0, PLACEHOLDER_VAL)
+            .insert(op, &key, Some(&value), 0, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
@@ -166,12 +166,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn insert(&self, key: &K, value: &V) -> Option<V> {
+    fn insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &K, value: &V) -> Option<V> {
+    fn try_insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
@@ -425,7 +425,7 @@ mod fat_tests {
         for i in 5..2048 {
             let k = key_from(i);
             let v = val_from(i * 2);
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 5..2048 {
             let k = key_from(i);
@@ -444,7 +444,7 @@ mod fat_tests {
         for i in 5..2048 {
             let k = key_from(i);
             let v = val_from(i * 2);
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 5..2048 {
             let k = key_from(i);
@@ -464,7 +464,7 @@ mod fat_tests {
         for i in 5..turns {
             let k = i;
             let v = i * 2;
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 5..turns {
             let k = i;
@@ -484,7 +484,7 @@ mod fat_tests {
         for i in 5..99 {
             let k = key_from(i);
             let v = val_from(i * 10);
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 100..900 {
             let map = map.clone();
@@ -492,7 +492,7 @@ mod fat_tests {
                 for j in 5..60 {
                     let k = key_from(i * 100 + j);
                     let v = val_from(i * j);
-                    map.insert(&k, &v);
+                    map.insert(k, v);
                 }
             }));
         }
@@ -541,7 +541,7 @@ mod fat_tests {
                       }
                       let value = val_from(value_num);
                       let pre_insert_epoch = map.table.now_epoch();
-                      map.insert(&key, &value);
+                      map.insert(key, value);
                       let post_insert_epoch = map.table.now_epoch();
                       for l in 1..128 {
                           let pre_fail_get_epoch = map.table.now_epoch();
@@ -584,12 +584,12 @@ mod fat_tests {
                           );
                           assert_eq!(map.get(&key), None, "Remove recursion");
                           assert!(map.read(&key).is_none(), "Remove recursion with lock");
-                          map.insert(&key, &value);
+                          map.insert(key, value);
                       }
                       if j % 3 == 0 {
                           let new_value = val_from(value_num + 7);
                           let pre_insert_epoch = map.table.now_epoch();
-                          map.insert(&key, &new_value);
+                          map.insert(key, new_value);
                           let post_insert_epoch = map.table.now_epoch();
                           assert_eq!(
                               map.get(&key), 
@@ -597,7 +597,7 @@ mod fat_tests {
                               "Checking immediate update, key {:?}, epoch {} to {}",
                               key, pre_insert_epoch, post_insert_epoch
                           );
-                          map.insert(&key, &value);
+                          map.insert(key, value);
                       }
                   }
               }
@@ -666,7 +666,7 @@ mod test {
         let _ = env_logger::try_init();
         let map_cont = super::LockingHashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(&1, &Obj::new(0));
+        map.insert(1, Obj::new(0));
         let mut threads = vec![];
         let num_threads = 16;
         for i in 0..num_threads {
@@ -689,14 +689,14 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(super::LockingHashMap::<u32, Obj>::with_capacity(4));
         for i in 5..128u32 {
-            map.insert(&i, &Obj::new((i * 10) as usize));
+            map.insert(i, Obj::new((i * 10) as usize));
         }
         let mut threads = vec![];
         for i in 256..265u32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60u32 {
-                    map.insert(&(i * 10 + j), &Obj::new(10usize));
+                    map.insert(i * 10 + j, Obj::new(10usize));
                 }
             }));
         }

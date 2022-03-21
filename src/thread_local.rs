@@ -53,7 +53,7 @@ impl<T> ThreadLocal<T> {
                 }
                 &mut *(cell.get() as *mut T)
             } else {
-                let obj_ptr = self.reserve_map.get_or_insert(&tid, move || {
+                let obj_ptr = self.reserve_map.get_or_insert(tid, move || {
                     let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
                     ptr::write(ptr, new());
                     ptr as usize

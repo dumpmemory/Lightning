@@ -25,7 +25,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     const V_SIZE: usize = mem::size_of::<AlignedLiteObj<V>>();
 
     #[inline(always)]
-    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
+    pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
         let k_num = self.encode(key);
         let v_num = self.encode(value);
         self.table
@@ -42,11 +42,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn encode<T: Clone>(&self, d: &T) -> usize {
+    fn encode<T: Clone>(&self, d: T) -> usize {
         let mut num: u64 = 0;
         let obj_ptr = &mut num as *mut u64 as *mut T;
         unsafe {
-            ptr::write(obj_ptr, d.clone());
+            ptr::write(obj_ptr, d);
         }
         return num as usize + NUM_FIX_V as usize;
     }
@@ -75,25 +75,25 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        let k_num = self.encode(key) as FKey;
+        let k_num = self.encode(key.clone()) as FKey;
         self.table
             .get(&(), k_num, false)
             .map(|(fv, _)| self.decode::<V>(fv as usize))
     }
 
     #[inline(always)]
-    fn insert(&self, key: &K, value: &V) -> Option<V> {
+    fn insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::UpsertFast, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &K, value: &V) -> Option<V> {
+    fn try_insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let k_num = self.encode(key) as FKey;
+        let k_num = self.encode(key.clone()) as FKey;
         self.table
             .remove(&(), k_num)
             .map(|(fv, _)| self.decode(fv as usize))
@@ -110,7 +110,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn contains_key(&self, key: &K) -> bool {
-        let k_num = self.encode(key) as FKey;
+        let k_num = self.encode(key.clone()) as FKey;
         self.table.get(&(), k_num, false).is_some()
     }
 
@@ -246,7 +246,7 @@ mod lite_tests {
         for i in 5..2048 {
             let k = i;
             let v = i * 2;
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 5..2048 {
             let k = i;
@@ -288,7 +288,7 @@ mod lite_tests {
             let k = i;
             let v = i * 2;
             let d = Arc::new(FatStruct::new(v));
-            map.insert(&k, &d);
+            map.insert(k, d);
         }
         for i in 5..2048 {
             let k = i;
@@ -310,7 +310,7 @@ mod lite_tests {
         for i in 0..2048 {
             let k = i as u8;
             let v = (i * 2) as u8;
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 0..2048 {
             let k = i as u8;

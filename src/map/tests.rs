@@ -42,10 +42,10 @@ impl Obj {
 #[test]
 fn insert_with_num_fixes() {
     let map = WordMap::<System, DefaultHasher>::with_capacity(32);
-    assert_eq!(map.insert(&24, &0), None);
-    assert_eq!(map.insert(&24, &1), Some(0));
-    assert_eq!(map.insert(&0, &0), None);
-    assert_eq!(map.insert(&0, &1), Some(0))
+    assert_eq!(map.insert(24, 0), None);
+    assert_eq!(map.insert(24, 1), Some(0));
+    assert_eq!(map.insert(0, 0), None);
+    assert_eq!(map.insert(0, 1), Some(0))
 }
 
 #[bench]
@@ -54,7 +54,7 @@ fn lfmap(b: &mut Bencher) {
     let map = WordMap::<System, DefaultHasher>::with_capacity(8);
     let mut i = 5;
     b.iter(|| {
-        map.insert(&i, &i);
+        map.insert(i, i);
         i += 1;
     });
 }
@@ -65,7 +65,7 @@ fn lite_lfmap(b: &mut Bencher) {
     let map = LiteHashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
     let mut i = 5;
     b.iter(|| {
-        map.insert(&i, &i);
+        map.insert(i, i);
         i += 1;
     });
 }
@@ -76,7 +76,7 @@ fn fat_lfmap(b: &mut Bencher) {
     let map = super::LockingHashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
     let mut i = 5;
     b.iter(|| {
-        map.insert(&i, &i);
+        map.insert(i, i);
         i += 1;
     });
 }

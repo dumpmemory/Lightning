@@ -21,11 +21,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     PtrHashMap<K, V, ALLOC, H>
 {
     #[inline(always)]
-    pub fn insert_with_op(&self, op: InsertOp, key: &K, value: &V) -> Option<V> {
+    pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
         let guard = self.allocator.pin();
         let v_num = self.ref_val(value, &guard);
         self.table
-            .insert(op, key, Some(&()), 0 as FKey, v_num as FVal)
+            .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| {
                 let val = self.deref_val(fv as usize);
                 guard.free(fv);
@@ -37,15 +37,15 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         PtrMutexGuard::new(&self, key)
     }
 
-    pub fn insert_locked(&self, key: &K, value: &V) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
+    pub fn insert_locked(&self, key: &K, value: V) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
         PtrMutexGuard::create(&self, key, value)
     }
 
     #[inline(always)]
-    fn ref_val(&self, d: &V, guard: &AllocGuard<V, ALLOC_BUFFER_SIZE>) -> usize {
+    fn ref_val(&self, d: V, guard: &AllocGuard<V, ALLOC_BUFFER_SIZE>) -> usize {
         unsafe {
             let ptr = guard.alloc() as usize;
-            ptr::write(ptr as *mut V, d.clone());
+            ptr::write(ptr as *mut V, d);
             ptr as usize
         }
     }
@@ -78,18 +78,17 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn insert(&self, key: &K, value: &V) -> Option<V> {
+    fn insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
-    fn try_insert(&self, key: &K, value: &V) -> Option<V> {
+    fn try_insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::TryInsert, key, value)
     }
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        let guard = self.allocator.pin();
         self.table.remove(key, 0).map(|(fv, _)| self.deref_val(fv))
     }
 
@@ -279,9 +278,9 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         Some(Self { map, key, value })
     }
 
-    fn create(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K, value: &V) -> Option<Self> {
+    fn create(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K, value: V) -> Option<Self> {
         let guard = map.allocator.pin();
-        let fvalue = map.ref_val(value, &guard);
+        let fvalue = map.ref_val(value.clone(), &guard);
         match map.table.insert(
             InsertOp::TryInsert,
             key,
@@ -292,7 +291,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,
                 key: key.clone(),
-                value: value.clone(),
+                value: value,
             }),
             _ => None,
         }
@@ -327,10 +326,12 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
 {
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
-        let fval = self.map.ref_val(&self.value, &guard) & WORD_MUTEX_DATA_BIT_MASK;
+        let val = self.value.clone();
+        let key = self.key.clone();
+        let fval = self.map.ref_val(val, &guard) & WORD_MUTEX_DATA_BIT_MASK;
         self.map
             .table
-            .insert(InsertOp::Insert, &self.key, Some(&()), 0, fval);
+            .insert(InsertOp::Insert, &key, Some(&()), 0, fval);
     }
 }
 
@@ -346,7 +347,7 @@ mod ptr_map {
         for i in 5..2048 {
             let k = i;
             let v = i * 2;
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 5..2048 {
             let k = i;
@@ -365,7 +366,7 @@ mod ptr_map {
         for i in 5..2048 {
             let k = i;
             let v = i * 2;
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 5..2048 {
             let k = i;
@@ -385,7 +386,7 @@ mod ptr_map {
         for i in 5..99 {
             let k = key_from(i);
             let v = val_from(i * 10);
-            map.insert(&k, &v);
+            map.insert(k, v);
         }
         for i in 100..900 {
             let map = map.clone();
@@ -393,7 +394,7 @@ mod ptr_map {
                 for j in 5..60 {
                     let k = key_from(i * 100 + j);
                     let v = val_from(i * j);
-                    map.insert(&k, &v);
+                    map.insert(k, v);
                 }
             }));
         }
@@ -442,7 +443,7 @@ mod ptr_map {
                       }
                       let value = val_from(value_num);
                       let pre_insert_epoch = map.table.now_epoch();
-                      map.insert(&key, &value);
+                      map.insert(key, value);
                       let post_insert_epoch = map.table.now_epoch();
                       for l in 1..128 {
                           let pre_fail_get_epoch = map.table.now_epoch();
@@ -485,12 +486,12 @@ mod ptr_map {
                           );
                           assert_eq!(map.get(&key), None, "Remove recursion");
                           assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                          map.insert(&key, &value);
+                          map.insert(key, value);
                       }
                       if j % 3 == 0 {
                           let new_value = val_from(value_num + 7);
                           let pre_insert_epoch = map.table.now_epoch();
-                          map.insert(&key, &new_value);
+                          map.insert(key, new_value);
                           let post_insert_epoch = map.table.now_epoch();
                           assert_eq!(
                               map.get(&key), 
@@ -498,7 +499,7 @@ mod ptr_map {
                               "Checking immediate update, key {:?}, epoch {} to {}",
                               key, pre_insert_epoch, post_insert_epoch
                           );
-                          map.insert(&key, &value);
+                          map.insert(key, value);
                       }
                   }
               }
@@ -565,7 +566,7 @@ mod ptr_map {
                 for i in 0..test_load {
                     let key = target * 1000000 + i;
                     {
-                        let mut mutex = map.insert_locked(&key, &0).unwrap();
+                        let mut mutex = map.insert_locked(&key, 0).unwrap();
                         *mutex = 1;
                     }
                     for j in 1..update_load {
@@ -601,7 +602,7 @@ mod ptr_map {
                                 mutex.remove();
                             }
                             assert!(map.lock(&key).is_none());
-                            *map.insert_locked(&key, &0).unwrap() = val;
+                            *map.insert_locked(&key, 0).unwrap() = val;
                         }
                     }
                     assert_eq!(*map.lock(&key).unwrap(), update_load);
