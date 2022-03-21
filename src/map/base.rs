@@ -615,7 +615,6 @@ impl<
                             ModOp::Insert(fval, ov) => {
                                 // Insert with attachment should prime value first when
                                 // duplicate key discovered
-                                trace!("Inserting in place for {}", fkey);
                                 let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                                 let prev_val = read_attachment.then(|| attachment.get_value());
                                 let val_to_store = Self::value_to_store(raw, fval);

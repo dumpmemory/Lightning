@@ -6,6 +6,7 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use libc::{c_int, sysconf};
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
 use perfcnt_bench::PerfCounters;
+#[cfg(target_os = "linux")]
 use procinfo::pid::{stat, stat_self};
 use std::fs::File;
 use std::sync::mpsc::channel;
@@ -401,6 +402,7 @@ fn run_and_measure_mix<T: Collection>(
     threads
         .into_iter()
         .map(|n| {
+            #[cfg(target_os = "linux")]
             let (mem_sender, mem_recv) = channel();
             let mut workload = Workload::new(n, mix);
             workload
@@ -409,6 +411,7 @@ fn run_and_measure_mix<T: Collection>(
                 .initial_capacity_log2(cap);
             let data = workload.gen_data();
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
+            #[cfg(target_os = "linux")]
             let self_mem = stat_self().unwrap().rss;
             let child_pid = unsafe {
                 fork(|| {
@@ -419,26 +422,34 @@ fn run_and_measure_mix<T: Collection>(
                 })
             };
             let mut proc_stat: i32 = 0;
-            thread::spawn(move || {
-                let mut max = 0;
-                while let Ok(memstat) = stat(child_pid) {
-                    let size = memstat.rss;
-                    if size > max {
-                        max = size;
+            #[cfg(target_os = "linux")]
+            {
+                thread::spawn(move || {
+                    let mut max = 0;
+                    while let Ok(memstat) = stat(child_pid) {
+                        let size = memstat.rss;
+                        if size > max {
+                            max = size;
+                        }
+                        thread::sleep(Duration::from_millis(200));
                     }
-                    thread::sleep(Duration::from_millis(200));
-                }
-                mem_sender.send(max).unwrap();
-            });
+                    mem_sender.send(max).unwrap();
+                });
+            }
             let proc_res = unsafe {
                 libc::wait(&mut proc_stat as *mut c_int)
             };
-            assert_eq!(proc_res, child_pid);
-            let max_mem = mem_recv.recv().unwrap();
             let local: DateTime<Local> = Local::now();
+            assert_eq!(proc_res, child_pid);
+            let mut calibrated_size = 0;
+            let mut size = 0;
+            #[cfg(target_os = "linux")]
+            {
+                let max_mem = mem_recv.recv().unwrap();
+                calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
+                size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
+            }
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
-            let calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
-            let size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
             if proc_stat == 0 {
                 let (_, m) = server.accept().unwrap();
                 println!(

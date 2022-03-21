@@ -28,8 +28,11 @@ lockfree = "0.5"
 scc = "0.6"
 ipc-channel = "0.15.0"
 libc = "*"
-procinfo = "0.4"
 humansize = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procinfo = "0.4"
+
 
 [[bin]]
 name = "lightning-bench"
