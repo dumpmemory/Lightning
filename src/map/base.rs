@@ -766,13 +766,6 @@ impl<
             } else if k == EMPTY_KEY {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
-                        trace!(
-                            "Inserting entry key: {}, value: {}, raw: {:b}, addr: {}",
-                            fkey,
-                            fval & VAL_BIT_MASK,
-                            fval,
-                            addr
-                        );
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
                             attachment.set_key(key.clone());
@@ -794,13 +787,6 @@ impl<
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
-                        trace!(
-                            "Upserting entry key: {}, value: {}, raw: {:b}, addr: {}",
-                            fkey,
-                            fval & VAL_BIT_MASK,
-                            fval,
-                            addr
-                        );
                         if Self::cas_value(addr, EMPTY_VALUE, fval) {
                             Self::store_key(addr, fkey);
                             return ModResult::Done(0, None, idx);
