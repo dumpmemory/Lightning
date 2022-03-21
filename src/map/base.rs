@@ -227,7 +227,6 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
             let epoch = self.now_epoch();
-            // trace!("Inserting key: {}, value: {}", fkey, fvalue);
             let chunk_ptr = self.chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
@@ -697,12 +696,6 @@ impl<
                                         return ModResult::Existed(act_val, prev_val);
                                     }
                                 } else {
-                                    trace!(
-                                    "Attempting insert existed entry {}, {}, have key {:?}, skip",
-                                    k,
-                                    fval,
-                                    act_val,
-                                );
                                     if Self::FAT_VAL
                                         && read_attachment
                                         && Self::get_fast_value(addr).val != v.val
@@ -715,11 +708,6 @@ impl<
                                 }
                             }
                             ModOp::SwapFastVal(ref swap) => {
-                                trace!(
-                                    "Swaping found key {} have original value {:#064b}",
-                                    fkey,
-                                    act_val
-                                );
                                 if act_val == TOMBSTONE_VALUE {
                                     return ModResult::NotFound;
                                 }
@@ -778,10 +766,6 @@ impl<
                             }
                             return ModResult::Done(0, None, idx);
                         } else {
-                            debug!(
-                                "Retry insert to new slot, now val {}",
-                                Self::get_fast_value(addr).val
-                            );
                             backoff.spin();
                             continue;
                         }

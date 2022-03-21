@@ -10,7 +10,6 @@ pub struct Arc<T> {
 }
 
 impl<T> Arc<T> {
-
     #[inline(always)]
     pub fn new(val: T) -> Self {
         Self {
@@ -49,7 +48,6 @@ impl<T> Deref for Arc<T> {
 }
 
 impl<T> Drop for Arc<T> {
-
     #[inline(always)]
     fn drop(&mut self) {
         decr_ref(self.ptr)
@@ -57,7 +55,6 @@ impl<T> Drop for Arc<T> {
 }
 
 impl<T> Clone for Arc<T> {
-
     #[inline(always)]
     fn clone(&self) -> Self {
         incr_ref(self.ptr);
@@ -72,8 +69,6 @@ pub struct AtomicArc<T> {
 }
 
 impl<T> AtomicArc<T> {
-
-
     #[inline(always)]
     pub fn new(val: T) -> Self {
         Self {
@@ -201,24 +196,21 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn into_arc(self) -> Arc<T> {
-        unsafe {
-            mem::transmute(self)
-        }
+        unsafe { mem::transmute(self) }
     }
 
     #[inline(always)]
-    pub (crate) unsafe fn inner(&self) -> *mut Inner<T> {
-        mem::transmute_copy(&self.ptr)  
+    pub(crate) unsafe fn inner(&self) -> *mut Inner<T> {
+        mem::transmute_copy(&self.ptr)
     }
 }
 
-pub (crate) struct Inner<T> {
+pub(crate) struct Inner<T> {
     val: T,
     count: AtomicUsize,
 }
 
 impl<T> Inner<T> {
-
     #[inline(always)]
     fn new(val: T) -> Self {
         Self {

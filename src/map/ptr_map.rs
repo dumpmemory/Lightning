@@ -191,7 +191,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentItem<K, V> {
-    
     fn get_key(self) -> K {
         let addr = self.addr;
         unsafe { (*(addr as *mut K)).clone() }
