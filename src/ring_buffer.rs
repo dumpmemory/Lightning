@@ -19,7 +19,7 @@ pub struct RingBuffer<T, const N: usize> {
     pub flags: [AtomicU8; N],
 }
 
-impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
+impl<T: Clone, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
         let elements = unsafe { MaybeUninit::uninit().assume_init() };
         Self {
@@ -332,6 +332,19 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
             N - 1
         } else {
             num - 1
+        }
+    }
+}
+
+impl <T, const N: usize> Drop for RingBuffer<T, N> {
+    fn drop(&mut self) {
+        for (i, f) in self.flags.iter().enumerate() {
+            if f.load(Relaxed) == ACQUIRED {
+                let ele = &mut self.elements[i];
+                unsafe {
+                    ele.assume_init_read();
+                }
+            }
         }
     }
 }
