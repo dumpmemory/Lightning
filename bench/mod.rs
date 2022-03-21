@@ -467,7 +467,7 @@ fn run_and_measure_mix<T: Collection>(
             let local: DateTime<Local> = Local::now();
             assert_eq!(proc_res, child_pid);
             let mut calibrated_size = 0;
-            let mut size = 0;
+            let mut size = "".to_string();
             #[cfg(target_os = "linux")]
             {
                 let max_mem = mem_recv.recv().unwrap();
