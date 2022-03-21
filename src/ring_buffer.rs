@@ -1,5 +1,5 @@
-use std::cell::Cell;
 use std::mem::MaybeUninit;
+use std::ptr;
 use std::sync::atomic::Ordering::*;
 use std::{mem, sync::atomic::*};
 
@@ -15,13 +15,13 @@ const EMPTY_SLOT: AtomicU8 = AtomicU8::new(EMPTY);
 pub struct RingBuffer<T, const N: usize> {
     pub head: AtomicUsize,
     pub tail: AtomicUsize,
-    pub elements: [Cell<T>; N],
+    pub elements: [MaybeUninit<T>; N],
     pub flags: [AtomicU8; N],
 }
 
 impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
-        let elements: [Cell<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+        let elements = unsafe { MaybeUninit::uninit().assume_init() };
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
@@ -88,7 +88,9 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
             {
                 let flag = &self.flags[pos];
                 let obj = &self.elements[pos];
-                obj.set(data);
+                unsafe {
+                    ptr::write(obj.as_ptr() as *mut T, data);
+                }
                 flag.store(ACQUIRED, Release);
                 return Ok(ItemRef {
                     buffer: self,
@@ -147,18 +149,23 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
                     .compare_exchange(flag_val, EMPTY, AcqRel, Acquire)
                     .is_ok()
             {
-                let mut res = T::default();
+                let change_target = || {
+                    if target
+                        .compare_exchange(target_val, new_target_val, AcqRel, Acquire)
+                        .is_err()
+                    {
+                        flag.store(SENTINEL, Release);
+                    }
+                };
                 if flag_val != SENTINEL {
-                    res = obj.replace(res);
-                }
-                if target
-                    .compare_exchange(target_val, new_target_val, AcqRel, Acquire)
-                    .is_err()
-                {
-                    flag.store(SENTINEL, Release);
-                }
-                if flag_val != SENTINEL {
+                    let res;
+                    unsafe {
+                        res = obj.assume_init_read();
+                    }
+                    change_target();
                     return Some(res);
+                } else {
+                    change_target();
                 }
             }
             backoff.spin();
@@ -189,13 +196,15 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
             let flag_val = flag.load(Relaxed);
             debug_assert_ne!(flag_val, EMPTY);
             flag.store(EMPTY, Relaxed);
-            let mut res = T::default();
             if flag_val != SENTINEL {
-                res = obj.replace(res);
-            }
-            target.store(new_target_val, Relaxed);
-            if flag_val != SENTINEL {
+                let res;
+                unsafe {
+                    res = obj.assume_init_read();
+                }
+                target.store(new_target_val, Relaxed);
                 return Some(res);
+            } else {
+                target.store(new_target_val, Relaxed);
             }
         }
     }
@@ -223,7 +232,9 @@ impl<T: Clone + Default, const N: usize> RingBuffer<T, N> {
         target.store(new_target_val, Relaxed);
         let flag = &self.flags[pos];
         let obj = &self.elements[pos];
-        obj.set(data);
+        unsafe {
+            ptr::write(obj.as_ptr() as *mut T, data);
+        }
         flag.store(ACQUIRED, Relaxed);
         return Ok(ItemRef {
             buffer: self,
@@ -357,7 +368,6 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
                 .compare_exchange(flag_val, SENTINEL, AcqRel, Acquire)
                 .is_ok()
         {
-            ele.set(Default::default());
             let head = buffer.head.load(Acquire);
             let tail = buffer.tail.load(Acquire);
             if RingBuffer::<T, N>::decr(tail) == idx {
@@ -380,6 +390,9 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
                     let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
                 }
             }
+            unsafe {
+                ele.assume_init_read();
+            }
             return Some(obj);
         } else {
             return None;
@@ -388,23 +401,24 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
 
     pub fn set(&self, value: T) -> Result<T, ()> {
         let idx = self.idx;
-        let buffer = self.buffer;
-        let flag = &buffer.flags[idx];
-        let ele = &buffer.elements[idx];
+        let flag = &self.buffer.flags[idx];
+        let ele = &self.buffer.elements[idx];
         if flag
             .compare_exchange(ACQUIRED, SENTINEL, AcqRel, Acquire)
             .is_err()
         {
             return Err(());
         } else {
-            let old = ele.replace(value);
-            if flag
-                .compare_exchange(SENTINEL, ACQUIRED, AcqRel, Acquire)
-                .is_err()
-            {
-                return Err(());
-            } else {
-                return Ok(old);
+            unsafe {
+                let old = mem::replace(&mut *(ele.as_ptr() as *mut T), value);
+                if flag
+                    .compare_exchange(SENTINEL, ACQUIRED, AcqRel, Acquire)
+                    .is_err()
+                {
+                    return Err(());
+                } else {
+                    return Ok(old);
+                }
             }
         }
     }
@@ -589,6 +603,14 @@ mod test {
             assert_eq!(ring.pop_front(), Some(i));
         }
         assert_eq!(ring.pop_back(), None);
+    }
+
+    #[test]
+    pub fn arc() {
+        const CAPACITY: usize = 32;
+        let ring = RingBuffer::<Arc<u32>, CAPACITY>::new();
+        ring.push_front(Arc::new(42)).unwrap();
+        assert_eq!(*ring.pop_front().unwrap(), 42);
     }
 
     const NUM: usize = 20480;
