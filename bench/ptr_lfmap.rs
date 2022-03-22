@@ -24,7 +24,7 @@ impl CollectionHandle for TestTable {
     }
 
     fn insert(&mut self, key: &usize, value: &usize) -> bool {
-        self.0.insert(key, value).is_none()
+        self.0.insert(*key, *value).is_none()
     }
 
     fn remove(&mut self, key: &usize) -> bool {
@@ -32,6 +32,6 @@ impl CollectionHandle for TestTable {
     }
 
     fn update(&mut self, key: &usize, value: &usize) -> bool {
-        self.0.insert(key, value).is_none()
+        self.0.insert(*key, *value).is_none()
     }
 }
