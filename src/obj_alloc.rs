@@ -126,7 +126,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
 }
 
 impl<T, const B: usize> TLAlloc<T, B> {
-    const OBJ_SIZE: usize = mem::size_of::<T>() as usize;
+    const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
 
     #[inline(always)]
     pub fn new(buffer: usize, limit: usize, shared: *const SharedAlloc<T, B>) -> Self {
