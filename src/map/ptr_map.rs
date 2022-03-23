@@ -20,10 +20,10 @@ pub struct PtrHashMap<
     shadow: PhantomData<(K, V, H)>,
 }
 
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct PtrValueNode<V> {
-    value: Cell<V>,
     ver: AtomicU8,
+    value: Cell<V>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
