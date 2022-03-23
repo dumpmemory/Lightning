@@ -125,10 +125,8 @@ impl<
         Self::with_capacity(64, attachment_init_meta)
     }
 
-    pub fn get(&self, key: &K, fkey: FKey, read_attachment: bool) -> Option<(FVal, Option<V>)> {
-        let guard = crossbeam_epoch::pin();
+    pub fn get_with_hash(&self, key: &K, fkey: FKey, hash : usize, read_attachment: bool, guard: &Guard) -> Option<(FVal, Option<V>)> {
         let backoff = crossbeam_utils::Backoff::new();
-        let (fkey, hash) = Self::hash(fkey, key);
         'OUTER: loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -212,6 +210,13 @@ impl<
             );
             return None;
         }
+    }
+
+    #[inline(always)]
+    pub fn get(&self, key: &K, fkey: FKey, read_attachment: bool) -> Option<(FVal, Option<V>)> {
+        let (fkey, hash) = Self::hash(fkey, key);
+        let guard = crossbeam_epoch::pin();
+        self.get_with_hash(key, fkey, hash, read_attachment, &guard)
     }
 
     pub fn insert(
@@ -1176,7 +1181,7 @@ impl<
     }
 
     #[inline]
-    fn hash(fkey: FKey, key: &K) -> (FKey, usize) {
+    pub fn hash(fkey: FKey, key: &K) -> (FKey, usize) {
         if Self::WORD_KEY {
             debug_assert!(fkey > 0);
             (fkey, hash_key::<_, H>(&fkey))
@@ -1184,6 +1189,11 @@ impl<
             let hash = hash_key::<_, H>(key);
             (hash as FKey, hash)
         }
+    }
+
+    #[inline]
+    pub fn get_hash(&self, fkey: FKey, key: &K) -> (FKey, usize) {
+        Self::hash(fkey, key)
     }
 
     #[inline]

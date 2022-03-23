@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::sync::atomic::AtomicU8;
+
 use crate::obj_alloc::{self, AllocGuard, Allocator};
 
 use super::base::*;
@@ -13,13 +16,22 @@ pub struct PtrHashMap<
     H: Hasher + Default = DefaultHasher,
 > {
     table: PtrTable<K, V, ALLOC, H>,
-    allocator: Box<obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>>,
+    allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
     shadow: PhantomData<(K, V, H)>,
+}
+
+#[repr(C, align(8))]
+struct PtrValueNode<V> {
+    value: Cell<V>,
+    ver: AtomicU8,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     PtrHashMap<K, V, ALLOC, H>
 {
+    const VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS;
+    const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
+
     #[inline(always)]
     pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
         let guard = self.allocator.pin();
@@ -27,8 +39,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| {
-                let val = self.deref_val(fv as usize);
-                guard.free(fv);
+                let val = self.deref_val_unchecked(fv as usize);
+                let ptr = fv & Self::INV_VAL_NODE_LOW_BITS;
+                guard.free(ptr);
                 return val;
             })
     }
@@ -42,17 +55,54 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn ref_val(&self, d: V, guard: &AllocGuard<V, ALLOC_BUFFER_SIZE>) -> usize {
+    fn ref_val(&self, d: V, guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) -> usize {
         unsafe {
-            let ptr = guard.alloc() as usize;
-            ptr::write(ptr as *mut V, d);
-            ptr as usize
+            let node_ptr = guard.alloc();
+            let node_ref = &*node_ptr;
+            let next_ver = node_ref.ver.fetch_add(1, AcqRel).wrapping_add(1);
+            *node_ref.value.as_ptr() = d;
+            let val = Self::compose_value(node_ptr as usize, next_ver as usize);
+            val
         }
     }
 
     #[inline(always)]
-    fn deref_val<T: Clone>(&self, num: usize) -> T {
-        unsafe { T::deref(num).clone() }
+    fn deref_val<T: Clone>(&self, val: usize) -> Option<T> {
+        unsafe {
+            let (addr, val_ver) = Self::decompose_value(val);
+            let node_ptr = addr as *mut PtrValueNode<T>;
+            let node_ref = &*node_ptr;
+            let node_ver = node_ref.ver.load(Acquire) as usize & Self::VAL_NODE_LOW_BITS;
+            if node_ver != val_ver {
+                return None;
+            }
+            let val_ptr = node_ref.value.as_ptr();
+            Some((&*val_ptr).clone())
+        }
+    }
+
+    #[inline(always)]
+    fn deref_val_unchecked<T: Clone>(&self, val: usize) -> T {
+        unsafe {
+            let (addr, _val_ver) = Self::decompose_value(val);
+            let node_ptr = addr as *mut PtrValueNode<T>;
+            let node_ref = &*node_ptr;
+            let val_ptr = node_ref.value.as_ptr();
+            (&*val_ptr).clone()
+        }
+    }
+
+    #[inline(always)]
+    fn compose_value(ptr: usize, ver: usize) -> usize {
+        let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
+        let ver_part = (ver as usize) & Self::VAL_NODE_LOW_BITS;
+        let val = ptr_part | ver_part;
+        val
+    }
+
+    #[inline(always)]
+    fn decompose_value(value: usize) -> (usize, usize) {
+        (value & Self::INV_VAL_NODE_LOW_BITS, value & Self::VAL_NODE_LOW_BITS)
     }
 }
 
@@ -61,7 +111,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 {
     fn with_capacity(cap: usize) -> Self {
         let mut alloc = Box::new(obj_alloc::Allocator::new());
-        let alloc_ptr: *mut Allocator<V, ALLOC_BUFFER_SIZE> = &mut *alloc.as_mut();
+        let alloc_ptr: *mut Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE> = &mut *alloc.as_mut();
         let attachment_init_meta = PtrValAttachmentMeta { alloc: alloc_ptr };
         Self {
             table: PtrTable::with_capacity(cap, attachment_init_meta),
@@ -72,9 +122,18 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn get(&self, key: &K) -> Option<V> {
-        self.table
-            .get(key, 0, false)
-            .map(|(fv, _)| self.deref_val(fv))
+        let (fkey, hash) = self.table.get_hash(0, key);
+        let guard = crossbeam_epoch::pin();
+        loop {
+            if let Some((fv, _)) = self.table.get_with_hash(key, fkey, hash, false, &guard) {
+                if let Some(val) = self.deref_val(fv) {
+                    return Some(val)
+                }
+                // None would be value changed
+            } else {
+                return None;
+            }
+        }
     }
 
     #[inline(always)]
@@ -89,7 +148,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        self.table.remove(key, 0).map(|(fv, _)| self.deref_val(fv))
+        self.table.remove(key, 0).map(|(fv, _)| self.deref_val_unchecked(fv))
     }
 
     #[inline(always)]
@@ -97,7 +156,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .entries()
             .into_iter()
-            .map(|(_, fv, k, _)| (k, self.deref_val(fv)))
+            .filter_map(|(_, fv, k, _)| {
+                // TODO: reload?
+                self.deref_val(fv).map(|v| (k, v))
+            })
             .collect()
     }
 
@@ -129,20 +191,20 @@ unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Has
 #[derive(Clone)]
 pub struct PtrValAttachment<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> {
     key_chunk: usize,
-    alloc: *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>,
+    alloc: *mut obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
     _marker: PhantomData<(K, V, A)>,
 }
 
 #[derive(Clone)]
 pub struct PtrValAttachmentItem<K, V> {
     addr: usize,
-    alloc: *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>,
+    alloc: *mut obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
     _marker: PhantomData<(K, V)>,
 }
 
 #[derive(Clone)]
 pub struct PtrValAttachmentMeta<V> {
-    alloc: *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>,
+    alloc: *mut obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
 }
 
 unsafe impl<V> Send for PtrValAttachmentMeta<V> {}
@@ -189,6 +251,12 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
     }
 }
 
+impl<K: Clone + Hash + Eq, V: Clone> PtrValAttachmentItem<K, V>{
+    const VAL_NODE_ALIGN: usize = mem::align_of::<PtrValueNode::<V>>();
+    const VAL_NODE_LOW_BITS: usize = (1 << Self::VAL_NODE_ALIGN.trailing_zeros()) - 1;
+    const INV_VAL_NODE_LOW_BITS: usize = !Self::VAL_NODE_LOW_BITS;
+}
+
 impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentItem<K, V> {
     fn get_key(self) -> K {
         let addr = self.addr;
@@ -207,7 +275,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     }
 
     fn erase(self, old_fval: FVal) {
-        let old_fval = old_fval & WORD_MUTEX_DATA_BIT_MASK;
+        let old_fval = old_fval & WORD_MUTEX_DATA_BIT_MASK & Self::INV_VAL_NODE_LOW_BITS;
         if old_fval >= NUM_FIX_V {
             let alloc =
                 unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
@@ -262,7 +330,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             );
             match swap_res {
                 SwapResult::Succeed(val, _idx, _chunk) => {
-                    value = map.deref_val(val & WORD_MUTEX_DATA_BIT_MASK);
+                    value = if let Some(v) = map.deref_val(val & WORD_MUTEX_DATA_BIT_MASK) {
+                        v
+                    } else {
+                        continue;
+                    };
                     break;
                 }
                 SwapResult::Failed | SwapResult::Aborted => {
@@ -299,7 +371,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
 
     pub fn remove(self) -> V {
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
-        let r = self.map.deref_val(fval);
+        let r = self.map.deref_val_unchecked(fval);
         mem::forget(self);
         return r;
     }
@@ -419,6 +491,22 @@ mod ptr_map {
                 let k = key_from(i * j);
                 assert!(map.get(&k).is_none())
             }
+        }
+    }
+
+    #[test]
+    fn exaust_versions() {
+        let map = PtrHashMap::<usize, usize, System>::with_capacity(16);
+        for i in 0..255 {
+            if i == 2 {
+                println!("watch out");
+            }
+            map.insert(1, i);
+            debug_assert_eq!(map.get(&1).unwrap(), i);
+        }
+        for i in 255..2096 {
+            map.insert(1, i);
+            debug_assert_eq!(map.get(&1).unwrap(), i);
         }
     }
 
