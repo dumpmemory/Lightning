@@ -74,12 +74,14 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
-            let v = (&*val_ptr).clone();
+            let v_shadow = ptr::read(val_ptr);
             // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.ver.load(Acquire) as usize & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
                 return None;
             }
+            let v = v_shadow.clone();
+            mem::forget(v_shadow);
             Some(v)
         }
     }
