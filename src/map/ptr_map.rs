@@ -96,7 +96,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn compose_value(ptr: usize, ver: usize) -> usize {
-        let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
+        let ptr_part = ptr; // & Self::INV_VAL_NODE_LOW_BITS;
         let ver_part = (ver as usize) & Self::VAL_NODE_LOW_BITS;
         let val = ptr_part | ver_part;
         val
