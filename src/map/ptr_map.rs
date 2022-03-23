@@ -59,7 +59,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
-            let next_ver = node_ref.ver.fetch_add(1, AcqRel).wrapping_add(1);
+            // Relaxed: No other thread is changing the version
+            let next_ver = node_ref.ver.fetch_add(1, Release).wrapping_add(1);
             *node_ref.value.as_ptr() = d;
             let val = Self::compose_value(node_ptr as usize, next_ver as usize);
             val
