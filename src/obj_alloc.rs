@@ -67,8 +67,11 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 }
 
+#[repr(align(8))]
+struct Aligned<T>(T);
+
 impl<T, const B: usize> SharedAlloc<T, B> {
-    const OBJ_SIZE: usize = mem::size_of::<T>();
+    const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
     const BUMP_SIZE: usize = 4096 * Self::OBJ_SIZE;
 
     fn new() -> Self {
