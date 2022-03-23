@@ -59,7 +59,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
-            // Relaxed: No other thread is changing the version
+            // Release: No other thread is changing the version, but we want the value assignment happened AFTER the version is changed
             let next_ver = node_ref.ver.fetch_add(1, Release).wrapping_add(1);
             *node_ref.value.as_ptr() = d;
             let val = Self::compose_value(node_ptr as usize, next_ver as usize);
@@ -75,6 +75,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
             let v = (&*val_ptr).clone();
+            // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.ver.load(Acquire) as usize & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
                 return None;
