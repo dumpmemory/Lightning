@@ -336,7 +336,7 @@ impl<T: Clone, const N: usize> RingBuffer<T, N> {
     }
 }
 
-impl <T, const N: usize> Drop for RingBuffer<T, N> {
+impl<T, const N: usize> Drop for RingBuffer<T, N> {
     fn drop(&mut self) {
         for (i, f) in self.flags.iter().enumerate() {
             if f.load(Relaxed) == ACQUIRED {

@@ -125,7 +125,14 @@ impl<
         Self::with_capacity(64, attachment_init_meta)
     }
 
-    pub fn get_with_hash(&self, key: &K, fkey: FKey, hash : usize, read_attachment: bool, guard: &Guard) -> Option<(FVal, Option<V>)> {
+    pub fn get_with_hash(
+        &self,
+        key: &K,
+        fkey: FKey,
+        hash: usize,
+        read_attachment: bool,
+        guard: &Guard,
+    ) -> Option<(FVal, Option<V>)> {
         let backoff = crossbeam_utils::Backoff::new();
         'OUTER: loop {
             let epoch = self.now_epoch();

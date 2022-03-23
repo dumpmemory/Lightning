@@ -102,7 +102,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn decompose_value(value: usize) -> (usize, usize) {
-        (value & Self::INV_VAL_NODE_LOW_BITS, value & Self::VAL_NODE_LOW_BITS)
+        (
+            value & Self::INV_VAL_NODE_LOW_BITS,
+            value & Self::VAL_NODE_LOW_BITS,
+        )
     }
 }
 
@@ -127,7 +130,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         loop {
             if let Some((fv, _)) = self.table.get_with_hash(key, fkey, hash, false, &guard) {
                 if let Some(val) = self.deref_val(fv) {
-                    return Some(val)
+                    return Some(val);
                 }
                 // None would be value changed
             } else {
@@ -148,7 +151,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        self.table.remove(key, 0).map(|(fv, _)| self.deref_val_unchecked(fv))
+        self.table
+            .remove(key, 0)
+            .map(|(fv, _)| self.deref_val_unchecked(fv))
     }
 
     #[inline(always)]
@@ -251,8 +256,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
     }
 }
 
-impl<K: Clone + Hash + Eq, V: Clone> PtrValAttachmentItem<K, V>{
-    const VAL_NODE_ALIGN: usize = mem::align_of::<PtrValueNode::<V>>();
+impl<K: Clone + Hash + Eq, V: Clone> PtrValAttachmentItem<K, V> {
+    const VAL_NODE_ALIGN: usize = mem::align_of::<PtrValueNode<V>>();
     const VAL_NODE_LOW_BITS: usize = (1 << Self::VAL_NODE_ALIGN.trailing_zeros()) - 1;
     const INV_VAL_NODE_LOW_BITS: usize = !Self::VAL_NODE_LOW_BITS;
 }

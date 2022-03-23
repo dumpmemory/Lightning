@@ -246,7 +246,7 @@ fn incr_ref<T>(ptr: *const Inner<T>) {
     Inner::from_ptr(ptr).count.fetch_add(1, AcqRel);
 }
 
-impl <T> Default for Arc<T> {
+impl<T> Default for Arc<T> {
     fn default() -> Self {
         Self::null()
     }
