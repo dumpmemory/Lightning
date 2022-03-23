@@ -72,12 +72,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let (addr, val_ver) = Self::decompose_value(val);
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
+            let val_ptr = node_ref.value.as_ptr();
+            let v = (&*val_ptr).clone();
             let node_ver = node_ref.ver.load(Acquire) as usize & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
                 return None;
             }
-            let val_ptr = node_ref.value.as_ptr();
-            Some((&*val_ptr).clone())
+            Some(v)
         }
     }
 
