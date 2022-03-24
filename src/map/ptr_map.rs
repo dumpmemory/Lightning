@@ -156,6 +156,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                             continue;
                         }
                     }
+                    match new_fval.val {
+                        TOMBSTONE_VALUE | EMPTY_VALUE => return None,
+                        _ => {}
+                    }
                     break;
                 }
                 // None would be value changed
