@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::sync::atomic::AtomicU8;
 
 use crate::obj_alloc::{self, AllocGuard, Allocator};
 
@@ -22,8 +21,8 @@ pub struct PtrHashMap<
 
 #[repr(align(8))]
 struct PtrValueNode<V> {
-    ver: AtomicU8,
     value: Cell<V>,
+    ver: AtomicUsize,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
@@ -39,7 +38,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| {
-                let val = self.deref_val_unchecked(fv as usize);
+                let val = self.deref_val_unchecked(fv);
                 let ptr = fv & Self::INV_VAL_NODE_LOW_BITS;
                 guard.free(ptr);
                 return val;
@@ -62,7 +61,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             // Release: No other thread is changing the version, but we want the value assignment happened AFTER the version is changed
             let next_ver = node_ref.ver.fetch_add(1, Release).wrapping_add(1);
             *node_ref.value.as_ptr() = d;
-            let val = Self::compose_value(node_ptr as usize, next_ver as usize);
+            let val = Self::compose_value(node_ptr as usize, next_ver);
             val
         }
     }
@@ -74,9 +73,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
-            let v_shadow = ptr::read(val_ptr);
+            let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
-            let node_ver = node_ref.ver.load(Acquire) as usize & Self::VAL_NODE_LOW_BITS;
+            fence(Acquire);
+            let ver_ptr = node_ref.ver.as_mut_ptr();
+            let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
                 return None;
             }
@@ -100,7 +101,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn compose_value(ptr: usize, ver: usize) -> usize {
         let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
-        let ver_part = (ver as usize) & Self::VAL_NODE_LOW_BITS;
+        let ver_part = ver & Self::VAL_NODE_LOW_BITS;
         let val = ptr_part | ver_part;
         val
     }
@@ -132,10 +133,30 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn get(&self, key: &K) -> Option<V> {
         let (fkey, hash) = self.table.get_hash(0, key);
         let guard = crossbeam_epoch::pin();
+        let backoff = crossbeam_utils::Backoff::new();
         loop {
-            if let Some((fv, _)) = self.table.get_with_hash(key, fkey, hash, false, &guard) {
-                if let Some(val) = self.deref_val(fv) {
-                    return Some(val);
+            if let Some((mut fv, _, addr)) = self.table.get_with_hash(key, fkey, hash, false, &guard, &backoff) {
+                let val = self.deref_val(fv);
+                if val.is_some() {
+                    return val;
+                }
+                loop {
+                    let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
+                    if new_fval.val == fv {
+                        backoff.spin();
+                        continue;
+                    }
+                    if new_fval.val > NUM_FIX_V {
+                        let now_val = self.deref_val::<V>(fv);
+                        if now_val.is_some() {
+                            return now_val;
+                        } else {
+                            fv = new_fval.val;
+                            backoff.spin();
+                            continue;
+                        }
+                    }
+                    break;
                 }
                 // None would be value changed
             } else {

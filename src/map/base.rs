@@ -132,8 +132,8 @@ impl<
         hash: usize,
         read_attachment: bool,
         guard: &Guard,
-    ) -> Option<(FVal, Option<V>)> {
-        let backoff = crossbeam_utils::Backoff::new();
+        backoff: &Backoff,
+    ) -> Option<(FVal, Option<V>, usize)> {
         'OUTER: loop {
             let epoch = self.now_epoch();
             let chunk_ptr = self.chunk.load(Acquire, &guard);
@@ -147,7 +147,7 @@ impl<
                 'SPIN: loop {
                     let v = val.val;
                     if val.is_valued() {
-                        let act_val = val.act_val::<K, V, A>();
+                        let act_val = val.act_val::<V>();
                         let mut attachment = None;
                         if Self::FAT_VAL && read_attachment {
                             attachment = Some(aitem.get_value());
@@ -157,7 +157,7 @@ impl<
                                 continue 'SPIN;
                             }
                         }
-                        return Some((act_val, attachment));
+                        return Some((act_val, attachment, addr));
                     } else if v == SENTINEL_VALUE {
                         if new_chunk.is_none() {
                             warn!("Discovered sentinel but new chunk is null for key {}", fkey);
@@ -181,7 +181,7 @@ impl<
                     'SPIN_NEW: loop {
                         let v = val.val;
                         if val.is_valued() {
-                            let act_val = val.act_val::<K, V, A>();
+                            let act_val = val.act_val::<V>();
                             let mut attachment = None;
                             if Self::FAT_VAL && read_attachment {
                                 attachment = Some(aitem.get_value());
@@ -191,7 +191,7 @@ impl<
                                     continue 'SPIN_NEW;
                                 }
                             }
-                            return Some((act_val, attachment));
+                            return Some((act_val, attachment, addr));
                         } else if v == SENTINEL_VALUE {
                             warn!("Found sentinel in new chunks for key {}", fkey);
                             backoff.spin();
@@ -223,7 +223,8 @@ impl<
     pub fn get(&self, key: &K, fkey: FKey, read_attachment: bool) -> Option<(FVal, Option<V>)> {
         let (fkey, hash) = Self::hash(fkey, key);
         let guard = crossbeam_epoch::pin();
-        self.get_with_hash(key, fkey, hash, read_attachment, &guard)
+        let backoff = crossbeam_utils::Backoff::new();
+        self.get_with_hash(key, fkey, hash, read_attachment, &guard, &backoff).map(|(a, b, _)| (a, b))
     }
 
     pub fn insert(
@@ -378,7 +379,7 @@ impl<
                 if let Some((old_parsed_val, old_addr, attachment)) =
                     self.get_from_chunk(chunk, hash, key, fkey, &backoff)
                 {
-                    let old_fval = old_parsed_val.act_val::<K, V, A>();
+                    let old_fval = old_parsed_val.act_val::<V>();
                     if old_fval == LOCKED_VALUE {
                         backoff.spin();
                         continue;
@@ -621,7 +622,7 @@ impl<
                     let v = Self::get_fast_value(addr);
                     let raw = v.val;
                     if raw >= TOMBSTONE_VALUE {
-                        let act_val = v.act_val::<K, V, A>();
+                        let act_val = v.act_val::<V>();
                         match op {
                             ModOp::Insert(fval, ov) => {
                                 // Insert with attachment should prime value first when
@@ -828,7 +829,7 @@ impl<
             if k != EMPTY_KEY {
                 let attachment = chunk.attachment.prefetch(idx);
                 let val_res = Self::get_fast_value(addr);
-                let act_val = val_res.act_val::<K, V, A>();
+                let act_val = val_res.act_val::<V>();
                 if act_val >= NUM_FIX_V {
                     let key = attachment.get_key();
                     let value = attachment.get_value();
@@ -863,7 +864,7 @@ impl<
     }
 
     #[inline]
-    fn get_fast_value(entry_addr: usize) -> FastValue {
+    pub fn get_fast_value(entry_addr: usize) -> FastValue {
         Chunk::<K, V, A, ALLOC>::get_fast_value(entry_addr)
     }
 
@@ -1214,8 +1215,8 @@ impl<
 }
 
 #[derive(Copy, Clone)]
-struct FastValue {
-    val: FVal,
+pub struct FastValue {
+    pub val: FVal,
 }
 
 impl FastValue {
@@ -1224,7 +1225,7 @@ impl FastValue {
     }
 
     #[inline]
-    fn act_val<K, V, A: Attachment<K, V>>(&self) -> FVal {
+    pub fn act_val<V>(&self) -> FVal {
         if mem::size_of::<V>() != 0 {
             self.val & FVAL_VAL_BIT_MASK
         } else {
