@@ -1220,11 +1220,12 @@ pub struct FastValue {
 }
 
 impl FastValue {
+    #[inline(always)]
     pub fn new(val: FVal) -> Self {
         Self { val }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn act_val<V>(&self) -> FVal {
         if mem::size_of::<V>() != 0 {
             self.val & FVAL_VAL_BIT_MASK
@@ -1233,19 +1234,19 @@ impl FastValue {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn next_version(old: FVal, new: FVal) -> FVal {
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
     }
 
-    #[inline]
+    #[inline(always)]
     fn is_locked(self) -> bool {
         let v = self.val;
         v & VAL_FLAGGED_MASK | 1 == v
     }
 
-    #[inline]
+    #[inline(always)]
     fn is_valued(self) -> bool {
         self.val > TOMBSTONE_VALUE
     }
@@ -1308,13 +1309,13 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_fast_key(entry_addr: usize) -> FKey {
         debug_assert!(entry_addr > 0);
         unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_fast_value(entry_addr: usize) -> FastValue {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
@@ -1322,12 +1323,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         FastValue::new(val)
     }
 
-    #[inline]
+    #[inline(always)]
     fn entry_addr(&self, idx: usize) -> usize {
         self.base + idx * ENTRY_SIZE
     }
 
-    #[inline]
+    #[inline(always)]
     fn cap_mask(&self) -> usize {
         self.capacity - 1
     }
