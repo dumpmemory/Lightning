@@ -40,7 +40,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .map(|(fv, _)| {
                 let val = self.deref_val_unchecked(fv);
                 let ptr = fv & Self::INV_VAL_NODE_LOW_BITS;
-                guard.free(ptr);
+                guard.buffered_free(ptr);
                 return val;
             })
     }
@@ -307,7 +307,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
         if old_fval >= NUM_FIX_V {
             let alloc =
                 unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
-            alloc.free(old_fval as *mut V);
+            alloc.buffered_free(old_fval as *mut V);
         }
     }
 

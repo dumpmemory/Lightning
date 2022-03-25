@@ -19,6 +19,7 @@ pub struct TLAlloc<T, const B: usize> {
     buffer: usize,
     buffer_limit: usize,
     free_list: TLBufferedStack<B>,
+    buffered_free: Arc<ThreadLocalPage<B>>,
     shared: *const SharedAlloc<T, B>,
     guard_count: usize,
     defer_free: Vec<usize>,
@@ -50,6 +51,12 @@ impl<T, const B: usize> Allocator<T, B> {
     pub fn free(&self, addr: *mut T) {
         let tl_alloc = self.tl_alloc();
         tl_alloc.free(addr as usize)
+    }
+
+    #[inline(always)]
+    pub fn buffered_free(&self, addr: *mut T) {
+        let tl_alloc = self.tl_alloc();
+        tl_alloc.buffered_free(addr as usize)
     }
 
     #[inline(always)]
@@ -132,6 +139,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
     pub fn new(buffer: usize, limit: usize, shared: *const SharedAlloc<T, B>) -> Self {
         Self {
             free_list: TLBufferedStack::new(),
+            buffered_free: Arc::new(ThreadLocalPage::new()),
             buffer,
             buffer_limit: limit,
             shared,
@@ -178,6 +186,22 @@ impl<T, const B: usize> TLAlloc<T, B> {
         if let Some(overflow_buffer) = self.free_list.push(addr) {
             unsafe {
                 (&*self.shared).attach_objs(&overflow_buffer);
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn buffered_free(&mut self, addr: usize) {
+        unsafe {
+            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(addr) {
+                // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
+                if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
+                    &mut self.buffered_free,
+                    Arc::new(ThreadLocalPage::new()),
+                )) {
+                    (&*self.shared).attach_objs(&overflow_buffer);
+                }
+                self.buffered_free.as_mut().push_back(overflowed_addr).unwrap();
             }
         }
     }
@@ -262,6 +286,27 @@ impl<const B: usize> TLBufferedStack<B> {
     }
 
     #[inline(always)]
+    pub fn append_page(
+        &mut self,
+        page: Arc<ThreadLocalPage<B>>,
+    ) -> Option<Arc<ThreadLocalPage<B>>> {
+        unsafe {
+            let head_mut = self.head.as_mut();
+            if self.num_buffer >= Self::MAX_BUFFERS {
+                let head_next = mem::replace(&mut head_mut.next, AtomicArc::null());
+                page.as_mut().next = head_next;
+                Some(mem::replace(&mut self.head, page))
+            } else {
+                let head_next = mem::replace(&mut head_mut.next, AtomicArc::null());
+                page.as_mut().next = head_next;
+                head_mut.next = AtomicArc::from_rc(page);
+                self.num_buffer += 1;
+                None
+            }
+        }
+    }
+
+    #[inline(always)]
     pub fn pop(&mut self) -> Option<usize> {
         loop {
             let head_pop = unsafe { self.head.as_mut().pop_back() };
@@ -316,6 +361,12 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
     pub fn free(&self, addr: usize) {
         let alloc = unsafe { &mut *self.alloc };
         alloc.free(addr)
+    }
+
+    #[inline(always)]
+    pub fn buffered_free(&self, addr: usize) {
+        let alloc = unsafe { &mut *self.alloc };
+        alloc.buffered_free(addr)
     }
 }
 
