@@ -230,6 +230,9 @@ impl<T, const B: usize> TLAlloc<T, B> {
                     next = next_next;
                 }
             }
+            if self.buffered_free.pos > 0 {
+                (&*self.shared).attach_objs(&self.buffered_free);
+            }
         }
     }
 }

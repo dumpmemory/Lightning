@@ -73,9 +73,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
-            let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
-                                               // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
-            fence(Acquire);
+            let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types             
+            fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let ver_ptr = node_ref.ver.as_mut_ptr();
             let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
