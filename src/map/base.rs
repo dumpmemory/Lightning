@@ -224,7 +224,8 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
-        self.get_with_hash(key, fkey, hash, read_attachment, &guard, &backoff).map(|(a, b, _)| (a, b))
+        self.get_with_hash(key, fkey, hash, read_attachment, &guard, &backoff)
+            .map(|(a, b, _)| (a, b))
     }
 
     pub fn insert(

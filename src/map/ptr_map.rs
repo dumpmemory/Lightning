@@ -74,7 +74,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
-            // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
+                                               // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             fence(Acquire);
             let ver_ptr = node_ref.ver.as_mut_ptr();
             let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
@@ -135,7 +135,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         loop {
-            if let Some((mut fv, _, addr)) = self.table.get_with_hash(key, fkey, hash, false, &guard, &backoff) {
+            if let Some((mut fv, _, addr)) = self
+                .table
+                .get_with_hash(key, fkey, hash, false, &guard, &backoff)
+            {
                 let val = self.deref_val(fv);
                 if val.is_some() {
                     return val;
