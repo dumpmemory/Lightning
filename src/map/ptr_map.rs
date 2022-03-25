@@ -140,12 +140,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 if val.is_some() {
                     return val;
                 }
+                backoff.spin();
                 loop {
                     let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
-                    if new_fval.val == fv {
-                        backoff.spin();
-                        continue;
-                    }
                     if new_fval.val > NUM_FIX_V {
                         let now_val = self.deref_val::<V>(fv);
                         if now_val.is_some() {
@@ -155,10 +152,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                             backoff.spin();
                             continue;
                         }
-                    }
-                    match new_fval.val {
-                        TOMBSTONE_VALUE | EMPTY_VALUE => return None,
-                        _ => {}
                     }
                     break;
                 }
