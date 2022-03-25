@@ -296,9 +296,10 @@ impl<const B: usize> TLBufferedStack<B> {
         unsafe {
             let head_mut = self.head.as_mut();
             if self.num_buffer >= Self::MAX_BUFFERS {
-                let head_next = mem::replace(&mut head_mut.next, AtomicArc::null());
-                page.as_mut().next = head_next;
-                Some(mem::replace(&mut self.head, page))
+                let head_next = head_mut.next.as_mut();
+                let head_next_next = mem::replace(&mut head_next.next, AtomicArc::null());
+                page.as_mut().next = head_next_next;
+                Some(mem::replace(&mut head_mut.next, AtomicArc::from_rc(page)).into_arc())
             } else {
                 let head_next = mem::replace(&mut head_mut.next, AtomicArc::null());
                 page.as_mut().next = head_next;
