@@ -858,17 +858,17 @@ impl<
         return res;
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_fast_key(entry_addr: usize) -> FKey {
         Chunk::<K, V, A, ALLOC>::get_fast_key(entry_addr)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn get_fast_value(entry_addr: usize) -> FastValue {
         Chunk::<K, V, A, ALLOC>::get_fast_value(entry_addr)
     }
 
-    #[inline]
+    #[inline(always)]
     fn cas_tombstone(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe {
@@ -880,14 +880,14 @@ impl<
             .1
         }
     }
-    #[inline]
+    #[inline(always)]
     fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> bool {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value).1 }
     }
 
-    #[inline]
+    #[inline(always)]
     fn cas_value_rt_new(entry_addr: usize, original: FVal, value: FVal) -> Option<FVal> {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
@@ -898,7 +898,7 @@ impl<
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn value_to_store(original: FVal, value: FVal) -> usize {
         if Self::FAT_VAL {
             FastValue::next_version(original, value)
@@ -907,25 +907,25 @@ impl<
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn store_raw_value(entry_addr: usize, value: FVal) {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) };
     }
 
-    #[inline]
+    #[inline(always)]
     fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, SENTINEL_VALUE) };
     }
 
-    #[inline]
+    #[inline(always)]
     fn store_key(addr: usize, fkey: FKey) {
         unsafe { intrinsics::atomic_store_rel(addr as *mut FKey, fkey) }
     }
 
-    #[inline]
+    #[inline(always)]
     fn cas_sentinel(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         let (val, done) = unsafe {
