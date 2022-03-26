@@ -160,14 +160,11 @@ impl<
                         return Some((act_val, attachment, addr));
                     } else if v == SENTINEL_VALUE {
                         if new_chunk.is_none() {
-                            warn!("Discovered sentinel but new chunk is null for key {}", fkey);
                             backoff.spin();
                             continue 'OUTER;
                         }
-                        trace!("Found sentinel, moving to new chunk for key {}", fkey);
                         break 'SPIN;
                     } else {
-                        trace!("Found empty for key {}", fkey);
                         break 'SPIN;
                     }
                 }
@@ -193,7 +190,6 @@ impl<
                             }
                             return Some((act_val, attachment, addr));
                         } else if v == SENTINEL_VALUE {
-                            warn!("Found sentinel in new chunks for key {}", fkey);
                             backoff.spin();
                             continue 'OUTER;
                         } else {
@@ -207,14 +203,6 @@ impl<
                 backoff.spin();
                 continue 'OUTER;
             }
-            trace!(
-                "Find nothing for key {}, rt new chunk {:?}, now {:?}. Epoch {} to {}",
-                fkey,
-                new_chunk_ptr,
-                self.new_chunk.load(Acquire, &guard),
-                epoch,
-                new_epoch
-            );
             return None;
         }
     }

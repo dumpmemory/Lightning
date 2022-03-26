@@ -291,15 +291,15 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
             contention,
             stride,
         ),
-        // run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
-        // run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
-        // run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
-        // run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
-        // run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride), // Too slow!
-        // run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
-        // run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride), // Too slow
-        // run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
-        // run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
+        run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
+        run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
+        run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
+        run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
+        run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride),
+        run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
+        run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride), // Too slow
+        run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
+        run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
     ];
     draw_perf_plots(data);
     println!("PERF TEST COMPLETED...");
@@ -327,6 +327,13 @@ fn run_perf_test_set<'a, T: Collection>(
         //     1.0,
         //     stride,
         // );
+        let lo = run_and_record_contention::<T>(
+            file_name,
+            &format!("{}_lo", ds_name),
+            load,
+            0.2,
+            stride,
+        );
         let hi = run_and_record_contention::<T>(
             file_name,
             &format!("{}_hi", ds_name),
@@ -339,13 +346,6 @@ fn run_perf_test_set<'a, T: Collection>(
             &format!("{}_mi", ds_name),
             load,
             0.5,
-            stride,
-        );
-        let lo = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_lo", ds_name),
-            load,
-            0.2,
             stride,
         );
         (
@@ -377,23 +377,23 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     stride: usize,
 ) -> Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)> {
     println!("Testing {}", name);
-
-    // println!("Insert heavy");
-    // let insert_measurement =
-    //     run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
-    // write_measurements(
-    //     &format!("{}_{}_insertion.csv", task, name),
-    //     &insert_measurement,
-    // );
     println!("Read heavy");
     let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
     write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
-    // println!("Uniform");
-    // let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
-    // write_measurements(
-    //     &format!("{}_{}_uniform.csv", task, name),
-    //     &uniform_measurement,
-    // );
+
+    println!("Insert heavy");
+    let insert_measurement =
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
+    write_measurements(
+        &format!("{}_{}_insertion.csv", task, name),
+        &insert_measurement,
+    );
+    println!("Uniform");
+    let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
+    write_measurements(
+        &format!("{}_{}_uniform.csv", task, name),
+        &uniform_measurement,
+    );
     // println!("Oversize");
     // let oversize_measurement =
     //     run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, 0.0, stride);
@@ -402,9 +402,9 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     //     &uniform_measurement,
     // );
     vec![
-        //("insert", insert_measurement),
+        ("insert", insert_measurement),
         ("read", read_measurement),
-        //("uniform", uniform_measurement),
+        ("uniform", uniform_measurement),
         // ("oversize", oversize_measurement),
     ]
 }

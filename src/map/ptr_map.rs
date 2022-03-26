@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::mem::ManuallyDrop;
 
 use crate::obj_alloc::{self, AllocGuard, Allocator};
 
@@ -112,6 +113,25 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             value & Self::VAL_NODE_LOW_BITS,
         )
     }
+
+    #[inline(never)]
+    fn retry_get(&self, fv: &mut usize, addr: usize, backoff: &Backoff) -> Option<V> {
+        backoff.spin();
+        loop {
+            let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
+            if new_fval.val > NUM_FIX_V {
+                let now_val = self.deref_val::<V>(*fv);
+                if now_val.is_some() {
+                    return now_val;
+                } else {
+                    *fv = new_fval.val;
+                    backoff.spin();
+                    continue;
+                }
+            }
+            return None;
+        }
+    }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
@@ -138,25 +158,25 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                let val = self.deref_val(fv);
-                if val.is_some() {
-                    return val;
+                unsafe {
+                    let (addr, val_ver) = Self::decompose_value(fv);
+                    let node_ptr = addr as *mut PtrValueNode<V>;
+                    let node_ref = &*node_ptr;
+                    let val_ptr = node_ref.value.as_ptr();
+                    let v_shadow = ManuallyDrop::new(ptr::read(val_ptr)); // Use a shadow data to cope with impl Clone data types    
+                    fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
+                    let ver_ptr = node_ref.ver.as_mut_ptr();
+                    let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
+                    if node_ver == val_ver {
+                        let v = v_shadow.deref().clone();
+                        return Some(v);
+                    }
+                }
+                let retry_val = self.retry_get(&mut fv, addr, &backoff);
+                if retry_val.is_some() {
+                    return retry_val;
                 }
                 backoff.spin();
-                loop {
-                    let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
-                    if new_fval.val > NUM_FIX_V {
-                        let now_val = self.deref_val::<V>(fv);
-                        if now_val.is_some() {
-                            return now_val;
-                        } else {
-                            fv = new_fval.val;
-                            backoff.spin();
-                            continue;
-                        }
-                    }
-                    break;
-                }
                 // None would be value changed
             } else {
                 return None;
