@@ -425,7 +425,7 @@ fn run_and_measure_mix<T: Collection>(
     threads
         .into_iter()
         .map(|n| {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(not(unsafe_bench), target_os = "linux"))]
             let (mem_sender, mem_recv) = channel();
             let mut workload = Workload::new(n, mix);
             workload
@@ -434,7 +434,7 @@ fn run_and_measure_mix<T: Collection>(
                 .initial_capacity_log2(cap);
             let data = workload.gen_data();
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
-            #[cfg(target_os = "linux")]
+            #[cfg(all(not(unsafe_bench), target_os = "linux"))]
             let self_mem = stat_self().unwrap().rss;
             let child_pid = unsafe {
                 fork(|| {
@@ -445,7 +445,7 @@ fn run_and_measure_mix<T: Collection>(
                 })
             };
             let mut proc_stat: i32 = 0;
-            #[cfg(target_os = "linux")]
+            #[cfg(all(not(unsafe_bench), target_os = "linux"))]
             {
                 thread::spawn(move || {
                     let mut max = 0;
@@ -466,7 +466,7 @@ fn run_and_measure_mix<T: Collection>(
             assert_eq!(proc_res, child_pid);
             let mut calibrated_size = 0;
             let mut size = "".to_string();
-            #[cfg(target_os = "linux")]
+            #[cfg(all(not(unsafe_bench), target_os = "linux"))]
             {
                 let max_mem = mem_recv.recv().unwrap();
                 calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
