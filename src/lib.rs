@@ -4,6 +4,7 @@
 #![feature(test)]
 #![feature(once_cell)]
 #![feature(atomic_mut_ptr)]
+#![feature(inherent_associated_types)]
 #[macro_use]
 extern crate log;
 extern crate alloc;
@@ -18,6 +19,7 @@ pub mod lru_cache;
 pub mod map;
 pub mod ring_buffer;
 pub mod spin;
+pub mod rw_spin;
 pub mod stack;
 pub mod ttl_cache;
 

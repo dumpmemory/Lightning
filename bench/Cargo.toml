@@ -17,7 +17,7 @@ num_cpus = "1"
 chashmap = "2.2.2"
 chrono = "0.4"
 perfcnt_bench = { git = "https://github.com/shisoft/perfcnt-bench.git" }
-perfcnt = "0.7"
+perfcnt = "0.8"
 cht = "0.5"
 clap = "3"
 plotters = "^0.3.1"
@@ -29,6 +29,10 @@ scc = "0.6"
 ipc-channel = "0.15.0"
 libc = "*"
 humansize = "1"
+log = {version = "0.4", features = ["max_level_off"]}
+
+[profile.release]
+debug = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procinfo = "0.4"
@@ -37,3 +41,6 @@ procinfo = "0.4"
 [[bin]]
 name = "lightning-bench"
 path = "mod.rs"
+
+[features]
+unsafe_bench = []

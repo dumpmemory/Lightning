@@ -1,7 +1,4 @@
 // A supposed to be fast and lock-free object allocator without size class
-
-use crossbeam_epoch::Atomic;
-
 use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
@@ -11,16 +8,16 @@ use std::{marker::PhantomData, mem};
 use crate::stack::LinkedRingBufferStack;
 
 pub struct Allocator<T, const B: usize> {
-    shared: *const SharedAlloc<T, B>,
+    shared: Arc<SharedAlloc<T, B>>,
     thread: ThreadLocal<TLAlloc<T, B>>,
 }
 
 pub struct TLAlloc<T, const B: usize> {
-    buffer: usize,
+    buffer_addr: usize,
     buffer_limit: usize,
     free_list: TLBufferedStack<B>,
     buffered_free: Arc<ThreadLocalPage<B>>,
-    shared: *const SharedAlloc<T, B>,
+    shared: Arc<SharedAlloc<T, B>>,
     guard_count: usize,
     defer_free: Vec<usize>,
     _marker: PhantomData<T>,
@@ -36,7 +33,7 @@ pub struct SharedAlloc<T, const B: usize> {
 impl<T, const B: usize> Allocator<T, B> {
     pub fn new() -> Self {
         Self {
-            shared: Box::into_raw(Box::new(SharedAlloc::new())),
+            shared: Arc::new(SharedAlloc::new()),
             thread: ThreadLocal::new(),
         }
     }
@@ -70,12 +67,12 @@ impl<T, const B: usize> Allocator<T, B> {
 
     #[inline(always)]
     fn tl_alloc(&self) -> &mut TLAlloc<T, B> {
-        self.thread.get_or(|| TLAlloc::new(0, 0, self.shared))
+        self.thread.get_or(|| TLAlloc::new(0, 0, &self.shared))
     }
 }
 
 #[repr(align(8))]
-struct Aligned<T>(T);
+pub struct Aligned<T>(T);
 
 impl<T, const B: usize> SharedAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
@@ -110,6 +107,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
             }
             let next = head.next.load();
             if self.free_obj.compare_exchange_is_ok(&head, &next) {
+                head.next.store_ref(Arc::null());
                 return Some(head);
             }
             backoff.spin();
@@ -122,7 +120,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         loop {
             let head = self.free_obj.load();
             unsafe {
-                objs.as_mut().next = AtomicArc::from_rc(head.clone());
+                objs.as_mut().next.store_ref(head.clone());
             }
             if self.free_obj.compare_exchange_is_ok(&head, objs) {
                 return;
@@ -136,13 +134,13 @@ impl<T, const B: usize> TLAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
 
     #[inline(always)]
-    pub fn new(buffer: usize, limit: usize, shared: *const SharedAlloc<T, B>) -> Self {
+    pub fn new(buffer: usize, limit: usize, shared: &Arc<SharedAlloc<T, B>>) -> Self {
         Self {
             free_list: TLBufferedStack::new(),
             buffered_free: Arc::new(ThreadLocalPage::new()),
-            buffer,
+            buffer_addr: buffer,
             buffer_limit: limit,
-            shared,
+            shared: shared.clone(),
             guard_count: 0,
             defer_free: Vec::with_capacity(64),
             _marker: PhantomData,
@@ -154,7 +152,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
         if let Some(addr) = self.free_list.pop() {
             return addr;
         }
-        if self.buffer + Self::OBJ_SIZE > self.buffer_limit {
+        if self.buffer_addr + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
             unsafe {
                 if let Some(free_buffer) = (&*self.shared).free_objs() {
@@ -167,22 +165,24 @@ impl<T, const B: usize> TLAlloc<T, B> {
                         return ptr;
                     }
                 }
-                let (new_buffer, new_limit) = (&*self.shared).alloc_buffer();
-                self.buffer = new_buffer;
-                self.buffer_limit = new_limit;
+                loop {
+                    let (new_buffer, new_limit) = (&*self.shared).alloc_buffer();
+                    if new_buffer + Self::OBJ_SIZE <= new_limit {
+                        self.buffer_addr = new_buffer;
+                        self.buffer_limit = new_limit;
+                        break;
+                    }
+                }
             }
         }
-        let obj_addr = self.buffer;
-        self.buffer += Self::OBJ_SIZE;
-        debug_assert!(self.buffer <= self.buffer_limit);
+        let obj_addr = self.buffer_addr;
+        self.buffer_addr += Self::OBJ_SIZE;
+        debug_assert!(self.buffer_addr <= self.buffer_limit);
         return obj_addr;
     }
 
     #[inline(always)]
     pub fn free(&mut self, addr: usize) {
-        if cfg!(test) && addr > self.buffer_limit {
-            warn!("Freeing address out of limit: {}", addr);
-        }
         if let Some(overflow_buffer) = self.free_list.push(addr) {
             unsafe {
                 (&*self.shared).attach_objs(&overflow_buffer);
@@ -201,7 +201,10 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 )) {
                     (&*self.shared).attach_objs(&overflow_buffer);
                 }
-                self.buffered_free.as_mut().push_back(overflowed_addr).unwrap();
+                self.buffered_free
+                    .as_mut()
+                    .push_back(overflowed_addr)
+                    .unwrap();
             }
         }
     }
@@ -210,20 +213,22 @@ impl<T, const B: usize> TLAlloc<T, B> {
     pub fn return_resources(&mut self) {
         // Return buffer space
         unsafe {
-            if self.buffer != self.buffer_limit {
+            if self.buffer_addr < self.buffer_limit {
                 (&*self.shared)
                     .free_buffer
-                    .push((self.buffer, self.buffer_limit))
+                    .push((self.buffer_addr, self.buffer_limit))
             }
 
             // return free list
-            let local_free = &mut self.free_list;
-            let head = &local_free.head;
+            let head = mem::replace(&mut self.free_list.head, Arc::null());
             if !head.is_null() {
-                (&*self.shared).attach_objs(&head);
-                let mut next = head.next.load();
+                if head.pos > 0 {
+                    (&*self.shared).attach_objs(&head);
+                }
+                let mut next = mem::replace(&mut head.as_mut().next, AtomicArc::null()).into_arc();
                 while !next.is_null() {
-                    let next_next = next.next.load();
+                    let next_next =
+                        mem::replace(&mut next.as_mut().next, AtomicArc::null()).into_arc();
                     if next.pos > 0 {
                         (&*self.shared).attach_objs(&next);
                     }
@@ -382,7 +387,6 @@ impl<T, const B: usize> Drop for Allocator<T, B> {
                     libc::free(alloc_bufer as *mut libc::c_void);
                 }
             }
-            Box::from_raw(self.shared as *mut SharedAlloc<T, B>);
         }
     }
 }

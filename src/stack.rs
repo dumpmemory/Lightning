@@ -23,7 +23,7 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
     pub const fn const_new() -> Self {
         unsafe {
             Self {
-                head: mem::transmute(0usize),
+                head: mem::transmute(0u128),
             }
         }
     }

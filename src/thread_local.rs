@@ -23,14 +23,12 @@ struct ThreadMeta {
 const FAST_THREADS: usize = 512;
 
 pub struct ThreadLocal<T> {
-    fast_map: [Cell<usize>; FAST_THREADS],
-    reserve_map: LiteHashMap<usize, usize, System, PassthroughHasher>,
+    fast_map: [Cell<*mut T>; FAST_THREADS],
+    reserve_map: LiteHashMap<usize, *mut T, System, PassthroughHasher>,
     _marker: PhantomData<T>,
 }
 
 impl<T> ThreadLocal<T> {
-    const OBJ_SIZE: usize = mem::size_of::<T>();
-
     #[inline(always)]
     pub fn new() -> Self {
         Self {
@@ -46,17 +44,13 @@ impl<T> ThreadLocal<T> {
             let tid = ThreadMeta::get_id();
             if tid < FAST_THREADS {
                 let cell = &self.fast_map[tid];
-                if cell.get() == 0 {
-                    let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
-                    ptr::write(ptr, new());
-                    cell.set(ptr as usize);
+                if cell.get().is_null() {
+                    cell.set(Box::into_raw(Box::new(new())));
                 }
                 &mut *(cell.get() as *mut T)
             } else {
                 let obj_ptr = self.reserve_map.get_or_insert(tid, move || {
-                    let ptr = libc::malloc(Self::OBJ_SIZE) as *mut T;
-                    ptr::write(ptr, new());
-                    ptr as usize
+                    Box::into_raw(Box::new(new()))
                 });
                 &mut *(obj_ptr as *mut T)
             }
@@ -88,19 +82,22 @@ impl Drop for ThreadMeta {
 impl<T> Drop for ThreadLocal<T> {
     fn drop(&mut self) {
         for (_, v) in self.reserve_map.entries() {
+            if v.is_null() {
+                continue;
+            }
             unsafe {
-                libc::free(v as *mut libc::c_void);
+                Box::from_raw(v as *mut T);
             }
         }
         for cell in self.fast_map.iter() {
             let addr = cell.get();
-            if addr == 0 {
+            if addr.is_null() {
                 continue;
             }
             unsafe {
-                libc::free(addr as *mut libc::c_void);
+                Box::from_raw(addr as *mut T);
             }
-            cell.set(0);
+            cell.set(0 as *mut T);
         }
     }
 }

@@ -22,6 +22,7 @@ impl<T> SpinLock<T> {
         }
     }
 
+    #[inline(always)]
     pub fn lock(&self) -> SpinLockGuard<T> {
         let backoff = crossbeam_utils::Backoff::new();
         while self.mark.compare_exchange(0, 1, AcqRel, Relaxed).is_err() {
@@ -52,6 +53,7 @@ impl<'a, T> DerefMut for SpinLockGuard<'a, T> {
 }
 
 impl<'a, T> Drop for SpinLockGuard<'a, T> {
+    #[inline(always)]
     fn drop(&mut self) {
         self.lock.mark.store(0, Release);
     }

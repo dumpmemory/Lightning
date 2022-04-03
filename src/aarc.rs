@@ -1,9 +1,13 @@
-use std::mem;
+use std::mem::{self, ManuallyDrop};
 use std::sync::atomic::Ordering::*;
 use std::{
     ops::Deref,
     sync::atomic::{AtomicPtr, AtomicUsize},
 };
+
+use crossbeam_utils::atomic::AtomicConsume;
+
+use crate::rw_spin::RwSpinLock;
 
 pub struct Arc<T> {
     ptr: *const Inner<T>,
@@ -54,6 +58,13 @@ impl<T> Drop for Arc<T> {
     }
 }
 
+impl<T> Drop for AtomicArc<T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        decr_ref(self.ptr.load_consume())
+    }
+}
+
 impl<T> Clone for Arc<T> {
     #[inline(always)]
     fn clone(&self) -> Self {
@@ -65,6 +76,7 @@ impl<T> Clone for Arc<T> {
 }
 
 pub struct AtomicArc<T> {
+    lock: RwSpinLock<()>,
     ptr: AtomicPtr<Inner<T>>,
 }
 
@@ -72,6 +84,7 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn new(val: T) -> Self {
         Self {
+            lock: RwSpinLock::new(()),
             ptr: AtomicPtr::new(Box::into_raw(Box::new(Inner::new(val)))),
         }
     }
@@ -79,6 +92,7 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn from_rc(rc: Arc<T>) -> Self {
         let res = Self {
+            lock: RwSpinLock::new(()),
             ptr: AtomicPtr::new(rc.ptr as *mut Inner<T>),
         };
         mem::forget(rc);
@@ -88,6 +102,7 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn null() -> Self {
         Self {
+            lock: RwSpinLock::new(()),
             ptr: AtomicPtr::new(0 as *mut Inner<T>),
         }
     }
@@ -100,32 +115,46 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn store(&self, val: T) {
         let inner = Box::new(Inner::new(val));
-        let old = self.ptr.swap(Box::into_raw(inner), AcqRel);
+        let old = {
+            let _g = self.lock.write();
+            self.ptr.swap(Box::into_raw(inner), Relaxed)
+        };
         decr_ref(old)
     }
 
     #[inline(always)]
     pub fn store_ref(&self, val: Arc<T>) {
-        let old = self.ptr.swap(val.ptr as *mut Inner<T>, AcqRel);
+        let old = {
+            let _g = self.lock.write();
+            self.ptr.swap(val.ptr as *mut Inner<T>, Relaxed)
+        };
         mem::forget(val);
         decr_ref(old)
     }
 
     #[inline(always)]
     pub fn load(&self) -> Arc<T> {
-        let ptr = self.ptr.load(Acquire);
-        incr_ref(ptr);
+        let ptr = {
+            let _g = self.lock.read();
+            let ptr = self.ptr.load(Relaxed);
+            incr_ref(ptr);
+            ptr
+        };
         Arc::from_ptr(ptr)
     }
 
     #[inline(always)]
     pub fn compare_exchange(&self, current: &Arc<T>, new: &Arc<T>) -> Result<(), Arc<T>> {
-        match self.ptr.compare_exchange(
-            current.ptr as *mut Inner<T>,
-            new.ptr as *mut Inner<T>,
-            AcqRel,
-            Acquire,
-        ) {
+        let cas_res = {
+            let _g = self.lock.write();
+            self.ptr.compare_exchange(
+                current.ptr as *mut Inner<T>,
+                new.ptr as *mut Inner<T>,
+                Relaxed,
+                Relaxed,
+            )
+        };
+        match cas_res {
             Ok(current) => {
                 decr_ref(current);
                 incr_ref(new.ptr);
@@ -140,12 +169,16 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn compare_exchange_is_ok(&self, current: &Arc<T>, new: &Arc<T>) -> bool {
-        match self.ptr.compare_exchange(
-            current.ptr as *mut Inner<T>,
-            new.ptr as *mut Inner<T>,
-            AcqRel,
-            Acquire,
-        ) {
+        let cas_res = {
+            let _g = self.lock.write();
+            self.ptr.compare_exchange(
+                current.ptr as *mut Inner<T>,
+                new.ptr as *mut Inner<T>,
+                Relaxed,
+                Relaxed,
+            )
+        };
+        match cas_res {
             Ok(current) => {
                 decr_ref(current);
                 incr_ref(new.ptr);
@@ -158,15 +191,20 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value(&self, current: &Arc<T>, new: T) -> Result<(), Arc<T>> {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        match self
-            .ptr
-            .compare_exchange(current.ptr as *mut Inner<T>, new, AcqRel, Acquire)
-        {
+        let cas_res = {
+            let _g = self.lock.write();
+            self.ptr
+                .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed)
+        };
+        match cas_res {
             Ok(current) => {
                 decr_ref(current);
                 Ok(())
             }
             Err(current) => {
+                unsafe {
+                    Box::from_raw(new);
+                }
                 incr_ref(current);
                 Err(Arc::from_ptr(current))
             }
@@ -176,15 +214,22 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value_is_ok(&self, current: &Arc<T>, new: T) -> bool {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        match self
-            .ptr
-            .compare_exchange(current.ptr as *mut Inner<T>, new, AcqRel, Acquire)
-        {
+        let cas_res = {
+            let _g = self.lock.write();
+            self.ptr
+                .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed)
+        };
+        match cas_res {
             Ok(current) => {
                 decr_ref(current);
                 true
             }
-            Err(_current) => false,
+            Err(_current) => {
+                unsafe {
+                    Box::from_raw(new);
+                }
+                false
+            },
         }
     }
 
@@ -195,8 +240,13 @@ impl<T> AtomicArc<T> {
     }
 
     #[inline(always)]
-    pub fn into_arc(self) -> Arc<T> {
-        unsafe { mem::transmute(self) }
+    pub fn into_arc(mut self) -> Arc<T> {
+        let _g = self.lock.read();
+        unsafe { 
+            let res = mem::transmute_copy(&self.ptr);
+            self.ptr = mem::zeroed();
+            return res;
+        }
     }
 
     #[inline(always)]
