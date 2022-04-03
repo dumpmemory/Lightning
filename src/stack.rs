@@ -94,6 +94,15 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
 unsafe impl<T, const B: usize> Sync for LinkedRingBufferStack<T, B> {}
 unsafe impl<T, const B: usize> Send for LinkedRingBufferStack<T, B> {}
 
+impl <T, const B: usize> Drop for LinkedRingBufferStack<T, B> {
+    fn drop(&mut self) {
+        let mut node = self.head.load();
+        while !node.is_null() {
+            node = node.next.swap_ref(Arc::null())
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashSet, sync::Arc, thread};

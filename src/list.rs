@@ -415,14 +415,13 @@ unsafe impl<T: Clone + Default, const N: usize> Send for LinkedRingBufferList<T,
 impl <T, const N: usize> Drop for LinkedRingBufferList<T, N> {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
-        let head = self.head.load(Relaxed, &guard);
-        let tail = self.tail.load(Relaxed, &guard);
-        unsafe {
-            guard.defer_destroy(head);
-        }
-        if head != tail {
+        let mut node = self.head.load(Acquire, &guard);
+        while !node.is_null() {
             unsafe {
-                guard.defer_destroy(tail);
+                let node_ins = node.deref();
+                let next = node_ins.next.load(Acquire, &guard);
+                guard.defer_destroy(node);
+                node = next;
             }
         }
     }

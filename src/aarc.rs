@@ -113,6 +113,14 @@ impl<T> AtomicArc<T> {
     }
 
     #[inline(always)]
+    pub fn swap_ref(&self, r: Arc<T>) -> Arc<T> {
+        let _g = self.lock.write();
+        Arc {
+            ptr: self.ptr.swap(r.ptr as *mut Inner<T>, Relaxed)
+        }
+    }
+
+    #[inline(always)]
     pub fn store(&self, val: T) {
         let inner = Box::new(Inner::new(val));
         let old = {

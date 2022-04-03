@@ -28,7 +28,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
         let k_num = self.encode(key);
         let v_num = self.encode(value);
-        self.table
+        self
+            .table
             .insert(op, &(), Some(&()), k_num as FKey, v_num as FVal)
             .map(|(fv, _)| self.decode::<V>(fv as usize))
     }
@@ -42,7 +43,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn encode<T: Clone>(&self, d: T) -> usize {
+    fn encode<T>(&self, d: T) -> usize {
         let mut num: u64 = 0;
         let obj_ptr = &mut num as *mut u64 as *mut T;
         unsafe {
@@ -58,6 +59,14 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let aligned = unsafe { &*ptr };
         let obj = aligned.data.clone();
         return obj;
+    }
+
+    #[inline(always)]
+    unsafe fn decode_no_clone<T: Clone>(&self, num: usize) -> T {
+        let num = (num - (NUM_FIX_V as usize)) as u64;
+        let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
+        let aligned = ptr::read(ptr);
+        return aligned.data;
     }
 }
 
@@ -231,6 +240,19 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         self.map
             .table
             .insert(InsertOp::Insert, &(), Some(&()), self.fkey, fval);
+    }
+}
+
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for LiteHashMap<K, V, ALLOC, H>
+{
+    fn drop(&mut self) {
+        for (k, v, _a, _b) in self.table.entries() {
+            unsafe {
+                self.decode_no_clone::<K>(k);
+                self.decode_no_clone::<V>(v);
+            }
+        }
     }
 }
 
