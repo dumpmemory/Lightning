@@ -56,6 +56,10 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                             .is_ok()
                         {
                             head_node.prev.store(new_node_ptr, Release);
+                        } else {
+                            unsafe {
+                                new_node_ptr.into_owned();
+                            }
                         }
                     }
                     val = v;
@@ -88,6 +92,10 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                             .is_ok()
                         {
                             tail_node.next.store(new_node_ptr, Release);
+                        } else {
+                            unsafe {
+                                new_node_ptr.into_owned();
+                            }
                         }
                     }
                     val = v;
@@ -403,6 +411,22 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ListIter<'a, T, N> {
 }
 
 unsafe impl<T: Clone + Default, const N: usize> Send for LinkedRingBufferList<T, N> {}
+
+impl <T, const N: usize> Drop for LinkedRingBufferList<T, N> {
+    fn drop(&mut self) {
+        let guard = crossbeam_epoch::pin();
+        let head = self.head.load(Relaxed, &guard);
+        let tail = self.tail.load(Relaxed, &guard);
+        unsafe {
+            guard.defer_destroy(head);
+        }
+        if head != tail {
+            unsafe {
+                guard.defer_destroy(tail);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
