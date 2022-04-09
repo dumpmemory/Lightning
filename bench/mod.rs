@@ -25,6 +25,7 @@ mod fat_lfmap;
 mod flurry;
 mod lfmap;
 mod lite_lfmap;
+mod lite_lfmap_arc;
 mod lockfree;
 mod obj_lfmap;
 mod ptr_lfmap;
@@ -259,6 +260,13 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<ptr_lfmap::TestTable>(
             file_name,
             "lightning - ptr",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<lite_lfmap_arc::TestTable>(
+            file_name,
+            "lightning - arc",
             load,
             contention,
             stride,

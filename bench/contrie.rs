@@ -8,7 +8,7 @@ pub struct Table(Arc<ConMap<usize, usize>>);
 
 impl Collection for Table {
     type Handle = Self;
-    fn with_capacity(capacity: usize) -> Self {
+    fn with_capacity(_capacity: usize) -> Self {
         Self(Arc::new(ConMap::with_hasher(RandomState::default())))
     }
 
