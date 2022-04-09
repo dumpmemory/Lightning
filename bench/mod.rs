@@ -264,13 +264,6 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
             contention,
             stride,
         ),
-        run_perf_test_set::<lite_lfmap_arc::TestTable>(
-            file_name,
-            "lightning - arc",
-            load,
-            contention,
-            stride,
-        ),
         run_perf_test_set::<lite_lfmap::TestTable>(
             file_name,
             "lightning - lite",
@@ -288,6 +281,13 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<fat_lfmap::TestTable>(
             file_name,
             "lightning - lock",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<lite_lfmap_arc::TestTable>(
+            file_name,
+            "lightning - arc",
             load,
             contention,
             stride,
