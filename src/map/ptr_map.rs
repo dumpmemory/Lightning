@@ -171,8 +171,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                     let ver_ptr = node_ref.ver.as_mut_ptr();
                     let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
                     if node_ver == val_ver {
-                        let v = v_shadow.deref().clone();
-                        return Some(v);
+                        return Some(v_shadow.deref().clone());
                     }
                 }
                 let retry_val = self.retry_get(&mut fv, addr, &backoff);
