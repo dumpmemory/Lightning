@@ -186,6 +186,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value).map(|((ptr, node_addr), guard)| {
             unsafe {
+                debug_assert!(!ptr.is_null());
                 let value = ptr::read(ptr);
                 guard.buffered_free(node_addr);
                 value
