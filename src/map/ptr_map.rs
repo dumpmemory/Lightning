@@ -39,10 +39,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| {
-                let val = self.deref_val_unchecked(fv);
-                let ptr = fv & Self::INV_VAL_NODE_LOW_BITS;
-                guard.buffered_free(ptr);
-                return val;
+                self.move_out(fv, &guard)
             })
     }
 
@@ -61,7 +58,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             // Release: No other thread is changing the version, but we want the value assignment happened AFTER the version is changed
             let next_ver = node_ref.ver.fetch_add(1, Release).wrapping_add(1);
-            *node_ref.value.as_ptr() = d;
+            ptr::write(node_ref.value.as_ptr(), d);
             let val = Self::compose_value(node_ptr as usize, next_ver);
             val
         }
@@ -88,13 +85,14 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn deref_val_unchecked<T: Clone>(&self, val: usize) -> T {
+    fn move_out<T: Clone>(&self, val: usize, guard: &AllocGuard<PtrValueNode<T>, ALLOC_BUFFER_SIZE>) -> T {
         unsafe {
             let (addr, _val_ver) = Self::decompose_value(val);
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
-            (&*val_ptr).clone()
+            guard.buffered_free(node_ptr as usize);
+            ptr::read(val_ptr)
         }
     }
 
@@ -198,7 +196,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn remove(&self, key: &K) -> Option<V> {
         self.table
             .remove(key, 0)
-            .map(|(fv, _)| self.deref_val_unchecked(fv))
+            .map(|(fv, _)| {
+                let guard = self.allocator.pin();
+                self.move_out(fv, &guard)
+            })
     }
 
     #[inline(always)]
@@ -325,12 +326,13 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     }
 
     fn erase(self, old_fval: FVal) {
-        let old_fval = old_fval & WORD_MUTEX_DATA_BIT_MASK & Self::INV_VAL_NODE_LOW_BITS;
-        if old_fval >= NUM_FIX_V {
-            let alloc =
-                unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
-            alloc.buffered_free(old_fval as *mut V);
-        }
+        // let old_fval = old_fval & WORD_MUTEX_DATA_BIT_MASK & Self::INV_VAL_NODE_LOW_BITS;
+        // if old_fval >= NUM_FIX_V {
+        //     let alloc =
+        //         unsafe { &*(self.alloc as *mut obj_alloc::Allocator<V, ALLOC_BUFFER_SIZE>) };
+        //     let old_fval_ptr = old_fval as *mut V;
+        //     alloc.buffered_free(old_fval_ptr);
+        // }
     }
 
     fn probe(self, probe_key: &K) -> bool {
@@ -420,8 +422,9 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 
     pub fn remove(self) -> V {
+        let guard = self.map.allocator.pin();
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
-        let r = self.map.deref_val_unchecked(fval);
+        let r = self.map.move_out(fval, &guard);
         mem::forget(self);
         return r;
     }
@@ -533,6 +536,50 @@ mod ptr_map {
             for j in 5..60 {
                 let k = key_from(i * 100 + j);
                 let v = val_from(i * j);
+                assert_eq!(map.get(&k), Some(v))
+            }
+        }
+        for i in 5..9 {
+            for j in 1..10 {
+                let k = key_from(i * j);
+                assert!(map.get(&k).is_none())
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_arc_no_resize() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<Key, Arc<Value>, System>::with_capacity(65536));
+        let mut threads = vec![];
+        for i in 5..99 {
+            let k = key_from(i);
+            let v = Arc::new(val_from(i * 10));
+            map.insert(k, v);
+        }
+        for i in 100..900 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 5..60 {
+                    let k = key_from(i * 100 + j);
+                    let v = Arc::new(val_from(i * j));
+                    map.insert(k, v);
+                }
+            }));
+        }
+        for i in 5..9 {
+            for j in 1..10 {
+                let k = key_from(i * j);
+                map.remove(&k);
+            }
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+        for i in 100..900 {
+            for j in 5..60 {
+                let k = key_from(i * 100 + j);
+                let v = Arc::new(val_from(i * j));
                 assert_eq!(map.get(&k), Some(v))
             }
         }
