@@ -90,8 +90,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let (addr, _val_ver) = Self::decompose_value(val);
             let node_ptr = addr as *mut PtrValueNode<V>;
             let node_ref = &*node_ptr;
-            debug_assert!(addr > 0);
-            (node_ref.value.as_ptr(), addr)
+            let val_ptr = node_ref.value.as_ptr();
+            debug_assert!(!node_ptr.is_null());
+            debug_assert!(!val_ptr.is_null());
+            (val_ptr, addr)
         }
     }
 
