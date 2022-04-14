@@ -412,7 +412,7 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ListIter<'a, T, N> {
 
 unsafe impl<T: Clone + Default, const N: usize> Send for LinkedRingBufferList<T, N> {}
 
-impl <T, const N: usize> Drop for LinkedRingBufferList<T, N> {
+impl<T, const N: usize> Drop for LinkedRingBufferList<T, N> {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         let mut node = self.head.load(Acquire, &guard);

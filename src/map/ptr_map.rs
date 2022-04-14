@@ -33,14 +33,20 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
 
     #[inline(always)]
-    fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<((*mut V, usize), AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>)> {
+    fn insert_with_op(
+        &self,
+        op: InsertOp,
+        key: K,
+        value: V,
+    ) -> Option<(
+        (*mut V, usize),
+        AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
+    )> {
         let guard = self.allocator.pin();
         let v_num = self.ref_val(value, &guard);
         self.table
             .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
-            .map(|(fv, _)| {
-                (self.ptr_of_val(fv), guard)
-            })
+            .map(|(fv, _)| (self.ptr_of_val(fv), guard))
     }
 
     pub fn lock(&self, key: &K) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
@@ -71,7 +77,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
-            let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types             
+            let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let ver_ptr = node_ref.ver.as_mut_ptr();
             let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
@@ -162,7 +168,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                     let node_ptr = addr as *mut PtrValueNode<V>;
                     let node_ref = &*node_ptr;
                     let val_ptr = node_ref.value.as_ptr();
-                    let v_shadow = ManuallyDrop::new(ptr::read(val_ptr)); // Use a shadow data to cope with impl Clone data types    
+                    let v_shadow = ManuallyDrop::new(ptr::read(val_ptr)); // Use a shadow data to cope with impl Clone data types
                     fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
                     let ver_ptr = node_ref.ver.as_mut_ptr();
                     let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
@@ -184,37 +190,31 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn insert(&self, key: K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::Insert, key, value).map(|((ptr, node_addr), guard)| {
-            unsafe {
+        self.insert_with_op(InsertOp::Insert, key, value)
+            .map(|((ptr, node_addr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
                 let value = ptr::read(ptr);
                 guard.buffered_free(node_addr);
                 value
-            }
-        })
+            })
     }
 
     #[inline(always)]
     fn try_insert(&self, key: K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::TryInsert, key, value).map(|((ptr, _), _)| {
-            unsafe {
-                (*ptr).clone()
-            }
-        })
+        self.insert_with_op(InsertOp::TryInsert, key, value)
+            .map(|((ptr, _), _)| unsafe { (*ptr).clone() })
     }
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
-        self.table
-            .remove(key, 0)
-            .map(|(fv, _)| {
-                let (val_ptr, node_addr) = self.ptr_of_val(fv);
-                unsafe {
-                    let value = ptr::read(val_ptr);
-                    self.allocator.buffered_free(node_addr as _);
-                    value
-                }
-            })
+        self.table.remove(key, 0).map(|(fv, _)| {
+            let (val_ptr, node_addr) = self.ptr_of_val(fv);
+            unsafe {
+                let value = ptr::read(val_ptr);
+                self.allocator.buffered_free(node_addr as _);
+                value
+            }
+        })
     }
 
     #[inline(always)]
@@ -477,12 +477,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 }
 
-impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for
-    PtrHashMap<K, V, ALLOC, H> 
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for PtrHashMap<K, V, ALLOC, H>
 {
     fn drop(&mut self) {
-        let guard = self.allocator.pin();
-        for (_fk, fv, k, _v) in self.table.entries() {
+        for (_fk, fv, _k, _v) in self.table.entries() {
             let (val_ptr, _) = self.ptr_of_val(fv);
             unsafe {
                 ptr::read(val_ptr);

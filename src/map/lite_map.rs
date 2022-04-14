@@ -28,8 +28,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
         let k_num = self.encode(key);
         let v_num = self.encode(value);
-        self
-            .table
+        self.table
             .insert(op, &(), Some(&()), k_num as FKey, v_num as FVal)
             .map(|(fv, _)| self.decode::<V>(fv as usize))
     }

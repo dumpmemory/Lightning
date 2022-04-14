@@ -72,9 +72,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map
             .lock(key)
-            .and_then(|l| unsafe { 
-                PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v)
-            })
+            .and_then(|l| unsafe { PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v) })
     }
 
     pub fn pop_front(&self) -> Option<KVPair<K, V>> {

@@ -18,8 +18,8 @@ pub mod list;
 pub mod lru_cache;
 pub mod map;
 pub mod ring_buffer;
-pub mod spin;
 pub mod rw_spin;
+pub mod spin;
 pub mod stack;
 pub mod ttl_cache;
 

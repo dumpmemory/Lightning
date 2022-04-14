@@ -1,9 +1,6 @@
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{
-    AtomicUsize,
-    Ordering::*,
-};
+use std::sync::atomic::{AtomicUsize, Ordering::*};
 
 pub struct RwSpinLock<T> {
     mark: AtomicUsize,
@@ -40,7 +37,12 @@ impl<T> RwSpinLock<T> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let mark = self.mark.load(Acquire);
-            if mark != 1 && self.mark.compare_exchange(mark, mark + 2, AcqRel, Relaxed).is_ok() {
+            if mark != 1
+                && self
+                    .mark
+                    .compare_exchange(mark, mark + 2, AcqRel, Relaxed)
+                    .is_ok()
+            {
                 break;
             }
             backoff.spin();

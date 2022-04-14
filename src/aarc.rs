@@ -116,7 +116,7 @@ impl<T> AtomicArc<T> {
     pub fn swap_ref(&self, r: Arc<T>) -> Arc<T> {
         let _g = self.lock.write();
         Arc {
-            ptr: self.ptr.swap(r.ptr as *mut Inner<T>, Relaxed)
+            ptr: self.ptr.swap(r.ptr as *mut Inner<T>, Relaxed),
         }
     }
 
@@ -237,7 +237,7 @@ impl<T> AtomicArc<T> {
                     Box::from_raw(new);
                 }
                 false
-            },
+            }
         }
     }
 
@@ -250,7 +250,7 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn into_arc(mut self) -> Arc<T> {
         let _g = self.lock.read();
-        unsafe { 
+        unsafe {
             let res = mem::transmute_copy(&self.ptr);
             self.ptr = mem::zeroed();
             return res;

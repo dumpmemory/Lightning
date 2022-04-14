@@ -49,9 +49,9 @@ impl<T> ThreadLocal<T> {
                 }
                 &mut *(cell.get() as *mut T)
             } else {
-                let obj_ptr = self.reserve_map.get_or_insert(tid, move || {
-                    Box::into_raw(Box::new(new()))
-                });
+                let obj_ptr = self
+                    .reserve_map
+                    .get_or_insert(tid, move || Box::into_raw(Box::new(new())));
                 &mut *(obj_ptr as *mut T)
             }
         }
