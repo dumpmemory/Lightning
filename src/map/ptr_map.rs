@@ -92,7 +92,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
             let node_addr = node_ptr as usize;
-            if node_addr == 0 {
+            if node_addr == 0 || val_ptr as usize == 0 {
                 None
             } else {
                 guard.buffered_free(node_addr);
