@@ -38,7 +38,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let v_num = self.ref_val(value, &guard);
         self.table
             .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
-            .map(|(fv, _)| {
+            .and_then(|(fv, _)| {
                 self.move_out(fv, &guard)
             })
     }
@@ -85,14 +85,19 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn move_out<T: Clone>(&self, val: usize, guard: &AllocGuard<PtrValueNode<T>, ALLOC_BUFFER_SIZE>) -> T {
+    fn move_out<T: Clone>(&self, val: usize, guard: &AllocGuard<PtrValueNode<T>, ALLOC_BUFFER_SIZE>) -> Option<T> {
         unsafe {
             let (addr, _val_ver) = Self::decompose_value(val);
             let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
-            guard.buffered_free(node_ptr as usize);
-            ptr::read(val_ptr)
+            let node_addr = node_ptr as usize;
+            if node_addr == 0 {
+                None
+            } else {
+                guard.buffered_free(node_addr);
+                Some(ptr::read(val_ptr))
+            }
         }
     }
 
@@ -196,7 +201,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn remove(&self, key: &K) -> Option<V> {
         self.table
             .remove(key, 0)
-            .map(|(fv, _)| {
+            .and_then(|(fv, _)| {
                 let guard = self.allocator.pin();
                 self.move_out(fv, &guard)
             })
@@ -421,7 +426,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         }
     }
 
-    pub fn remove(self) -> V {
+    pub fn remove(self) -> Option<V> {
         let guard = self.map.allocator.pin();
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
         let r = self.map.move_out(fval, &guard);
