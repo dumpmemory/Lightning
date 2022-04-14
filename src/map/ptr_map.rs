@@ -460,6 +460,16 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 }
 
+impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for
+    PtrHashMap<K, V, ALLOC, H> 
+{
+    fn drop(&mut self) {
+        let guard = self.allocator.pin();
+        for (_fk, fv, k, _v) in self.table.entries() {
+            self.move_out(fv, &guard);
+        }
+    }
+}
 #[cfg(test)]
 mod ptr_map {
     use crate::map::*;
