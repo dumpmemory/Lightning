@@ -33,13 +33,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
 
     #[inline(always)]
-    pub fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<V> {
+    fn insert_with_op(&self, op: InsertOp, key: K, value: V) -> Option<((*mut V, usize), AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>)> {
         let guard = self.allocator.pin();
         let v_num = self.ref_val(value, &guard);
         self.table
             .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
-            .and_then(|(fv, _)| {
-                self.move_out(fv, &guard)
+            .map(|(fv, _)| {
+                (self.ptr_of_val(fv), guard)
             })
     }
 
@@ -85,20 +85,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn move_out<T: Clone>(&self, val: usize, guard: &AllocGuard<PtrValueNode<T>, ALLOC_BUFFER_SIZE>) -> Option<T> {
+    fn ptr_of_val(&self, val: usize) -> (*mut V, usize) {
         unsafe {
             let (addr, _val_ver) = Self::decompose_value(val);
-            let node_ptr = addr as *mut PtrValueNode<T>;
+            let node_ptr = addr as *mut PtrValueNode<V>;
             let node_ref = &*node_ptr;
-            let val_ptr = node_ref.value.as_ptr();
-            let node_addr = node_ptr as usize;
-            if node_addr == 0 {
-                None
-            } else {
-                let v = ptr::read(val_ptr);
-                guard.buffered_free(node_addr);
-                Some(v)
-            }
+            debug_assert!(addr > 0);
+            (node_ref.value.as_ptr(), addr)
         }
     }
 
@@ -189,21 +182,35 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn insert(&self, key: K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::Insert, key, value)
+        self.insert_with_op(InsertOp::Insert, key, value).map(|((ptr, node_addr), guard)| {
+            unsafe {
+                let value = ptr::read(ptr);
+                guard.buffered_free(node_addr);
+                value
+            }
+        })
     }
 
     #[inline(always)]
     fn try_insert(&self, key: K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::TryInsert, key, value)
+        self.insert_with_op(InsertOp::TryInsert, key, value).map(|((ptr, _), _)| {
+            unsafe {
+                (*ptr).clone()
+            }
+        })
     }
 
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
         self.table
             .remove(key, 0)
-            .and_then(|(fv, _)| {
-                let guard = self.allocator.pin();
-                self.move_out(fv, &guard)
+            .map(|(fv, _)| {
+                let (val_ptr, node_addr) = self.ptr_of_val(fv);
+                unsafe {
+                    let value = ptr::read(val_ptr);
+                    self.allocator.buffered_free(node_addr as _);
+                    value
+                }
             })
     }
 
@@ -426,10 +433,12 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         }
     }
 
-    pub fn remove(self) -> Option<V> {
+    pub fn remove(self) -> V {
         let guard = self.map.allocator.pin();
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
-        let r = self.map.move_out(fval, &guard);
+        let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
+        let r = unsafe { ptr::read(val_ptr) };
+        self.map.allocator.buffered_free(node_addr as _);
         mem::forget(self);
         return r;
     }
@@ -471,7 +480,10 @@ impl <K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + 
     fn drop(&mut self) {
         let guard = self.allocator.pin();
         for (_fk, fv, k, _v) in self.table.entries() {
-            self.move_out(fv, &guard);
+            let (val_ptr, _) = self.ptr_of_val(fv);
+            unsafe {
+                ptr::read(val_ptr);
+            }
         }
     }
 }

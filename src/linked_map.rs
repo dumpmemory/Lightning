@@ -73,8 +73,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
         self.map
             .lock(key)
             .and_then(|l| unsafe { 
-                let rm_res = PtrMutexGuard::remove(l);
-                rm_res.and_then(|r| r.remove().map(|KVPair(_, v)| v)) 
+                PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v)
             })
     }
 
@@ -98,7 +97,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
                 if let Some(KVPair(k, v)) = pair.deref() {
                     if let Some(l) = self.map.lock(&k) {
                         unsafe {
-                            PtrMutexGuard::remove(l).map(|r| r.remove());
+                            PtrMutexGuard::remove(l).remove();
                             return Some(KVPair(k, v));
                         }
                     }
