@@ -566,13 +566,16 @@ mod ptr_map {
             let v = Arc::new(val_from(i * 10));
             map.insert(k, v);
         }
-        for i in 100..900 {
+        let insert_term = 16;
+        for i in 100..200 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..4096 {
-                    let k = key_from(i * 10000 + j);
-                    let v = Arc::new(val_from(i * j));
-                    map.insert(k, v);
+                for j in 5..128 {
+                    let key = key_from(i * 10000 + j);
+                    for k in 0..=insert_term {
+                        let v = Arc::new(val_from(i * j + k));
+                        map.insert(key, v);
+                    }
                 }
             }));
         }
@@ -585,10 +588,10 @@ mod ptr_map {
         for thread in threads {
             let _ = thread.join();
         }
-        for i in 100..900 {
-            for j in 5..4096 {
+        for i in 100..200{
+            for j in 5..128 {
                 let k = key_from(i * 10000 + j);
-                let v = Arc::new(val_from(i * j));
+                let v = Arc::new(val_from(i * j + insert_term));
                 assert_eq!(map.get(&k), Some(v))
             }
         }
