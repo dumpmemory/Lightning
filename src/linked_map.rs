@@ -234,9 +234,9 @@ mod test {
                     let num = i * 1000 + j;
                     debug!("Insert {}", num);
                     if j % 2 == 1 {
-                        map.insert_back(num, num);
+                        map.insert_back(num, Arc::new(num));
                     } else {
-                        map.insert_front(num, num);
+                        map.insert_front(num, Arc::new(num));
                     }
                 }
                 map.iter_front_keys().collect_vec();
@@ -251,11 +251,17 @@ mod test {
         for t in threads {
             t.join().unwrap();
         }
+        for i in 0..num_threads {
+            for j in 0..num_data {
+                let num = i * 1000 + j;
+                debug_assert_eq!(num, *linked_map.get(&num).unwrap());
+            }
+        }
         let mut num_set = HashSet::new();
         for pair in linked_map.iter_front() {
             let KVPair(key, node) = pair.deref().unwrap();
             let value = node;
-            assert_eq!(key, value);
+            assert_eq!(key, *value);
             num_set.insert(key);
         }
         assert_eq!(num_set.len(), num_threads * num_data);

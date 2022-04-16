@@ -184,9 +184,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
     #[inline(always)]
     pub fn free(&mut self, addr: usize) {
         if let Some(overflow_buffer) = self.free_list.push(addr) {
-            unsafe {
-                (&*self.shared).attach_objs(&overflow_buffer);
-            }
+            (&*self.shared).attach_objs(&overflow_buffer);
         }
     }
 
@@ -211,8 +209,8 @@ impl<T, const B: usize> TLAlloc<T, B> {
 
     #[inline(always)]
     pub fn return_resources(&mut self) {
-        // Return buffer space
         unsafe {
+            // Return buffer space
             if self.buffer_addr < self.buffer_limit {
                 (&*self.shared)
                     .free_buffer
