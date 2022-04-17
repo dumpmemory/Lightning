@@ -8,13 +8,15 @@ struct AlignedLiteObj<T> {
     _marker: PhantomData<T>,
 }
 
+pub type LiteTable<V, H, ALLOC> = Table<(), (), LiteAttachment<V>, H, ALLOC>;
+
 pub struct LiteHashMap<
     K: Clone + Hash + Eq,
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    table: WordTable<ALLOC, H>,
+    table: LiteTable<V, ALLOC, H>,
     shadow: PhantomData<(K, V, H)>,
 }
 
@@ -252,6 +254,40 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 self.decode_no_clone::<V>(v);
             }
         }
+    }
+}
+
+pub struct LiteAttachment<V> {
+    _marker: PhantomData<V>,
+}
+
+impl<V> Attachment<(), ()> for LiteAttachment<V> {
+    type InitMeta = ();
+
+    type Item = WordAttachmentItem;
+
+    #[inline(always)]
+    fn heap_size_of(_cap: usize) -> usize {
+        0
+    }
+
+    #[inline(always)]
+    fn new(_heap_ptr: usize, _meta: &()) -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline(always)]
+    fn prefetch(&self, _index: usize) -> Self::Item {
+        WordAttachmentItem
+    }
+
+    #[inline(always)]
+    fn manually_drop(&self, fval: usize) {
+        let num = (fval - (NUM_FIX_V as usize)) as u64;
+        let ptr = &num as *const u64 as *const AlignedLiteObj<V>;
+        unsafe { mem::drop(ptr::read(ptr)) }
     }
 }
 

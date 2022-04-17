@@ -221,7 +221,7 @@ impl Attachment<(), ()> for WordAttachment {
     }
 
     #[inline(always)]
-    fn new(_heap_ptr: usize, meta: &()) -> Self {
+    fn new(_heap_ptr: usize, _meta: &()) -> Self {
         Self
     }
 

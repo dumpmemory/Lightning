@@ -506,14 +506,23 @@ impl<
                 true,
                 &guard,
             );
+            let drop_value = || {
+                if let Some((fvalue, _value)) = &retr {
+                    if *fvalue > TOMBSTONE_VALUE {
+                        old_chunk.attachment.manually_drop(*fvalue);
+                    }
+                }
+            };
             match res {
                 ModResult::Replaced(fvalue, value, _) => {
+                    drop_value();
                     retr = Some((fvalue, value.unwrap()));
                     self.count.fetch_sub(1, Relaxed);
                 }
                 ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
                 ModResult::NotFound => {}
                 ModResult::Sentinel => {
+                    drop_value();
                     backoff.spin();
                     continue;
                 }
