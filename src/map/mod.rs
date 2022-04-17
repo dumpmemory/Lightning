@@ -93,6 +93,7 @@ pub trait Attachment<K, V> {
     fn heap_size_of(cap: usize) -> usize;
     fn new(heap_ptr: usize, meta: &Self::InitMeta) -> Self;
     fn prefetch(&self, index: usize) -> Self::Item;
+    fn manually_drop(&self, fvalue: usize);
 }
 
 pub trait AttachmentItem<K, V> {

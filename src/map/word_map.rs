@@ -229,6 +229,9 @@ impl Attachment<(), ()> for WordAttachment {
     fn prefetch(&self, _index: usize) -> Self::Item {
         WordAttachmentItem
     }
+
+    #[inline(always)]
+    fn manually_drop(&self, _: usize) { }
 }
 
 impl AttachmentItem<(), ()> for WordAttachmentItem {

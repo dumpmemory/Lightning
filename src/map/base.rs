@@ -316,12 +316,25 @@ impl<
                     fkey,
                     fvalue
                 );
-                let old_sent =
+                let old_val =
                     self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
-                trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_sent);
+                trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_val);
+                self.manually_drop_sentinel_res(old_val, chunk)
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
+        }
+    }
+
+    fn manually_drop_sentinel_res(&self, res: ModResult<V>, chunk: &Chunk<K, V, A, ALLOC>) {
+        match res {
+            ModResult::Done(fval, _, _) => {
+                if fval <= TOMBSTONE_VALUE {
+                    return;
+                }
+                chunk.attachment.manually_drop(fval);
+            },
+            _ => {}
         }
     }
 
@@ -432,7 +445,8 @@ impl<
             if new_chunk.is_some() {
                 debug_assert_ne!(chunk_ptr, new_chunk_ptr);
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
+                let res = self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
+                self.manually_drop_sentinel_res(res, chunk);
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v, idx, modify_chunk_ptr),
@@ -1133,6 +1147,11 @@ impl<
             let k = Self::get_fast_key(addr);
             if k == fkey && new_attachment.probe(&key) {
                 // New value existed, skip with None result
+                if curr_orig != orig {
+                    // We also need to drop the fvalue we obtained because it does not fit any where
+                    // We only need to do this when the original fvalue has been swapped out but have no where to go
+                    old_chunk_ins.attachment.manually_drop(fvalue.val);
+                }
                 break;
             } else if k == EMPTY_KEY {
                 // Try insert to this slot
@@ -1140,10 +1159,12 @@ impl<
                     match Self::cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
                         Some(n) => {
                             trace!("Primed value for migration: {}", fkey);
+                            // here we obtained the ownership of this fval
                             curr_orig = n;
                         }
                         None => {
                             trace!("Value changed on locating new slot, key {}", fkey);
+                            // here the ownership have been taken by other thread
                             return false;
                         }
                     }
@@ -1153,11 +1174,11 @@ impl<
                     new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, fkey);
-                    // CAS to ensure sentinel into old chunk (spec)
-                    // Use CAS for old threads may working on this one
                     trace!("Copied key {} to new chunk", fkey);
                     break;
                 }
+                // Here we didn't put the fval into the new chunk due to slot conflict with 
+                // other thread. Need to try next slot
             }
             idx += 1; // reprobe
             count += 1;
