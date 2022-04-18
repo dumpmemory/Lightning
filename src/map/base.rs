@@ -317,10 +317,10 @@ impl<
                         ) {
                             ModResult::Done(_, _, _) => {
                                 chunk.occupation.fetch_add(1, AcqRel);
-                            },
+                            }
                             ModResult::Replaced(fv, val, _) => {
                                 if fv > TOMBSTONE_VALUE {
-                                    return Some((fv, val.unwrap()))
+                                    return Some((fv, val.unwrap()));
                                 }
                             }
                             _ => {}
