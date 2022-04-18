@@ -315,8 +315,13 @@ impl<
                             true,
                             &guard,
                         ) {
-                            ModResult::Done(fval, val, _) => {
-                                return Some((fval, val.unwrap()));
+                            ModResult::Done(_, _, _) => {
+                                chunk.occupation.fetch_add(1, AcqRel);
+                            },
+                            ModResult::Replaced(fv, val, _) => {
+                                if fv > TOMBSTONE_VALUE {
+                                    return Some((fv, val.unwrap()))
+                                }
                             }
                             _ => {}
                         }
@@ -352,7 +357,7 @@ impl<
 
     fn manually_drop_sentinel_res(&self, res: &ModResult<V>, chunk: &Chunk<K, V, A, ALLOC>) {
         match res {
-            ModResult::Done(fval, _, _) => {
+            ModResult::Done(fval, _, _) | ModResult::Replaced(fval, _, _) => {
                 if *fval <= TOMBSTONE_VALUE {
                     return;
                 }
@@ -488,8 +493,13 @@ impl<
         }
     }
 
+    #[inline(always)]
     pub fn remove(&self, key: &K, fkey: FKey) -> Option<(FVal, V)> {
-        self.insert(InsertOp::Tombstone, key, None, fkey, TOMBSTONE_VALUE)
+        let tagging_res = self.insert(InsertOp::Tombstone, key, None, fkey, TOMBSTONE_VALUE);
+        if tagging_res.is_some() {
+            self.count.fetch_sub(1, AcqRel);
+        }
+        return tagging_res;
     }
 
     #[inline]
@@ -616,9 +626,9 @@ impl<
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     attachment.erase(raw);
                                     if raw == 0 {
-                                        return ModResult::Done(0, prev_val, idx);
+                                        return ModResult::Replaced(0, prev_val, idx);
                                     } else {
-                                        return ModResult::Done(act_val, prev_val, idx);
+                                        return ModResult::Replaced(act_val, prev_val, idx);
                                     }
                                 } else {
                                     return ModResult::Fail;
