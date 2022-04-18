@@ -26,13 +26,12 @@ struct PtrValueNode<V> {
 }
 
 struct MapConsts<K, V> {
-    _marker: PhantomData<(K, V)>
+    _marker: PhantomData<(K, V)>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     PtrHashMap<K, V, ALLOC, H>
 {
-
     const VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS;
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
 
@@ -310,7 +309,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
 
     #[inline(always)]
     fn manually_drop(&self, fvalue: usize) {
-
         unsafe {
             let (addr, _val_ver) = decompose_value::<K, V>(fvalue & WORD_MUTEX_DATA_BIT_MASK);
             let node_ptr = addr as *mut PtrValueNode<V>;
@@ -607,7 +605,7 @@ mod ptr_map {
         for thread in threads {
             let _ = thread.join();
         }
-        for i in 100..200{
+        for i in 100..200 {
             for j in 5..256 {
                 let k = key_from(i * 10000 + j);
                 let v = Arc::new(val_from(i * j + insert_term));

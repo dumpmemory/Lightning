@@ -231,7 +231,7 @@ impl Attachment<(), ()> for WordAttachment {
     }
 
     #[inline(always)]
-    fn manually_drop(&self, _: usize) { }
+    fn manually_drop(&self, _: usize) {}
 }
 
 impl AttachmentItem<(), ()> for WordAttachmentItem {

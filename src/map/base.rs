@@ -306,7 +306,15 @@ impl<
                     if new_chunk.is_some() {
                         // Cannot find the item to delete during migration
                         // If can be in the old chunk which we can try to jut a sentinel
-                        match self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard) {
+                        match self.modify_entry(
+                            chunk,
+                            hash,
+                            key,
+                            fkey,
+                            ModOp::Sentinel,
+                            true,
+                            &guard,
+                        ) {
                             ModResult::Done(fval, val, _) => {
                                 return Some((fval, val.unwrap()));
                             }

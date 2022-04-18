@@ -62,7 +62,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, V>
     }
 
     #[inline(always)]
-    fn manually_drop(&self, _: usize) { }
+    fn manually_drop(&self, _: usize) {}
 }
 
 impl<K: Clone + Hash + Eq, V: Clone> HashKVAttachmentItem<K, V> {
