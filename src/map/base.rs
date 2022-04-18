@@ -52,6 +52,7 @@ pub enum InsertOp {
     Insert,
     UpsertFast,
     TryInsert,
+    Tombstone,
 }
 
 enum ResizeResult {
@@ -257,6 +258,7 @@ impl<
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
+                InsertOp::Tombstone => ModOp::Tombstone,
             };
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard);
@@ -299,7 +301,21 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                ModResult::NotFound => unreachable!("Not Found on insertion is impossible"),
+                ModResult::NotFound => {
+                    // Only possible for Tombstone op
+                    if new_chunk.is_some() {
+                        // Cannot find the item to delete during migration
+                        // If can be in the old chunk which we can try to jut a sentinel
+                        match self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard) {
+                            ModResult::Done(fval, val, _) => {
+                                return Some((fval, val.unwrap()));
+                            }
+                            _ => {}
+                        }
+                        backoff.spin();
+                        continue;
+                    }
+                }
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
             if new_chunk.is_some() {
@@ -319,21 +335,21 @@ impl<
                 let old_val =
                     self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_val);
-                self.manually_drop_sentinel_res(old_val, chunk)
+                self.manually_drop_sentinel_res(&old_val, chunk)
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
         }
     }
 
-    fn manually_drop_sentinel_res(&self, res: ModResult<V>, chunk: &Chunk<K, V, A, ALLOC>) {
+    fn manually_drop_sentinel_res(&self, res: &ModResult<V>, chunk: &Chunk<K, V, A, ALLOC>) {
         match res {
             ModResult::Done(fval, _, _) => {
-                if fval <= TOMBSTONE_VALUE {
+                if *fval <= TOMBSTONE_VALUE {
                     return;
                 }
-                chunk.attachment.manually_drop(fval);
-            },
+                chunk.attachment.manually_drop(*fval);
+            }
             _ => {}
         }
     }
@@ -446,7 +462,7 @@ impl<
                 debug_assert_ne!(chunk_ptr, new_chunk_ptr);
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
                 let res = self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
-                self.manually_drop_sentinel_res(res, chunk);
+                self.manually_drop_sentinel_res(&res, chunk);
             }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v, idx, modify_chunk_ptr),
@@ -465,77 +481,7 @@ impl<
     }
 
     pub fn remove(&self, key: &K, fkey: FKey) -> Option<(FVal, V)> {
-        let guard = crossbeam_epoch::pin();
-        let backoff = crossbeam_utils::Backoff::new();
-        let (fkey, hash) = Self::hash(fkey, key);
-        loop {
-            let epoch = self.now_epoch();
-            let new_chunk_ptr = self.new_chunk.load(Acquire, &guard);
-            let old_chunk_ptr = self.chunk.load(Acquire, &guard);
-            let copying = Self::is_copying(epoch);
-            if copying {
-                continue;
-            }
-            let new_chunk = unsafe { new_chunk_ptr.deref() };
-            let old_chunk = unsafe { old_chunk_ptr.deref() };
-            let mut retr = None;
-            if copying {
-                // Put sentinel to the old beformodify_entrye putting tombstone to the new
-                // If not migration might put the old value back
-                trace!("Put sentinel in old chunk for removal");
-                debug_assert_ne!(new_chunk_ptr, Shared::null());
-                let remove_from_old =
-                    self.modify_entry(&*old_chunk, hash, key, fkey, ModOp::Sentinel, true, &guard);
-                match remove_from_old {
-                    ModResult::Done(fvalue, value, _) | ModResult::Replaced(fvalue, value, _) => {
-                        trace!("Sentinal placed");
-                        retr = Some((fvalue, value.unwrap()));
-                    }
-                    _ => {
-                        trace!("Sentinal not placed");
-                    }
-                }
-            }
-            let modify_chunk = if copying { &new_chunk } else { &old_chunk };
-            let res = self.modify_entry(
-                &*modify_chunk,
-                hash,
-                key,
-                fkey,
-                ModOp::Tombstone,
-                true,
-                &guard,
-            );
-            let drop_value = || {
-                if let Some((fvalue, _value)) = &retr {
-                    if *fvalue > TOMBSTONE_VALUE {
-                        old_chunk.attachment.manually_drop(*fvalue);
-                    }
-                }
-            };
-            match res {
-                ModResult::Replaced(fvalue, value, _) => {
-                    drop_value();
-                    retr = Some((fvalue, value.unwrap()));
-                    self.count.fetch_sub(1, Relaxed);
-                }
-                ModResult::Done(_, _, _) => unreachable!("Remove shall not have done"),
-                ModResult::NotFound => {}
-                ModResult::Sentinel => {
-                    drop_value();
-                    backoff.spin();
-                    continue;
-                }
-                ModResult::TableFull => unreachable!("TableFull on remove is not possible"),
-                _ => {}
-            };
-            if self.epoch_changed(epoch) {
-                if retr.is_none() {
-                    return self.remove(key, fkey);
-                }
-            }
-            return retr;
-        }
+        self.insert(InsertOp::Tombstone, key, None, fkey, TOMBSTONE_VALUE)
     }
 
     #[inline]
@@ -659,11 +605,12 @@ impl<
                             }
                             ModOp::Sentinel => {
                                 if Self::cas_sentinel(addr, v.val) {
+                                    let prev_val = read_attachment.then(|| attachment.get_value());
                                     attachment.erase(raw);
                                     if raw == 0 {
-                                        return ModResult::Done(0, None, idx);
+                                        return ModResult::Done(0, prev_val, idx);
                                     } else {
-                                        return ModResult::Done(act_val, None, idx);
+                                        return ModResult::Done(act_val, prev_val, idx);
                                     }
                                 } else {
                                     return ModResult::Fail;
@@ -814,7 +761,7 @@ impl<
                             continue;
                         }
                     }
-                    ModOp::Tombstone => return ModResult::Fail,
+                    ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
@@ -1186,7 +1133,7 @@ impl<
                     trace!("Copied key {} to new chunk", fkey);
                     break;
                 }
-                // Here we didn't put the fval into the new chunk due to slot conflict with 
+                // Here we didn't put the fval into the new chunk due to slot conflict with
                 // other thread. Need to try next slot
             }
             idx += 1; // reprobe
