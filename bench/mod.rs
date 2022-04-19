@@ -342,27 +342,27 @@ fn run_perf_test_set<'a, T: Collection>(
             0.2,
             stride,
         );
-        let hi = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_hi", ds_name),
-            load,
-            0.8,
-            stride,
-        );
-        let mi = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_mi", ds_name),
-            load,
-            0.5,
-            stride,
-        );
+        // let hi = run_and_record_contention::<T>(
+        //     file_name,
+        //     &format!("{}_hi", ds_name),
+        //     load,
+        //     0.8,
+        //     stride,
+        // );
+        // let mi = run_and_record_contention::<T>(
+        //     file_name,
+        //     &format!("{}_mi", ds_name),
+        //     load,
+        //     0.5,
+        //     stride,
+        // );
         (
             ds_name,
             vec![
                 // ("full", full),
-                ("hi", hi),
-                ("mi", mi),
                 ("lo", lo),
+                // ("mi", mi),
+                // ("hi", hi),
             ],
         )
     } else {
@@ -385,35 +385,35 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     stride: usize,
 ) -> Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)> {
     println!("Testing {}", name);
-    println!("Read heavy");
-    let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
-    write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
+    // println!("Read heavy");
+    // let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
+    // write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
 
-    println!("Insert heavy");
-    let insert_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
-    write_measurements(
-        &format!("{}_{}_insertion.csv", task, name),
-        &insert_measurement,
-    );
-    println!("Uniform");
-    let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
-    write_measurements(
-        &format!("{}_{}_uniform.csv", task, name),
-        &uniform_measurement,
-    );
-    // println!("Oversize");
-    // let oversize_measurement =
-    //     run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, 0.0, stride);
+    // println!("Insert heavy");
+    // let insert_measurement =
+    //     run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
     // write_measurements(
-    //     &format!("{}_{}_oversize.csv", task, name),
+    //     &format!("{}_{}_insertion.csv", task, name),
+    //     &insert_measurement,
+    // );
+    // println!("Uniform");
+    // let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
+    // write_measurements(
+    //     &format!("{}_{}_uniform.csv", task, name),
     //     &uniform_measurement,
     // );
+    println!("Oversize");
+    let oversize_measurement =
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, 0.0, stride);
+    write_measurements(
+        &format!("{}_{}_oversize.csv", task, name),
+        &oversize_measurement,
+    );
     vec![
-        ("insert", insert_measurement),
-        ("read", read_measurement),
-        ("uniform", uniform_measurement),
-        // ("oversize", oversize_measurement),
+        // ("insert", insert_measurement),
+        // ("read", read_measurement),
+        // ("uniform", uniform_measurement),
+        ("oversize", oversize_measurement),
     ]
 }
 
