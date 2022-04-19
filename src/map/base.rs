@@ -750,11 +750,11 @@ impl<
                 }
             }
             if k == EMPTY_KEY {
-                let attachment = chunk.attachment.prefetch(idx);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                         if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
+                            let attachment = chunk.attachment.prefetch(idx);
                             attachment.set_key(key.clone());
                             if Self::FAT_VAL {
                                 Self::store_key(addr, fkey);
