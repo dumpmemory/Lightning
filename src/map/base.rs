@@ -813,10 +813,10 @@ impl<
             let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k != EMPTY_KEY {
-                let attachment = chunk.attachment.prefetch(idx);
                 let val_res = Self::get_fast_value(addr);
                 let act_val = val_res.act_val::<V>();
                 if act_val >= NUM_FIX_V {
+                    let attachment = chunk.attachment.prefetch(idx);
                     let key = attachment.get_key();
                     let value = attachment.get_value();
                     if Self::FAT_VAL && Self::get_fast_value(addr).val != val_res.val {
@@ -1102,13 +1102,13 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
-        let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
         if fkey == EMPTY_KEY {
             // Value have no key, insertion in progress
             return false;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be locked
+        let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
         let key = old_attachment.get_key();
         let value = old_attachment.get_value();
         let mut curr_orig = fvalue.val;
