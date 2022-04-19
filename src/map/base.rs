@@ -549,17 +549,19 @@ impl<
         let mut counter = 0;
         while counter < cap {
             idx &= cap_mask;
-            let attachment = chunk.attachment.prefetch(idx);
             let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
-            if k == fkey && attachment.probe(key) {
-                loop {
-                    let val_res = Self::get_fast_value(addr);
-                    if val_res.is_locked() {
-                        backoff.spin();
-                        continue;
+            if k == fkey {
+                let attachment = chunk.attachment.prefetch(idx);
+                if attachment.probe(key) {
+                    loop {
+                        let val_res = Self::get_fast_value(addr);
+                        if val_res.is_locked() {
+                            backoff.spin();
+                            continue;
+                        }
+                        return Some((val_res, addr, attachment));
                     }
-                    return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
                 return None;
@@ -590,158 +592,165 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         while count <= cap {
             idx &= cap_mask;
-            let attachment = chunk.attachment.prefetch(idx);
             let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
-            if k == fkey && attachment.probe(&key) {
-                loop {
-                    let v = Self::get_fast_value(addr);
-                    let raw = v.val;
-                    if raw >= TOMBSTONE_VALUE {
-                        let act_val = v.act_val::<V>();
-                        match op {
-                            ModOp::Insert(fval, ov) => {
-                                // Insert with attachment should prime value first when
-                                // duplicate key discovered
-                                let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
-                                let prev_val = read_attachment.then(|| attachment.get_value());
-                                let val_to_store = Self::value_to_store(raw, fval);
-                                if Self::cas_value(addr, raw, primed_fval) {
-                                    attachment.set_value(ov.clone(), raw);
-                                    if Self::FAT_VAL {
-                                        Self::store_raw_value(addr, val_to_store);
-                                    }
-                                    if raw != TOMBSTONE_VALUE {
-                                        return ModResult::Replaced(act_val, prev_val, idx);
-                                    } else {
-                                        return ModResult::Done(act_val, None, idx);
-                                    }
-                                } else {
-                                    backoff.spin();
-                                    continue;
-                                }
-                            }
-                            ModOp::Sentinel => {
-                                if Self::cas_sentinel(addr, v.val) {
-                                    let prev_val = read_attachment.then(|| attachment.get_value());
-                                    attachment.erase(raw);
-                                    if raw == 0 {
-                                        return ModResult::Replaced(0, prev_val, idx);
-                                    } else {
-                                        return ModResult::Replaced(act_val, prev_val, idx);
-                                    }
-                                } else {
-                                    return ModResult::Fail;
-                                }
-                            }
-                            ModOp::Tombstone => {
-                                if raw == TOMBSTONE_VALUE {
-                                    // Already tombstone
-                                    return ModResult::NotFound;
-                                }
-                                if !Self::cas_tombstone(addr, v.val) {
-                                    // this insertion have conflict with others
-                                    // other thread changed the value (empty)
-                                    // should fail
-                                    return ModResult::Fail;
-                                } else {
-                                    // we have put tombstone on the value, get the attachment and erase it
-                                    let value = read_attachment.then(|| attachment.get_value());
-                                    attachment.erase(raw);
-                                    chunk.empty_entries.fetch_add(1, Relaxed);
-                                    return ModResult::Replaced(act_val, value, idx);
-                                }
-                            }
-                            ModOp::UpsertFastVal(ref fv) => {
-                                if Self::cas_value(addr, v.val, *fv) {
-                                    if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
-                                        return ModResult::Done(0, None, idx);
-                                    } else {
-                                        let attachment =
-                                            read_attachment.then(|| attachment.get_value());
-                                        return ModResult::Replaced(act_val, attachment, idx);
-                                    }
-                                } else {
-                                    backoff.spin();
-                                    continue;
-                                }
-                            }
-                            ModOp::AttemptInsert(fval, oval) => {
-                                if act_val == TOMBSTONE_VALUE {
+            if k == fkey {
+                let attachment = chunk.attachment.prefetch(idx);
+                if attachment.probe(&key) {
+                    loop {
+                        let v = Self::get_fast_value(addr);
+                        let raw = v.val;
+                        if raw >= TOMBSTONE_VALUE {
+                            let act_val = v.act_val::<V>();
+                            match op {
+                                ModOp::Insert(fval, ov) => {
+                                    // Insert with attachment should prime value first when
+                                    // duplicate key discovered
                                     let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     let val_to_store = Self::value_to_store(raw, fval);
-                                    if Self::cas_value(addr, v.val, primed_fval) {
-                                        attachment.set_value((*oval).clone(), raw);
+                                    if Self::cas_value(addr, raw, primed_fval) {
+                                        attachment.set_value(ov.clone(), raw);
                                         if Self::FAT_VAL {
                                             Self::store_raw_value(addr, val_to_store);
                                         }
-                                        return ModResult::Replaced(act_val, prev_val, idx);
-                                    } else {
-                                        if Self::FAT_VAL && read_attachment {
-                                            // Fast value changed, cannot obtain stable fat value
-                                            backoff.spin();
-                                            continue;
+                                        if raw != TOMBSTONE_VALUE {
+                                            return ModResult::Replaced(act_val, prev_val, idx);
+                                        } else {
+                                            return ModResult::Done(act_val, None, idx);
                                         }
-                                        return ModResult::Existed(act_val, prev_val);
-                                    }
-                                } else {
-                                    if Self::FAT_VAL
-                                        && read_attachment
-                                        && Self::get_fast_value(addr).val != v.val
-                                    {
+                                    } else {
                                         backoff.spin();
                                         continue;
                                     }
-                                    let value = read_attachment.then(|| attachment.get_value());
-                                    return ModResult::Existed(act_val, value);
                                 }
-                            }
-                            ModOp::SwapFastVal(ref swap) => {
-                                if act_val == TOMBSTONE_VALUE {
-                                    return ModResult::NotFound;
-                                }
-                                if act_val >= NUM_FIX_V {
-                                    if let Some(sv) = swap(act_val) {
-                                        if Self::cas_value(addr, v.val, sv) {
-                                            // swap success
-                                            return ModResult::Replaced(act_val, None, idx);
+                                ModOp::Sentinel => {
+                                    if Self::cas_sentinel(addr, v.val) {
+                                        let prev_val =
+                                            read_attachment.then(|| attachment.get_value());
+                                        attachment.erase(raw);
+                                        if raw == 0 {
+                                            return ModResult::Replaced(0, prev_val, idx);
                                         } else {
-                                            return ModResult::Fail;
+                                            return ModResult::Replaced(act_val, prev_val, idx);
                                         }
                                     } else {
-                                        return ModResult::Aborted;
+                                        return ModResult::Fail;
                                     }
-                                } else {
-                                    return ModResult::Fail;
+                                }
+                                ModOp::Tombstone => {
+                                    if raw == TOMBSTONE_VALUE {
+                                        // Already tombstone
+                                        return ModResult::NotFound;
+                                    }
+                                    if !Self::cas_tombstone(addr, v.val) {
+                                        // this insertion have conflict with others
+                                        // other thread changed the value (empty)
+                                        // should fail
+                                        return ModResult::Fail;
+                                    } else {
+                                        // we have put tombstone on the value, get the attachment and erase it
+                                        let value = read_attachment.then(|| attachment.get_value());
+                                        attachment.erase(raw);
+                                        chunk.empty_entries.fetch_add(1, Relaxed);
+                                        return ModResult::Replaced(act_val, value, idx);
+                                    }
+                                }
+                                ModOp::UpsertFastVal(ref fv) => {
+                                    if Self::cas_value(addr, v.val, *fv) {
+                                        if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
+                                            return ModResult::Done(0, None, idx);
+                                        } else {
+                                            let attachment =
+                                                read_attachment.then(|| attachment.get_value());
+                                            return ModResult::Replaced(act_val, attachment, idx);
+                                        }
+                                    } else {
+                                        backoff.spin();
+                                        continue;
+                                    }
+                                }
+                                ModOp::AttemptInsert(fval, oval) => {
+                                    if act_val == TOMBSTONE_VALUE {
+                                        let primed_fval =
+                                            Self::if_fat_val_then_val(LOCKED_VALUE, fval);
+                                        let prev_val =
+                                            read_attachment.then(|| attachment.get_value());
+                                        let val_to_store = Self::value_to_store(raw, fval);
+                                        if Self::cas_value(addr, v.val, primed_fval) {
+                                            attachment.set_value((*oval).clone(), raw);
+                                            if Self::FAT_VAL {
+                                                Self::store_raw_value(addr, val_to_store);
+                                            }
+                                            return ModResult::Replaced(act_val, prev_val, idx);
+                                        } else {
+                                            if Self::FAT_VAL && read_attachment {
+                                                // Fast value changed, cannot obtain stable fat value
+                                                backoff.spin();
+                                                continue;
+                                            }
+                                            return ModResult::Existed(act_val, prev_val);
+                                        }
+                                    } else {
+                                        if Self::FAT_VAL
+                                            && read_attachment
+                                            && Self::get_fast_value(addr).val != v.val
+                                        {
+                                            backoff.spin();
+                                            continue;
+                                        }
+                                        let value = read_attachment.then(|| attachment.get_value());
+                                        return ModResult::Existed(act_val, value);
+                                    }
+                                }
+                                ModOp::SwapFastVal(ref swap) => {
+                                    if act_val == TOMBSTONE_VALUE {
+                                        return ModResult::NotFound;
+                                    }
+                                    if act_val >= NUM_FIX_V {
+                                        if let Some(sv) = swap(act_val) {
+                                            if Self::cas_value(addr, v.val, sv) {
+                                                // swap success
+                                                return ModResult::Replaced(act_val, None, idx);
+                                            } else {
+                                                return ModResult::Fail;
+                                            }
+                                        } else {
+                                            return ModResult::Aborted;
+                                        }
+                                    } else {
+                                        return ModResult::Fail;
+                                    }
                                 }
                             }
-                        }
-                    } else if raw == SENTINEL_VALUE {
-                        return ModResult::Sentinel;
-                    } else {
-                        // Other tags (except tombstone and locks)
-                        if cfg!(debug_assertions) {
-                            match raw {
-                                LOCKED_VALUE => {
-                                    trace!("Spin on lock");
-                                }
-                                MIGRATING_VALUE => {
-                                    trace!("Spin on migration");
-                                }
-                                EMPTY_VALUE => {
-                                    trace!("Spin on empty");
-                                }
-                                _ => {
-                                    trace!("Spin on something else");
+                        } else if raw == SENTINEL_VALUE {
+                            return ModResult::Sentinel;
+                        } else {
+                            // Other tags (except tombstone and locks)
+                            if cfg!(debug_assertions) {
+                                match raw {
+                                    LOCKED_VALUE => {
+                                        trace!("Spin on lock");
+                                    }
+                                    MIGRATING_VALUE => {
+                                        trace!("Spin on migration");
+                                    }
+                                    EMPTY_VALUE => {
+                                        trace!("Spin on empty");
+                                    }
+                                    _ => {
+                                        trace!("Spin on something else");
+                                    }
                                 }
                             }
+                            backoff.spin();
+                            continue;
                         }
-                        backoff.spin();
-                        continue;
                     }
                 }
-            } else if k == EMPTY_KEY {
+            }
+            if k == EMPTY_KEY {
+                let attachment = chunk.attachment.prefetch(idx);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
@@ -1116,39 +1125,39 @@ impl<
         let mut count = 0;
         while count < cap {
             idx &= cap_mask;
-            let new_attachment = new_chunk_ins.attachment.prefetch(idx);
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
-            if k == fkey && new_attachment.probe(&key) {
-                // New value existed, skip with None result
-                if curr_orig != orig {
-                    // We also need to drop the fvalue we obtained because it does not fit any where
-                    // We only need to do this when the original fvalue has been swapped out but have no where to go
-                    old_chunk_ins.attachment.manually_drop(fvalue.val);
+            if k == fkey {
+                let new_attachment = new_chunk_ins.attachment.prefetch(idx);
+                if new_attachment.probe(&key) {
+                    // New value existed, skip with None result
+                    if curr_orig != orig {
+                        // We also need to drop the fvalue we obtained because it does not fit any where
+                        // We only need to do this when the original fvalue has been swapped out but have no where to go
+                        old_chunk_ins.attachment.manually_drop(fvalue.val);
+                    }
+                    break;
                 }
-                break;
             } else if k == EMPTY_KEY {
                 // Try insert to this slot
                 if curr_orig == orig {
                     match Self::cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
                         Some(n) => {
-                            trace!("Primed value for migration: {}", fkey);
                             // here we obtained the ownership of this fval
                             curr_orig = n;
                         }
                         None => {
-                            trace!("Value changed on locating new slot, key {}", fkey);
                             // here the ownership have been taken by other thread
                             return false;
                         }
                     }
                 }
                 if Self::cas_value(addr, EMPTY_VALUE, orig) {
+                    let new_attachment = new_chunk_ins.attachment.prefetch(idx);
                     new_attachment.set_key(key);
                     new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, fkey);
-                    trace!("Copied key {} to new chunk", fkey);
                     break;
                 }
                 // Here we didn't put the fval into the new chunk due to slot conflict with

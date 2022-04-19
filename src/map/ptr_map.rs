@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::obj_alloc::{self, AllocGuard, Allocator};
+use crate::obj_alloc::{self, AllocGuard, Allocator, Aligned};
 
 use super::base::*;
 use super::*;
@@ -268,7 +268,7 @@ unsafe impl<V> Send for PtrValAttachmentMeta<V> {}
 unsafe impl<V> Sync for PtrValAttachmentMeta<V> {}
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> PtrValAttachment<K, V, A> {
-    const KEY_SIZE: usize = mem::size_of::<K>();
+    const KEY_SIZE: usize = mem::size_of::<Aligned<K>>();
 
     #[inline(always)]
     fn addr_by_index(&self, index: usize) -> usize {
@@ -294,12 +294,12 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         }
     }
 
-    // Should not inline
+    #[inline(always)]
     fn prefetch(&self, index: usize) -> Self::Item {
         let addr = self.addr_by_index(index);
-        unsafe {
-            intrinsics::prefetch_read_data(addr as *const K, 3);
-        }
+        // unsafe {
+        //     intrinsics::prefetch_read_data(addr as *const K, 3);
+        // }
         PtrValAttachmentItem {
             addr,
             alloc: self.alloc,

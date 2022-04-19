@@ -404,7 +404,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     // );
     println!("Oversize");
     let oversize_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.5, load, 0.0, stride);
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
     write_measurements(
         &format!("{}_{}_oversize.csv", task, name),
         &oversize_measurement,
