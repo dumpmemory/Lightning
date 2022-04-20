@@ -268,6 +268,7 @@ mod test {
     use crate::map::*;
     use alloc::sync::Arc;
     use rayon::prelude::*;
+    use test::Bencher;
     use std::thread;
     #[test]
     fn will_not_overflow() {
@@ -554,5 +555,42 @@ mod test {
         for thread in threads {
             let _ = thread.join();
         }
+    }
+
+    #[bench]
+    fn resizing_before(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Arc::new(WordMap::<System>::with_capacity(65536));
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
+    #[bench]
+    fn resizing_after(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let prefill = 1048000;
+        let map = Arc::new(WordMap::<System>::with_capacity(16));
+        for i in 0..prefill {
+            map.insert(i, i);
+        }
+        let mut i = prefill;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
+    #[bench]
+    fn resizing_with(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Arc::new(WordMap::<System>::with_capacity(2));
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
     }
 }

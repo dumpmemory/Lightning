@@ -750,6 +750,7 @@ impl<
                 }
             }
             if k == EMPTY_KEY {
+                trace!("Inserting {}", fkey);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
@@ -792,6 +793,7 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
+            trace!("Reprobe inserting {} got {}", fkey, k);
             idx += 1; // reprobe
             count += 1;
         }
@@ -1102,7 +1104,7 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
-        if fkey == EMPTY_KEY {
+        if fkey == EMPTY_KEY || fvalue.val <= TOMBSTONE_VALUE {
             // Value have no key, insertion in progress
             return false;
         }
@@ -1114,15 +1116,15 @@ impl<
         let mut curr_orig = fvalue.val;
         let orig = curr_orig;
         // Make insertion for migration inlined, hopefully the ordering will be right
-        let cap = new_chunk_ins.capacity;
         let hash = if Self::WORD_KEY {
             hash_key::<_, H>(&fkey)
         } else {
             fkey
         };
-        let mut idx = hash as usize;
-        let cap_mask = new_chunk_ins.cap_mask();
+        let cap = new_chunk_ins.capacity;
+        let mut idx = hash;
         let mut count = 0;
+        let cap_mask = new_chunk_ins.cap_mask();
         while count < cap {
             idx &= cap_mask;
             let addr = new_chunk_ins.entry_addr(idx);
