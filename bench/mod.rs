@@ -404,7 +404,7 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     // );
     println!("Oversize");
     let oversize_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.2, load, 0.0, stride);
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
     write_measurements(
         &format!("{}_{}_oversize.csv", task, name),
         &oversize_measurement,
@@ -439,7 +439,6 @@ fn run_and_measure_mix<T: Collection>(
             workload
                 .operations(fill)
                 .contention(cont)
-                .prefill_fraction(1.0)
                 .initial_capacity_log2(cap);
             let data = workload.gen_data();
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
