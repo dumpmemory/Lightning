@@ -488,6 +488,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 }
 #[cfg(test)]
 mod ptr_map {
+    use test::Bencher;
+
     use crate::map::*;
     use std::{alloc::System, sync::Arc, thread};
 
@@ -934,5 +936,44 @@ mod ptr_map {
         for thread in threads {
             let _ = thread.join();
         }
+    }
+
+    #[bench]
+    fn resizing_before(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(65536));
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
+    #[bench]
+    fn resizing_after(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let prefill = 1000000;
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+        for i in 0..prefill {
+            map.insert(i, i);
+        }
+        debug!("Len: {}, occ {:?}", map.len(), map.table.occupation());
+        map.table.dump_dist();
+        let mut i = prefill;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
+    #[bench]
+    fn resizing_with(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(2));
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
     }
 }

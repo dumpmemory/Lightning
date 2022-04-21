@@ -105,6 +105,7 @@ impl<
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
+        trace!("Creating chunk with capacity {}", cap);
         if !is_power_of_2(cap) {
             panic!("capacity is not power of 2");
         }
@@ -523,6 +524,31 @@ impl<
         } else {
             None
         }
+    }
+
+    pub (crate) fn occupation(&self) -> (usize, usize, usize) {
+        let guard = crossbeam_epoch::pin();
+        let chunk_ptr = self.chunk.load(Acquire, &guard);
+        let chunk = unsafe { chunk_ptr.deref() };
+        (chunk.occu_limit, chunk.occupation.load(Relaxed), chunk.capacity)
+    }
+
+    pub (crate) fn dump_dist(&self) {
+        let guard = crossbeam_epoch::pin();
+        let chunk_ptr = self.chunk.load(Acquire, &guard);
+        let chunk = unsafe { chunk_ptr.deref() };
+        let cap = chunk.capacity;
+        let mut res = String::new();
+        for i in 0..cap {
+            let addr = chunk.entry_addr(i);
+            let k = Self::get_fast_key(addr);
+            if k != EMPTY_VALUE {
+                res.push('1');
+            } else {
+                res.push('0');
+            }
+        }
+        info!("Chunk dump: {}", res);
     }
 
     #[inline]
@@ -945,7 +971,9 @@ impl<
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        let epoch = self.now_epoch();
+        if cfg!(debug_assertions) {
+            self.dump_dist();
+        }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
@@ -955,9 +983,6 @@ impl<
         } else {
             let mut cap = old_cap << 1;
             if cap < 2048 {
-                cap <<= 1;
-            }
-            if epoch < 5 {
                 cap <<= 1;
             }
             cap
@@ -1022,6 +1047,9 @@ impl<
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
             guard.flush();
+        }
+        if cfg!(debug_assertions) {
+            self.dump_dist();
         }
         ResizeResult::Done
     }
