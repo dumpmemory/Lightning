@@ -143,9 +143,14 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             debug_assert!(!chunk_ptr.is_null());
-            if let Some((mut val, addr, aitem)) =
-                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff)
-            {
+            if let Some((mut val, addr, aitem)) = self.get_from_chunk(
+                &*chunk,
+                hash,
+                key,
+                fkey,
+                &backoff,
+                new_chunk.map(|c| c.deref()),
+            ) {
                 'SPIN: loop {
                     let v = val.val;
                     if val.is_valued() {
@@ -175,7 +180,7 @@ impl<
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
                 if let Some((mut val, addr, aitem)) =
-                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff)
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff, None)
                 {
                     'SPIN_NEW: loop {
                         let v = val.val;
@@ -249,11 +254,7 @@ impl<
                 warn!("Chunk ptrs does not consist with epoch");
                 continue;
             }
-            let modify_chunk = if let Some(new_chunk) = new_chunk {
-                new_chunk
-            } else {
-                chunk
-            };
+            let modify_chunk = new_chunk.unwrap_or(chunk);
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
@@ -262,7 +263,7 @@ impl<
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
             let value_insertion =
-                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard);
+                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _, _) => {
@@ -315,6 +316,7 @@ impl<
                             ModOp::Sentinel,
                             true,
                             &guard,
+                            None// new_chunk.map(|c| &**c),
                         ) {
                             ModResult::Done(_, _, _) => {
                                 chunk.occupation.fetch_add(1, AcqRel);
@@ -346,8 +348,16 @@ impl<
                     fkey,
                     fvalue
                 );
-                let old_val =
-                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
+                let old_val = self.modify_entry(
+                    chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Sentinel,
+                    false,
+                    &guard,
+                    None // new_chunk.map(|c| &**c),
+                );
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_val);
                 self.manually_drop_sentinel_res(&old_val, chunk)
             }
@@ -409,7 +419,7 @@ impl<
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
                 if let Some((old_parsed_val, old_addr, attachment)) =
-                    self.get_from_chunk(chunk, hash, key, fkey, &backoff)
+                    self.get_from_chunk(chunk, hash, key, fkey, &backoff, Some(&**new_chunk))
                 {
                     let old_fval = old_parsed_val.act_val::<V>();
                     if old_fval == LOCKED_VALUE {
@@ -427,6 +437,7 @@ impl<
                                 ModOp::AttemptInsert(new_val, &val),
                                 false,
                                 guard,
+                                None,
                             ) {
                                 ModResult::Done(_, _, new_index)
                                 | ModResult::Replaced(_, _, new_index) => {
@@ -457,11 +468,7 @@ impl<
             } else {
                 chunk_ptr
             };
-            let modify_chunk = if let Some(new_chunk) = new_chunk {
-                new_chunk
-            } else {
-                chunk
-            };
+            let modify_chunk = new_chunk.unwrap_or(chunk);
             trace!("Swaping for key {}, copying {}", fkey, new_chunk.is_some());
             let mod_res = self.modify_entry(
                 modify_chunk,
@@ -471,11 +478,21 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 false,
                 guard,
+                None,
             );
             if new_chunk.is_some() {
                 debug_assert_ne!(chunk_ptr, new_chunk_ptr);
                 debug_assert_ne!(new_chunk_ptr, Shared::null());
-                let res = self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
+                let res = self.modify_entry(
+                    chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Sentinel,
+                    false,
+                    &guard,
+                    None //new_chunk.map(|c| &**c),
+                );
                 self.manually_drop_sentinel_res(&res, chunk);
             }
             return match mod_res {
@@ -526,14 +543,18 @@ impl<
         }
     }
 
-    pub (crate) fn occupation(&self) -> (usize, usize, usize) {
+    pub(crate) fn occupation(&self) -> (usize, usize, usize) {
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.chunk.load(Acquire, &guard);
         let chunk = unsafe { chunk_ptr.deref() };
-        (chunk.occu_limit, chunk.occupation.load(Relaxed), chunk.capacity)
+        (
+            chunk.occu_limit,
+            chunk.occupation.load(Relaxed),
+            chunk.capacity,
+        )
     }
 
-    pub (crate) fn dump_dist(&self) {
+    pub(crate) fn dump_dist(&self) {
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.chunk.load(Acquire, &guard);
         let chunk = unsafe { chunk_ptr.deref() };
@@ -567,6 +588,7 @@ impl<
         key: &K,
         fkey: FKey,
         backoff: &Backoff,
+        new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let mut idx = hash;
@@ -592,6 +614,10 @@ impl<
             } else if k == EMPTY_KEY {
                 return None;
             }
+            new_chunk.map(|new_chunk| {
+                let fval = Self::get_fast_value(addr);
+                self.migrate_entry(k, idx, fval, chunk, new_chunk, addr, &mut 0);
+            });
             idx += 1; // reprobe
             counter += 1;
         }
@@ -610,6 +636,7 @@ impl<
         op: ModOp<V>,
         read_attachment: bool,
         _guard: &'a Guard,
+        new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> ModResult<V> {
         let cap = chunk.capacity;
         let mut idx = hash;
@@ -776,7 +803,7 @@ impl<
                 }
             }
             if k == EMPTY_KEY {
-                trace!("Inserting {}", fkey);
+                // trace!("Inserting {}", fkey);
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
@@ -819,7 +846,11 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
-            trace!("Reprobe inserting {} got {}", fkey, k);
+            new_chunk.map(|new_chunk| {
+                let fval = Self::get_fast_value(addr);
+                self.migrate_entry(k, idx, fval, chunk, new_chunk, addr, &mut 0);
+            });
+            // trace!("Reprobe inserting {} got {}", fkey, k);
             idx += 1; // reprobe
             count += 1;
         }
