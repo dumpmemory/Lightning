@@ -249,11 +249,7 @@ impl<
                 warn!("Chunk ptrs does not consist with epoch");
                 continue;
             }
-            let modify_chunk = if let Some(new_chunk) = new_chunk {
-                new_chunk
-            } else {
-                chunk
-            };
+            let modify_chunk = new_chunk.unwrap_or(chunk);
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
@@ -347,9 +343,20 @@ impl<
                     fvalue
                 );
                 let old_val =
-                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard);
+                    self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard);
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_val);
-                self.manually_drop_sentinel_res(&old_val, chunk)
+                // Here, we may have a value that was in old chunk and had never been updated during sentinel
+                // If we had not got anything from new chunk yet, shall return this one
+                match (&old_val, &result) {
+                    (ModResult::Replaced(fv, v, _), None) | (ModResult::Existed(fv, v), None) => {
+                        if *fv > NUM_FIX_V {
+                            result = Some((*fv, v.clone().unwrap()))
+                        }
+                    },
+                    _ => {
+                        self.manually_drop_sentinel_res(&old_val, chunk);
+                    }
+                }
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
@@ -457,11 +464,7 @@ impl<
             } else {
                 chunk_ptr
             };
-            let modify_chunk = if let Some(new_chunk) = new_chunk {
-                new_chunk
-            } else {
-                chunk
-            };
+            let modify_chunk = new_chunk.unwrap_or(chunk);
             trace!("Swaping for key {}, copying {}", fkey, new_chunk.is_some());
             let mod_res = self.modify_entry(
                 modify_chunk,
@@ -1003,7 +1006,6 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        dfence();
         trace!("Resizing {:?}", old_chunk_ptr);
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
             new_cap,
@@ -1012,13 +1014,10 @@ impl<
         .into_shared(guard)
         .with_tag(0);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        dfence();
         self.epoch.fetch_add(1, AcqRel);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-        dfence();
         // Migrate entries
         self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
-        dfence();
         let swap_chunk = self.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1032,11 +1031,8 @@ impl<
                 ec, old_chunk_ptr
             );
         }
-        dfence();
         self.new_chunk.store(Shared::null(), Release);
-        dfence();
         self.epoch.fetch_add(1, AcqRel);
-        dfence();
         trace!(
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr,
