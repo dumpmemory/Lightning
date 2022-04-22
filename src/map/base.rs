@@ -1122,12 +1122,11 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                SENTINEL_VALUE => {
+                SENTINEL_VALUE | MIGRATING_VALUE => {
                     // Sentinel, skip
                     // Sentinel in old chunk implies its new value have already in the new chunk
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
-                MIGRATING_VALUE => {}
                 _ => {
                     let fkey = Self::get_fast_key(old_address);
                     if !self.migrate_entry(
