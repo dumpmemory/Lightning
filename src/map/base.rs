@@ -860,15 +860,16 @@ impl<
             if let Some(new_chunk) = new_chunk {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
-                if raw == SENTINEL_VALUE || raw == MIGRATING_VALUE {
+                if raw == SENTINEL_VALUE {
                     match &op {
                         ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) | ModOp::UpsertFastVal(_) => {
                             return ModResult::Sentinel;
                         }
                         _ => {}
                     }
+                } else if raw != MIGRATING_VALUE {
+                    self.passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
                 }
-                self.passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
             idx += 1; // reprobe
