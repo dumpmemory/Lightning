@@ -857,10 +857,19 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
-            new_chunk.map(|new_chunk| {
+            if let Some(new_chunk) = new_chunk {
                 let fval = Self::get_fast_value(addr);
+                let raw = fval.val;
+                if raw == SENTINEL_VALUE || raw == MIGRATING_VALUE {
+                    match &op {
+                        ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) | ModOp::UpsertFastVal(_) => {
+                            return ModResult::Sentinel;
+                        }
+                        _ => {}
+                    }
+                }
                 self.passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
-            });
+            }
             // trace!("Reprobe inserting {} got {}", fkey, k);
             idx += 1; // reprobe
             count += 1;
