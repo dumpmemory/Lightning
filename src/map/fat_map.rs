@@ -523,6 +523,7 @@ mod fat_tests {
         }
     }
 
+    #[ignore]
     #[test]
     fn parallel_with_resize() {
         let _ = env_logger::try_init();

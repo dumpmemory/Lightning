@@ -26,10 +26,10 @@ dashmap = "5"
 flurry = "0.4"
 lockfree = "0.5"
 scc = "0.6"
-ipc-channel = "0.15.0"
+ipc-channel = "0.16.0"
 libc = "*"
 humansize = "1"
-log = {version = "0.4", features = ["max_level_off"]}
+log = {version = "0.4", features = ["max_level_off", "release_max_level_off"]}
 
 [profile.release]
 debug = true
