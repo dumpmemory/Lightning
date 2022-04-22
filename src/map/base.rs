@@ -1,3 +1,5 @@
+use std::thread;
+
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
@@ -58,7 +60,7 @@ pub enum InsertOp {
 enum ResizeResult {
     NoNeed,
     SwapFailed,
-    Done,
+    InProgress,
 }
 
 pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
@@ -242,7 +244,7 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             if new_chunk.is_none() {
                 match self.check_migration(chunk_ptr, chunk, &guard) {
-                    ResizeResult::Done | ResizeResult::SwapFailed => {
+                    ResizeResult::InProgress | ResizeResult::SwapFailed => {
                         trace!("Retry insert due to resize");
                         backoff.spin();
                         continue;
@@ -627,7 +629,7 @@ impl<
             }
             new_chunk.map(|new_chunk| {
                 let fval = Self::get_fast_value(addr);
-                self.passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
+                Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
             });
             idx += 1; // reprobe
             counter += 1;
@@ -862,13 +864,15 @@ impl<
                 let raw = fval.val;
                 if raw == SENTINEL_VALUE {
                     match &op {
-                        ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) | ModOp::UpsertFastVal(_) => {
+                        ModOp::Insert(_, _)
+                        | ModOp::AttemptInsert(_, _)
+                        | ModOp::UpsertFastVal(_) => {
                             return ModResult::Sentinel;
                         }
                         _ => {}
                     }
                 } else if raw != MIGRATING_VALUE {
-                    self.passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
+                    Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
                 }
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
@@ -1062,11 +1066,26 @@ impl<
         )))
         .into_shared(guard)
         .with_tag(0);
-        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         self.epoch.fetch_add(1, AcqRel);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-                                                      // Migrate entries
-        self.migrate_entries(old_chunk_ins, new_chunk_ins, guard);
+        self.migrate_with_thread(
+            old_chunk_ptr,
+            new_chunk_ptr,
+            old_chunk_lock,
+        );
+        ResizeResult::InProgress
+    }
+
+    fn migrate_with_thread(
+        &self,
+        old_chunk_ptr: Shared<ChunkPtr<K, V, A, ALLOC>>,
+        new_chunk_ptr: Shared<ChunkPtr<K, V, A, ALLOC>>,
+        old_chunk_lock: Shared<ChunkPtr<K, V, A, ALLOC>>,
+    ) {
+        let guard = crossbeam_epoch::pin();
+        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
+        let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
+        Self::migrate_entries(old_chunk_ins, new_chunk_ins, &guard);
         let swap_chunk = self.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1086,8 +1105,8 @@ impl<
             "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr,
             new_chunk_ptr,
-            old_cap,
-            new_cap
+            old_chunk_ins.capacity,
+            new_chunk_ins.capacity
         );
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
@@ -1096,11 +1115,9 @@ impl<
         if cfg!(debug_assertions) {
             self.dump_dist();
         }
-        ResizeResult::Done
     }
 
     fn migrate_entries(
-        &self,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         _guard: &crossbeam_epoch::Guard,
@@ -1139,7 +1156,7 @@ impl<
                 }
                 _ => {
                     let fkey = Self::get_fast_key(old_address);
-                    if !self.migrate_entry(
+                    if !Self::migrate_entry(
                         fkey,
                         idx,
                         fvalue,
@@ -1163,7 +1180,6 @@ impl<
     }
 
     fn passive_migrate_entry(
-        &self,
         fkey: FKey,
         old_idx: usize,
         fvalue: FastValue,
@@ -1176,7 +1192,7 @@ impl<
             return;
         }
         let mut num_moved = 0;
-        self.migrate_entry(
+        Self::migrate_entry(
             fkey,
             old_idx,
             fvalue,
@@ -1190,7 +1206,6 @@ impl<
 
     #[inline]
     fn migrate_entry(
-        &self,
         fkey: FKey,
         old_idx: usize,
         fvalue: FastValue,
