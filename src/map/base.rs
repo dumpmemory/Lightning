@@ -316,7 +316,7 @@ impl<
                             ModOp::Sentinel,
                             true,
                             &guard,
-                            None// new_chunk.map(|c| &**c),
+                            new_chunk.map(|c| &**c),
                         ) {
                             ModResult::Done(_, _, _) => {
                                 chunk.occupation.fetch_add(1, AcqRel);
@@ -354,9 +354,9 @@ impl<
                     key,
                     fkey,
                     ModOp::Sentinel,
-                    false,
+                    true,
                     &guard,
-                    None // new_chunk.map(|c| &**c),
+                    new_chunk.map(|c| &**c),
                 );
                 trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_val);
                 // Here, we may have a value that was in old chunk and had never been updated during sentinel
@@ -502,7 +502,7 @@ impl<
                     ModOp::Sentinel,
                     false,
                     &guard,
-                    None //new_chunk.map(|c| &**c),
+                    new_chunk.map(|c| &**c),
                 );
                 self.manually_drop_sentinel_res(&res, chunk);
             }
@@ -1167,7 +1167,7 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         debug_assert_ne!(old_chunk_ins.base, new_chunk_ins.base);
-        if fkey == EMPTY_KEY || fvalue.val <= TOMBSTONE_VALUE {
+        if fkey == EMPTY_KEY || fvalue.val < NUM_FIX_V {
             // Value have no key, insertion in progress
             return false;
         }
@@ -1224,9 +1224,11 @@ impl<
                     fence(Acquire);
                     Self::store_key(addr, fkey);
                     break;
+                } else {
+                    // Here we didn't put the fval into the new chunk due to slot conflict with
+                    // other thread. Need to retry
+                    continue;
                 }
-                // Here we didn't put the fval into the new chunk due to slot conflict with
-                // other thread. Need to try next slot
             }
             idx += 1; // reprobe
             count += 1;
