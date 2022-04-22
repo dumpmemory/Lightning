@@ -1112,9 +1112,6 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
             guard.flush();
         }
-        if cfg!(debug_assertions) {
-            self.dump_dist();
-        }
     }
 
     fn migrate_entries(
