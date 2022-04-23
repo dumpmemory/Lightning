@@ -11,7 +11,6 @@ pub const SENTINEL_VALUE: FVal = 0b010;
 
 // Last bit set indicates locking
 pub const LOCKED_VALUE: FVal = 0b001;
-pub const MIGRATING_VALUE: FVal = 0b011;
 
 pub const TOMBSTONE_VALUE: FVal = 0b100;
 
@@ -19,6 +18,7 @@ pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
 pub const VAL_BIT_MASK: FVal = !0 << 1 >> 1;
+pub const VAL_PRIME_MASK: FVal = !VAL_BIT_MASK;
 pub const VAL_FLAGGED_MASK: FVal = !(!0 << NUM_FIX_V.trailing_zeros());
 pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
@@ -789,7 +789,7 @@ impl<
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE || raw == MIGRATING_VALUE {
+                        } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -797,9 +797,6 @@ impl<
                                 match raw {
                                     LOCKED_VALUE => {
                                         trace!("Spin on lock");
-                                    }
-                                    MIGRATING_VALUE => {
-                                        trace!("Spin on migration");
                                     }
                                     EMPTY_VALUE => {
                                         trace!("Spin on empty");
@@ -871,7 +868,7 @@ impl<
                         }
                         _ => {}
                     }
-                } else if raw != MIGRATING_VALUE {
+                } else {
                     Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
                 }
             }
@@ -1146,24 +1143,26 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                SENTINEL_VALUE | MIGRATING_VALUE => {
+                SENTINEL_VALUE => {
                     // Sentinel, skip
                     // Sentinel in old chunk implies its new value have already in the new chunk
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
-                    let fkey = Self::get_fast_key(old_address);
-                    if !Self::migrate_entry(
-                        fkey,
-                        idx,
-                        fvalue,
-                        old_chunk_ins,
-                        new_chunk_ins,
-                        old_address,
-                        &mut effective_copy,
-                    ) {
-                        backoff.spin();
-                        continue;
+                    if !fvalue.is_primed() {
+                        let fkey = Self::get_fast_key(old_address);
+                        if !Self::migrate_entry(
+                            fkey,
+                            idx,
+                            fvalue,
+                            old_chunk_ins,
+                            new_chunk_ins,
+                            old_address,
+                            &mut effective_copy,
+                        ) {
+                            backoff.spin();
+                            continue;
+                        }
                     }
                 }
             }
@@ -1184,7 +1183,7 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
     ) {
-        if fvalue.val < NUM_FIX_V {
+        if fvalue.val < NUM_FIX_V || fvalue.is_primed() {
             // Value have no key, insertion in progress
             return;
         }
@@ -1213,9 +1212,10 @@ impl<
     ) -> bool {
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be locked
-        let mut curr_orig = fvalue.val;
+        let mut curr_orig = fvalue.act_val::<V>();
+        let primed_orig= fvalue.prime();
         let orig = curr_orig;
-        match Self::cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
+        match Self::cas_value_rt_new(old_address, orig, primed_orig.val) {
             Some(n) => {
                 // here we obtained the ownership of this fval
                 curr_orig = n;
@@ -1246,7 +1246,7 @@ impl<
                 if new_attachment.probe(&key) {
                     // New value existed, skip with None result
                     // We also need to drop the fvalue we obtained because it does not fit any where
-                    old_chunk_ins.attachment.manually_drop(fvalue.val);
+                    // old_chunk_ins.attachment.manually_drop(fvalue.act_val::<V>());
                     break;
                 }
             } else if k == EMPTY_KEY {
@@ -1322,11 +1322,11 @@ impl FastValue {
     }
 
     #[inline(always)]
-    pub fn act_val<V>(&self) -> FVal {
+    pub fn act_val<V>(self) -> FVal {
         if mem::size_of::<V>() != 0 {
             self.val & FVAL_VAL_BIT_MASK
         } else {
-            self.val
+            self.val & VAL_BIT_MASK
         }
     }
 
@@ -1339,7 +1339,19 @@ impl FastValue {
     #[inline(always)]
     fn is_locked(self) -> bool {
         let v = self.val;
-        v & VAL_FLAGGED_MASK | 1 == v
+        v == LOCKED_VALUE
+    }
+
+    #[inline(always)]
+    fn is_primed(self) -> bool {
+        let v = self.val;
+        v & VAL_BIT_MASK != v
+    }
+
+    fn prime(self) -> Self {
+        Self {
+            val: self.val | VAL_PRIME_MASK
+        }
     }
 
     #[inline(always)]
