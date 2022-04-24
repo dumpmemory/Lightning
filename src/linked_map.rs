@@ -224,9 +224,9 @@ mod test {
     pub fn linked_map_insertions() {
         let _ = env_logger::try_init();
         let linked_map = Arc::new(LinkedHashMap::<_, _, CAP>::with_capacity(4));
-        let num_threads = 4;
+        let num_threads = 32;
         let mut threads = vec![];
-        let num_data = 16;
+        let num_data = 32;
         for i in 0..num_threads {
             let map = linked_map.clone();
             threads.push(thread::spawn(move || {
