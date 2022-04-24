@@ -683,7 +683,7 @@ impl<
                                     let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     let val_to_store = Self::value_to_store(raw, fval);
-                                    if Self::cas_value(addr, raw, primed_fval) {
+                                    if Self::cas_value(addr, raw, primed_fval).1 {
                                         attachment.set_value(ov.clone(), raw);
                                         if Self::FAT_VAL {
                                             Self::store_raw_value(addr, val_to_store);
@@ -731,7 +731,7 @@ impl<
                                     }
                                 }
                                 ModOp::UpsertFastVal(ref fv) => {
-                                    if Self::cas_value(addr, v.val, *fv) {
+                                    if Self::cas_value(addr, v.val, *fv).1 {
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
                                             return ModResult::Done(0, None, idx);
                                         } else {
@@ -751,7 +751,7 @@ impl<
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
                                         let val_to_store = Self::value_to_store(raw, fval);
-                                        if Self::cas_value(addr, v.val, primed_fval) {
+                                        if Self::cas_value(addr, v.val, primed_fval).1 {
                                             attachment.set_value((*oval).clone(), raw);
                                             if Self::FAT_VAL {
                                                 Self::store_raw_value(addr, val_to_store);
@@ -783,7 +783,7 @@ impl<
                                     }
                                     if act_val >= NUM_FIX_V {
                                         if let Some(sv) = swap(act_val) {
-                                            if Self::cas_value(addr, v.val, sv) {
+                                            if Self::cas_value(addr, v.val, sv).1 {
                                                 // swap success
                                                 return ModResult::Replaced(act_val, None, idx);
                                             } else {
@@ -828,29 +828,41 @@ impl<
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
-                        if Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
-                            let attachment = chunk.attachment.prefetch(idx);
-                            attachment.set_key(key.clone());
-                            if Self::FAT_VAL {
-                                Self::store_key(addr, fkey);
-                                attachment.set_value((*val).clone(), 0);
-                                Self::store_raw_value(addr, fval);
-                            } else {
-                                Self::store_key(addr, fkey);
+                        match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
+                            (_, true) => {
+                                let attachment = chunk.attachment.prefetch(idx);
+                                attachment.set_key(key.clone());
+                                if Self::FAT_VAL {
+                                    Self::store_key(addr, fkey);
+                                    attachment.set_value((*val).clone(), 0);
+                                    Self::store_raw_value(addr, fval);
+                                } else {
+                                    Self::store_key(addr, fkey);
+                                }
+                                return ModResult::Done(0, None, idx);
                             }
-                            return ModResult::Done(0, None, idx);
-                        } else {
-                            backoff.spin();
-                            continue;
+                            (SENTINEL_VALUE, false) => {
+                                return ModResult::Sentinel
+                            }
+                            (_, false) => {
+                                backoff.spin();
+                                continue;
+                            }
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
-                        if Self::cas_value(addr, EMPTY_VALUE, fval) {
-                            Self::store_key(addr, fkey);
-                            return ModResult::Done(0, None, idx);
-                        } else {
-                            backoff.spin();
-                            continue;
+                        match Self::cas_value(addr, EMPTY_VALUE, fval) {
+                            (_, true) => {
+                                Self::store_key(addr, fkey);
+                                return ModResult::Done(0, None, idx);
+                            }
+                            (SENTINEL_VALUE, false) => {
+                                return ModResult::Sentinel
+                            }
+                            (_, false) => {
+                                backoff.spin();
+                                continue;
+                            }
                         }
                     }
                     ModOp::Sentinel => {
@@ -960,10 +972,10 @@ impl<
         }
     }
     #[inline(always)]
-    fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> bool {
+    fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> (usize, bool) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value).1 }
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value) }
     }
 
     #[inline(always)]
@@ -1025,9 +1037,6 @@ impl<
         if occupation <= occu_limit {
             return ResizeResult::NoNeed;
         }
-        if old_chunk_ptr.tag() == 1 {
-            return ResizeResult::SwapFailed;
-        }
         self.do_migration(old_chunk_ptr, guard)
     }
 
@@ -1036,8 +1045,8 @@ impl<
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        if cfg!(debug_assertions) {
-            self.dump_dist();
+        if old_chunk_ptr.tag() != 0 {
+            return ResizeResult::SwapFailed;
         }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
@@ -1063,7 +1072,7 @@ impl<
         if let Err(_) =
             self.meta
                 .chunk
-                .compare_exchange(old_chunk_ptr.with_tag(0), old_chunk_lock, AcqRel, Relaxed, guard)
+                .compare_exchange(old_chunk_ptr, old_chunk_lock, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
@@ -1076,27 +1085,37 @@ impl<
         )))
         .into_shared(guard)
         .with_tag(0);
-        self.meta.epoch.fetch_add(1, AcqRel);
+        debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.meta.epoch.fetch_add(1, AcqRel);
         let meta = self.meta.clone();
         let old_chunk_addr = old_chunk_ptr.into_usize();
         let new_chunk_addr = new_chunk_ptr.into_usize();
         let old_chunk_lock = old_chunk_lock.into_usize();
         let meta_addr = Arc::into_raw(meta) as usize;
-        thread::Builder::new()
-            .name(format!(
-                "map-migration-{}-{}",
-                old_chunk_addr, new_chunk_addr
-            ))
-            .spawn(move || {
-                Self::migrate_with_thread(
-                    meta_addr,
-                    old_chunk_addr,
-                    new_chunk_addr,
-                    old_chunk_lock,
-                );
-            })
-            .unwrap();
+        // Not going to take multithreading resize
+        // Experiments shows there is no significant improvement in performance
+        // thread::Builder::new()
+        //     .name(format!(
+        //         "map-migration-{}-{}",
+        //         old_chunk_addr, new_chunk_addr
+        //     ))
+        //     .spawn(move || {
+        //         Self::migrate_with_thread(
+        //             meta_addr,
+        //             old_chunk_addr,
+        //             new_chunk_addr,
+        //             old_chunk_lock,
+        //         );
+        //     })
+        //     .unwrap();
+        Self::migrate_with_thread(
+            meta_addr,
+            old_chunk_addr,
+            new_chunk_addr,
+            old_chunk_lock,
+        );
+        dfence();
         ResizeResult::InProgress
     }
 
@@ -1288,7 +1307,7 @@ impl<
                     break;
                 }
             } else if k == EMPTY_KEY {
-                if Self::cas_value(addr, EMPTY_VALUE, orig) {
+                if Self::cas_value(addr, EMPTY_VALUE, orig).1 {
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
                     let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
                     let key = old_attachment.get_key();
