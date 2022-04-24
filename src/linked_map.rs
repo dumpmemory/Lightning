@@ -254,7 +254,7 @@ mod test {
         for i in 0..num_threads {
             for j in 0..num_data {
                 let num = i * 1000 + j;
-                debug_assert_eq!(num, *linked_map.get(&num).unwrap());
+                debug_assert_eq!(Some(num), linked_map.get(&num).map(|n| *n), "i: {}, j: {}", i, j);
             }
         }
         let mut num_set = HashSet::new();
