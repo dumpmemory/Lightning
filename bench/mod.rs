@@ -385,10 +385,16 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     stride: usize,
 ) -> Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)> {
     println!("Testing {}", name);
+    println!("Oversize");
+    let oversize_measurement =
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
+    write_measurements(
+        &format!("{}_{}_oversize.csv", task, name),
+        &oversize_measurement,
+    );
     println!("Read heavy");
     let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
     write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
-
     println!("Insert heavy");
     let insert_measurement =
         run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
@@ -401,13 +407,6 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     write_measurements(
         &format!("{}_{}_uniform.csv", task, name),
         &uniform_measurement,
-    );
-    println!("Oversize");
-    let oversize_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
-    write_measurements(
-        &format!("{}_{}_oversize.csv", task, name),
-        &oversize_measurement,
     );
     vec![
         ("insert", insert_measurement),

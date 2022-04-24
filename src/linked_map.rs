@@ -42,8 +42,8 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     pub fn get(&self, key: &K) -> Option<V> {
         self.map
-            .lock(key)
-            .map(|l| unsafe { (&*l).deref().clone().1 })
+            .get(key)
+            .map(|l| unsafe { l.deref().clone().1 })
     }
 
     pub fn get_to_front(&self, key: &K) -> Option<V> {
@@ -223,10 +223,10 @@ mod test {
     #[test]
     pub fn linked_map_insertions() {
         let _ = env_logger::try_init();
-        let linked_map = Arc::new(LinkedHashMap::<_, _, CAP>::with_capacity(16));
-        let num_threads = num_cpus::get();
+        let linked_map = Arc::new(LinkedHashMap::<_, _, CAP>::with_capacity(4));
+        let num_threads = 4;
         let mut threads = vec![];
-        let num_data = 256;
+        let num_data = 16;
         for i in 0..num_threads {
             let map = linked_map.clone();
             threads.push(thread::spawn(move || {
@@ -238,6 +238,7 @@ mod test {
                     } else {
                         map.insert_front(num, Arc::new(num));
                     }
+                    assert_eq!(map.get(&num).map(|n| *n), Some(num));
                 }
                 map.iter_front_keys().collect_vec();
                 map.iter_front_values().collect_vec();
@@ -254,7 +255,19 @@ mod test {
         for i in 0..num_threads {
             for j in 0..num_data {
                 let num = i * 1000 + j;
-                debug_assert_eq!(num, *linked_map.get(&num).unwrap());
+                let first_round = linked_map.get(&num).map(|n| *n);
+                if first_round == Some(num) {
+                    continue;
+                }
+                for round_count in 0..99 {
+                    let following_round = linked_map.get(&num).map(|n| *n);
+                    if following_round == Some(num) {
+                        info!("Falling back for i {}, j {}, at {}", i, j, round_count);
+                        break;
+                    }
+                }
+                linked_map.map.table.dump_dist();
+                error!("Cannot fall back for i {}, j {}", i, j);
             }
         }
         let mut num_set = HashSet::new();
