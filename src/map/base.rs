@@ -882,7 +882,7 @@ impl<
             {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
-                if raw == SENTINEL_VALUE || raw == MIGRATING_VALUE {
+                if raw == SENTINEL_VALUE {
                     match &op {
                         ModOp::Insert(_, _)
                         | ModOp::AttemptInsert(_, _)
@@ -892,9 +892,9 @@ impl<
                         _ => {}
                     }
                 }
-                if let Some(new_chunk) = new_chunk {
-                    Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
-                }
+                //  else if let Some(new_chunk) = new_chunk {
+                //     Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
+                // }
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
             idx += 1; // reprobe
@@ -1095,27 +1095,26 @@ impl<
         let meta_addr = Arc::into_raw(meta) as usize;
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
-        // thread::Builder::new()
-        //     .name(format!(
-        //         "map-migration-{}-{}",
-        //         old_chunk_addr, new_chunk_addr
-        //     ))
-        //     .spawn(move || {
-        //         Self::migrate_with_thread(
-        //             meta_addr,
-        //             old_chunk_addr,
-        //             new_chunk_addr,
-        //             old_chunk_lock,
-        //         );
-        //     })
-        //     .unwrap();
-        Self::migrate_with_thread(
-            meta_addr,
-            old_chunk_addr,
-            new_chunk_addr,
-            old_chunk_lock,
-        );
-        dfence();
+        thread::Builder::new()
+            .name(format!(
+                "map-migration-{}-{}",
+                old_chunk_addr, new_chunk_addr
+            ))
+            .spawn(move || {
+                Self::migrate_with_thread(
+                    meta_addr,
+                    old_chunk_addr,
+                    new_chunk_addr,
+                    old_chunk_lock,
+                );
+            })
+            .unwrap();
+        // Self::migrate_with_thread(
+        //     meta_addr,
+        //     old_chunk_addr,
+        //     new_chunk_addr,
+        //     old_chunk_lock,
+        // );
         ResizeResult::InProgress
     }
 
@@ -1241,7 +1240,7 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
     ) {
-        // Note: Passive disable is avtually faster
+        // Note: This does not make migration faster
         // if fvalue.val < NUM_FIX_V {
         //     // Value have no key, insertion in progress
         //     return;
