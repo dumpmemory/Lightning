@@ -384,7 +384,7 @@ mod test {
                               panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
                           }
                       }
-                      if j % 7 == 0 {
+                      if j % 5 == 0 {
                           assert_eq!(
                               map.remove(&key),
                               Some(value),

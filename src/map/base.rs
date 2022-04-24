@@ -859,7 +859,7 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
-            if let Some(new_chunk) = new_chunk {
+            {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
                 if raw == SENTINEL_VALUE {
@@ -871,8 +871,11 @@ impl<
                         }
                         _ => {}
                     }
-                } else if raw != MIGRATING_VALUE {
-                    Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
+                }
+                if let Some(new_chunk) = new_chunk {
+                    if raw != MIGRATING_VALUE {
+                        Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
+                    }
                 }
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
@@ -1068,11 +1071,7 @@ impl<
         .with_tag(0);
         self.epoch.fetch_add(1, AcqRel);
         self.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-        self.migrate_with_thread(
-            old_chunk_ptr,
-            new_chunk_ptr,
-            old_chunk_lock,
-        );
+        self.migrate_with_thread(old_chunk_ptr, new_chunk_ptr, old_chunk_lock);
         ResizeResult::InProgress
     }
 
@@ -1136,6 +1135,8 @@ impl<
             // Reasoning value states
             match fvalue.val {
                 EMPTY_VALUE | TOMBSTONE_VALUE => {
+                    // Probably does not need this anymore
+                    // Need to make sure that during migration, empty value always leads to new chunk
                     if !Self::cas_sentinel(old_address, fvalue.val) {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
