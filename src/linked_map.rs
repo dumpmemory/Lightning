@@ -227,10 +227,10 @@ mod test {
         let num_threads = num_cpus::get();
         let mut threads = vec![];
         let num_data = 256;
-        for i in 0..num_threads {
+        for i in 1..num_threads {
             let map = linked_map.clone();
             threads.push(thread::spawn(move || {
-                for j in 0..num_data {
+                for j in 1..num_data {
                     let num = i * 1000 + j;
                     debug!("Insert {}", num);
                     if j % 2 == 1 {
@@ -238,6 +238,7 @@ mod test {
                     } else {
                         map.insert_front(num, Arc::new(num));
                     }
+                    assert_eq!(map.get(&num).map(|n| *n), Some(num));
                 }
                 map.iter_front_keys().collect_vec();
                 map.iter_front_values().collect_vec();
@@ -251,10 +252,21 @@ mod test {
         for t in threads {
             t.join().unwrap();
         }
-        for i in 0..num_threads {
-            for j in 0..num_data {
+        for i in 1..num_threads {
+            for j in 1..num_data {
                 let num = i * 1000 + j;
-                debug_assert_eq!(Some(num), linked_map.get(&num).map(|n| *n), "i: {}, j: {}", i, j);
+                let first_round = linked_map.get(&num).map(|n| *n);
+                if first_round == Some(num) {
+                    continue;
+                }
+                for round_count in 0..999999 {
+                    let following_round = linked_map.get(&num).map(|n| *n);
+                    if following_round == Some(num) {
+                        panic!("Falling back for i {}, j {}, at {}", i, j, round_count);
+                    }
+                }
+                linked_map.map.table.dump_dist();
+                panic!("Cannot fall back for i {}, j {}", i, j);
             }
         }
         let mut num_set = HashSet::new();
