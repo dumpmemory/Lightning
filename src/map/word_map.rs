@@ -597,12 +597,12 @@ mod test {
     #[test]
     pub fn simple_resizing() {
         let _ = env_logger::try_init();
-        let linked_map = Arc::new(WordMap::<System>::with_capacity(4));
-        let num_threads = 32;
+        let map = Arc::new(WordMap::<System>::with_capacity(4));
+        let num_threads = 4;
         let mut threads = vec![];
-        let num_data = 32;
+        let num_data = 6;
         for i in 0..num_threads {
-            let map = linked_map.clone();
+            let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 0..num_data {
                     let num = i * 1000 + j;
@@ -619,18 +619,19 @@ mod test {
         for i in 0..num_threads {
             for j in 0..num_data {
                 let num = i * 1000 + j;
-                let first_round = linked_map.get(&num);
+                debug!("Get {}", num);
+                let first_round = map.get(&num);
                 if first_round == Some(num) {
                     continue;
                 }
                 for round_count in 0..99 {
-                    let following_round = linked_map.get(&num);
+                    let following_round = map.get(&num);
                     if following_round == Some(num) {
-                        info!("Falling back for i {}, j {}, at {}", i, j, round_count);
+                        info!("Falling back for {}, i {}, j {}, at {}", num, i, j, round_count);
                         break;
                     }
                 }
-                error!("Cannot fall back for i {}, j {}", i, j);
+                error!("Cannot fall back for {}, i {}, j {}, copying {}", num, i, j, map.table.map_is_copying());
             }
         }
     }

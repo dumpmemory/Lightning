@@ -248,6 +248,7 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
+            trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if new_chunk.is_none() {
                 match self.check_migration(chunk_ptr, chunk, &guard) {
                     ResizeResult::InProgress | ResizeResult::SwapFailed => {
@@ -296,14 +297,15 @@ impl<
                 }
                 ModResult::TableFull => {
                     trace!(
-                        "Insertion is too fast, copying {}, cap {}, count {}, old {:?}, new {:?}.",
+                        "Insertion is too fast for {}, copying {}, cap {}, count {}, old {:?}, new {:?}.",
+                        fkey,
                         new_chunk.is_some(),
                         modify_chunk.capacity,
                         modify_chunk.occupation.load(Relaxed),
                         chunk_ptr,
                         new_chunk_ptr
                     );
-                    self.do_migration(chunk_ptr, &guard);
+                    backoff.spin();
                     continue;
                 }
                 ModResult::Sentinel => {
@@ -1013,7 +1015,7 @@ impl<
 
     #[inline(always)]
     fn store_key(addr: usize, fkey: FKey) {
-        unsafe { intrinsics::atomic_store_relaxed(addr as *mut FKey, fkey) }
+        unsafe { intrinsics::atomic_store_rel(addr as *mut FKey, fkey) }
     }
 
     #[inline(always)]
@@ -1095,6 +1097,7 @@ impl<
         let meta_addr = Arc::into_raw(meta) as usize;
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
+        trace!("Initialize migration");
         thread::Builder::new()
             .name(format!(
                 "map-migration-{}-{}",
@@ -1187,6 +1190,7 @@ impl<
             let fvalue = Self::get_fast_value(old_address);
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
+            trace!("Migrating entry have key {}", Self::get_fast_key(old_address));
             match fvalue.val {
                 EMPTY_VALUE | TOMBSTONE_VALUE => {
                     // Probably does not need this anymore
@@ -1269,6 +1273,7 @@ impl<
     ) -> bool {
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be locked
+        trace!("Migrating entry {}", fkey);
         let mut curr_orig = fvalue.val;
         let orig = curr_orig;
         match Self::cas_value_rt_new(old_address, orig, MIGRATING_VALUE) {
@@ -1278,6 +1283,7 @@ impl<
             }
             None => {
                 // here the ownership have been taken by other thread
+                trace!("Entry {} has changed", fkey);
                 return false;
             }
         }
@@ -1330,9 +1336,11 @@ impl<
         } else if Self::cas_sentinel(old_address, curr_orig) {
             // continue
         } else {
+            trace!("Entry {} has failed", fkey);
             return false;
         }
         *effective_copy += 1;
+        trace!("Entry {} success", fkey);
         return true;
     }
 
@@ -1464,14 +1472,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     #[inline(always)]
     fn get_fast_key(entry_addr: usize) -> FKey {
         debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_relaxed(entry_addr as *mut FKey) }
+        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
     }
 
     #[inline(always)]
     fn get_fast_value(entry_addr: usize) -> FastValue {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        let val = unsafe { intrinsics::atomic_load_relaxed(addr as *mut FVal) };
+        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut FVal) };
         FastValue::new(val)
     }
 
