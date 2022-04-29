@@ -269,7 +269,7 @@ mod test {
     use alloc::sync::Arc;
     use rayon::prelude::*;
     use test::Bencher;
-    use std::thread;
+    use std::{thread, time::Duration};
     #[test]
     fn will_not_overflow() {
         let _ = env_logger::try_init();
@@ -606,8 +606,8 @@ mod test {
             threads.push(thread::spawn(move || {
                 for j in 0..num_data {
                     let num = i * 1000 + j;
-                    debug!("Insert {}", num);
                     map.insert(num, num);
+                    debug!("Inserted {}", num);
                     assert_eq!(map.get(&num), Some(num));
                 }
             }));

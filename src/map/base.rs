@@ -843,30 +843,24 @@ impl<
                                 }
                                 return ModResult::Done(0, None, idx);
                             }
-                            (SENTINEL_VALUE, false) => {
-                                return ModResult::Sentinel
-                            }
+                            (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (_, false) => {
                                 backoff.spin();
                                 continue;
                             }
                         }
                     }
-                    ModOp::UpsertFastVal(fval) => {
-                        match Self::cas_value(addr, EMPTY_VALUE, fval) {
-                            (_, true) => {
-                                Self::store_key(addr, fkey);
-                                return ModResult::Done(0, None, idx);
-                            }
-                            (SENTINEL_VALUE, false) => {
-                                return ModResult::Sentinel
-                            }
-                            (_, false) => {
-                                backoff.spin();
-                                continue;
-                            }
+                    ModOp::UpsertFastVal(fval) => match Self::cas_value(addr, EMPTY_VALUE, fval) {
+                        (_, true) => {
+                            Self::store_key(addr, fkey);
+                            return ModResult::Done(0, None, idx);
                         }
-                    }
+                        (SENTINEL_VALUE, false) => return ModResult::Sentinel,
+                        (_, false) => {
+                            backoff.spin();
+                            continue;
+                        }
+                    },
                     ModOp::Sentinel => {
                         if Self::cas_sentinel(addr, EMPTY_VALUE) {
                             // CAS value succeed, shall store key
@@ -903,8 +897,9 @@ impl<
             count += 1;
         }
         match op {
-            ModOp::Insert(_fv, _v) | ModOp::AttemptInsert(_fv, _v) => ModResult::TableFull,
-            ModOp::UpsertFastVal(_fv) => ModResult::TableFull,
+            ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) | ModOp::UpsertFastVal(_) => {
+                ModResult::TableFull
+            }
             _ => ModResult::NotFound,
         }
     }
@@ -1036,7 +1031,7 @@ impl<
     ) -> ResizeResult {
         let occupation = old_chunk_ref.occupation.load(Relaxed);
         let occu_limit = old_chunk_ref.occu_limit;
-        if occupation <= occu_limit {
+        if occupation < occu_limit {
             return ResizeResult::NoNeed;
         }
         self.do_migration(old_chunk_ptr, guard)
@@ -1063,12 +1058,6 @@ impl<
             }
             cap
         };
-        trace!(
-            "New size for {:?} is {}, was {}",
-            old_chunk_ptr,
-            new_cap,
-            old_cap
-        );
         // Swap in old chunk as placeholder for the lock
         let old_chunk_lock = old_chunk_ptr.with_tag(1);
         if let Err(_) =
@@ -1080,7 +1069,13 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        trace!("Resizing {:?}", old_chunk_ptr);
+        trace!(
+            "--- Resizing {:?}. New size is {}, was {}",
+            old_chunk_ptr,
+            new_cap,
+            old_cap
+        );
+        self.meta.epoch.fetch_add(1, AcqRel);
         let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
             new_cap,
             &self.attachment_init_meta,
@@ -1089,7 +1084,6 @@ impl<
         .with_tag(0);
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
-        self.meta.epoch.fetch_add(1, AcqRel);
         let meta = self.meta.clone();
         let old_chunk_addr = old_chunk_ptr.into_usize();
         let new_chunk_addr = new_chunk_ptr.into_usize();
@@ -1142,6 +1136,7 @@ impl<
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         Self::migrate_entries(old_chunk_ins, new_chunk_ins, &guard);
+        meta.new_chunk.store(Shared::null(), Release);
         let swap_chunk = meta.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1155,10 +1150,9 @@ impl<
                 ec, old_chunk_ptr
             );
         }
-        meta.new_chunk.store(Shared::null(), Release);
         meta.epoch.fetch_add(1, AcqRel);
         trace!(
-            "Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
+            "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr,
             new_chunk_ptr,
             old_chunk_ins.capacity,
@@ -1190,7 +1184,10 @@ impl<
             let fvalue = Self::get_fast_value(old_address);
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
-            trace!("Migrating entry have key {}", Self::get_fast_key(old_address));
+            trace!(
+                "Migrating entry have key {}",
+                Self::get_fast_key(old_address)
+            );
             match fvalue.val {
                 EMPTY_VALUE | TOMBSTONE_VALUE => {
                     // Probably does not need this anymore
@@ -1309,6 +1306,7 @@ impl<
                     // New value existed, skip with None result
                     // We also need to drop the fvalue we obtained because it does not fit any where
                     old_chunk_ins.attachment.manually_drop(fvalue.val);
+                    warn!("Migrate {} exists, skipped", fkey);
                     break;
                 }
             } else if k == EMPTY_KEY {
@@ -1325,22 +1323,27 @@ impl<
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
                     // other thread. Need to retry
+                    warn!("Migrate {} have conflict", fkey);
                     continue;
                 }
             }
             idx += 1; // reprobe
             count += 1;
         }
+        if count >= cap {
+            warn!("End of table during migrating {}", fkey);
+        }
         if curr_orig != orig {
+            trace!("Copy Entry {} success", fkey);
             Self::store_sentinel(old_address);
         } else if Self::cas_sentinel(old_address, curr_orig) {
+            warn!("Key {} is not migrared", fkey);
             // continue
         } else {
-            trace!("Entry {} has failed", fkey);
+            trace!("Migrate entry {} has failed", fkey);
             return false;
         }
         *effective_copy += 1;
-        trace!("Entry {} success", fkey);
         return true;
     }
 
