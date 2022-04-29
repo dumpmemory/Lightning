@@ -249,7 +249,12 @@ impl<
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
-            if new_chunk.is_none() {
+            if let Some(new_chunk) = new_chunk {
+                if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
+                    backoff.spin();
+                    continue;
+                }
+            } else {
                 match self.check_migration(chunk_ptr, chunk, &guard) {
                     ResizeResult::InProgress | ResizeResult::SwapFailed => {
                         trace!("Retry insert due to resize");
@@ -258,10 +263,6 @@ impl<
                     }
                     ResizeResult::NoNeed => {}
                 }
-            } else if new_chunk_ptr.is_null() {
-                // Copying, must have new chunk
-                warn!("Chunk ptrs does not consist with epoch");
-                continue;
             }
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let masked_value = fvalue & VAL_BIT_MASK;
@@ -1069,19 +1070,22 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
+        let old_occupation = old_chunk_ins.occupation.load(Relaxed);
         trace!(
-            "--- Resizing {:?}. New size is {}, was {}",
+            "--- Resizing {:?}. New size is {}, was {}, occ {}",
             old_chunk_ptr,
             new_cap,
-            old_cap
+            old_cap,
+            old_occupation
         );
         self.meta.epoch.fetch_add(1, AcqRel);
-        let new_chunk_ptr = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
-            new_cap,
-            &self.attachment_init_meta,
-        )))
-        .into_shared(guard)
-        .with_tag(0);
+        let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
+        unsafe {
+            (*new_chunk).occupation.store(old_occupation, Relaxed);
+        }
+        let new_chunk_ptr = Owned::new(ChunkPtr::new(new_chunk))
+            .into_shared(guard)
+            .with_tag(0);
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         let meta = self.meta.clone();
@@ -1103,6 +1107,7 @@ impl<
                     old_chunk_addr,
                     new_chunk_addr,
                     old_chunk_lock,
+                    old_occupation,
                 );
             })
             .unwrap();
@@ -1120,6 +1125,7 @@ impl<
         old_chunk_ptr: usize,
         new_chunk_ptr: usize,
         old_chunk_lock: usize,
+        old_occupation: usize,
     ) {
         let guard = crossbeam_epoch::pin();
         let meta = unsafe {
@@ -1135,7 +1141,7 @@ impl<
             unsafe { Shared::<ChunkPtr<K, V, A, ALLOC>>::from_usize(old_chunk_lock) };
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        Self::migrate_entries(old_chunk_ins, new_chunk_ins, &guard);
+        Self::migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, &guard);
         meta.new_chunk.store(Shared::null(), Release);
         let swap_chunk = meta.chunk.compare_exchange(
             old_chunk_lock,
@@ -1167,6 +1173,7 @@ impl<
     fn migrate_entries(
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
+        old_occupation: usize,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
         trace!(
@@ -1227,8 +1234,27 @@ impl<
             idx += 1;
         }
         // resize finished, make changes on the numbers
+        if effective_copy > old_occupation {
+            let delta = effective_copy - old_occupation;
+            new_chunk_ins.occupation.fetch_add(delta, Relaxed);
+            debug!(
+                "Occupation {}-{} offset {}",
+                effective_copy, old_occupation, delta
+            );
+        } else if effective_copy < old_occupation {
+            let delta = old_occupation - effective_copy;
+            new_chunk_ins.occupation.fetch_sub(delta, Relaxed);
+            debug!(
+                "Occupation {}-{} offset neg {}",
+                effective_copy, old_occupation, delta
+            );
+        } else {
+            debug!(
+                "Occupation {}-{} zero offset",
+                effective_copy, old_occupation
+            );
+        }
         trace!("Migrated {} entries to new chunk", effective_copy);
-        new_chunk_ins.occupation.fetch_add(effective_copy, Relaxed);
         return effective_copy;
     }
 
