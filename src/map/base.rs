@@ -1078,7 +1078,6 @@ impl<
             old_cap,
             old_occupation
         );
-        self.meta.epoch.fetch_add(1, AcqRel);
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
             (*new_chunk).occupation.store(old_occupation, Relaxed);
@@ -1088,6 +1087,7 @@ impl<
             .with_tag(0);
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
+        self.meta.epoch.fetch_add(1, AcqRel);
         let meta = self.meta.clone();
         let old_chunk_addr = old_chunk_ptr.into_usize();
         let new_chunk_addr = new_chunk_ptr.into_usize();
@@ -1142,7 +1142,6 @@ impl<
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         Self::migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, &guard);
-        meta.new_chunk.store(Shared::null(), Release);
         let swap_chunk = meta.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1157,6 +1156,7 @@ impl<
             );
         }
         meta.epoch.fetch_add(1, AcqRel);
+        meta.new_chunk.store(Shared::null(), Release);
         trace!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr,
