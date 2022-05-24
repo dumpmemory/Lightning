@@ -32,7 +32,8 @@ pub const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 pub const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
 pub const PLACEHOLDER_VAL: FVal = NUM_FIX_V + 1;
 
-pub const NUM_HOPS: usize = mem::size_of::<HopBits>() * 8;
+pub const HOP_BYTES: usize = mem::size_of::<HopBits>();
+pub const NUM_HOPS: usize = HOP_BYTES * 8;
 
 enum ModResult<V> {
     Replaced(FVal, Option<V>, usize), // (origin fval, val, index)
@@ -1544,12 +1545,40 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn get_hop_bits(&self, idx: usize) -> HopBits {
-        unimplemented!()
+        let addr = self.hop_base + HOP_BYTES * idx;
+        unsafe {
+            intrinsics::atomic_load_acq(addr as *mut HopBits)
+        }
     }
 
     #[inline(always)]
-    fn set_hop_bits(&self, idx: usize, bits: HopBits) {
-        unimplemented!()
+    fn set_hop_bit(&self, idx: usize, pos: usize) {
+        let ptr = (self.hop_base + HOP_BYTES * idx) as *mut HopBits;
+        let set_bit = 1 << pos;
+        loop {
+            unsafe {
+                let orig_bits = intrinsics::atomic_load_acq(ptr);
+                let target_bits = orig_bits | set_bit;
+                if intrinsics::atomic_cxchg_acqrel(ptr, orig_bits, target_bits).1 {
+                    return;
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn unset_hop_bit(&self, idx: usize, pos: usize) {
+        let ptr = (self.hop_base + HOP_BYTES * idx) as *mut HopBits;
+        let set_bit = !(1 << pos);
+        loop {
+            unsafe {
+                let orig_bits = intrinsics::atomic_load_acq(ptr);
+                let target_bits = orig_bits & set_bit;
+                if intrinsics::atomic_cxchg_acqrel(ptr, orig_bits, target_bits).1 {
+                    return;
+                }
+            }
+        }
     }
 }
 
