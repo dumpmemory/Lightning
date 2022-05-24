@@ -3,6 +3,7 @@ use std::{sync::Arc, thread};
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
+pub type HopBits = u32;
 
 pub const EMPTY_KEY: FKey = 0;
 
@@ -14,6 +15,7 @@ pub const LOCKED_VALUE: FVal = 0b001;
 pub const MIGRATING_VALUE: FVal = 0b011;
 
 pub const TOMBSTONE_VALUE: FVal = 0b100;
+pub const SWAPPING_VALUE: FVal = 0b101;
 
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
@@ -29,6 +31,8 @@ pub const FVAL_VER_POS: FVal = (FVAL_BITS as FVal) / 2;
 pub const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 pub const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
 pub const PLACEHOLDER_VAL: FVal = NUM_FIX_V + 1;
+
+pub const NUM_HOPS: usize = mem::size_of::<HopBits>() * 8;
 
 enum ModResult<V> {
     Replaced(FVal, Option<V>, usize), // (origin fval, val, index)
@@ -77,6 +81,7 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     occupation: AtomicUsize,
     empty_entries: AtomicUsize,
     total_size: usize,
+    hop_base: usize,
     pub attachment: A,
     shadow: PhantomData<(K, V, ALLOC)>,
 }
@@ -248,7 +253,7 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
-            trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
+            // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
                     backoff.spin();
@@ -1450,11 +1455,15 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let chunk_align = align_padding(chunk_size, 8);
         let chunk_size_aligned = chunk_size + chunk_align;
         let attachment_heap = A::heap_size_of(capacity);
-        let total_size = self_size_aligned + chunk_size_aligned + attachment_heap;
+        let hop_size = mem::size_of::<HopBits>() * capacity;
+        let hop_align = align_padding(hop_size, 8);
+        let hop_size_aligned = hop_size + hop_align;
+        let total_size = self_size_aligned + chunk_size_aligned + hop_size_aligned + attachment_heap;
         let ptr = alloc_mem::<ALLOC>(total_size) as *mut Self;
         let addr = ptr as usize;
         let data_base = addr + self_size_aligned;
-        let attachment_base = data_base + chunk_size_aligned;
+        let hop_base = data_base + chunk_size_aligned;
+        let attachment_base = hop_base + hop_size_aligned;
         unsafe {
             ptr::write(
                 ptr,
@@ -1465,6 +1474,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
                     total_size,
+                    hop_base,
                     attachment: A::new(attachment_base, attachment_meta),
                     shadow: PhantomData,
                 },
@@ -1520,6 +1530,16 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     #[inline(always)]
     fn cap_mask(&self) -> usize {
         self.capacity - 1
+    }
+
+    #[inline(always)]
+    fn get_hop_bits(&self, idx: usize) -> HopBits {
+        unimplemented!()
+    }
+
+    #[inline(always)]
+    fn set_hop_bits(&self, idx: usize, bits: HopBits) {
+        unimplemented!()
     }
 }
 
