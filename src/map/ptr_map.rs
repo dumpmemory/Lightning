@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::obj_alloc::{self, AllocGuard, Allocator, Aligned};
+use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
 use super::base::*;
 use super::*;
@@ -14,7 +14,7 @@ pub struct PtrHashMap<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    pub (crate) table: PtrTable<K, V, ALLOC, H>,
+    pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
     shadow: PhantomData<(K, V, H)>,
 }

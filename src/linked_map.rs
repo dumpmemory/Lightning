@@ -41,9 +41,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn get(&self, key: &K) -> Option<V> {
-        self.map
-            .get(key)
-            .map(|l| unsafe { l.deref().clone().1 })
+        self.map.get(key).map(|l| unsafe { l.deref().clone().1 })
     }
 
     pub fn get_to_front(&self, key: &K) -> Option<V> {

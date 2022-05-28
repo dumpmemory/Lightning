@@ -268,8 +268,8 @@ mod test {
     use crate::map::*;
     use alloc::sync::Arc;
     use rayon::prelude::*;
-    use test::Bencher;
     use std::{thread, time::Duration};
+    use test::Bencher;
     #[test]
     fn will_not_overflow() {
         let _ = env_logger::try_init();
@@ -627,11 +627,20 @@ mod test {
                 for round_count in 0..99 {
                     let following_round = map.get(&num);
                     if following_round == Some(num) {
-                        info!("Falling back for {}, i {}, j {}, at {}", num, i, j, round_count);
+                        info!(
+                            "Falling back for {}, i {}, j {}, at {}",
+                            num, i, j, round_count
+                        );
                         break;
                     }
                 }
-                error!("Cannot fall back for {}, i {}, j {}, copying {}", num, i, j, map.table.map_is_copying());
+                error!(
+                    "Cannot fall back for {}, i {}, j {}, copying {}",
+                    num,
+                    i,
+                    j,
+                    map.table.map_is_copying()
+                );
             }
         }
     }
