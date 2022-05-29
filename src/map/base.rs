@@ -853,7 +853,14 @@ impl<
                                 } else {
                                     Self::store_key(addr, fkey);
                                     if let Some(new_idx) = Self::adjust_hops(
-                                        chunk, fkey, fval, Some(key), home_idx, idx, count,
+                                        hop_adjustment,
+                                        chunk,
+                                        fkey,
+                                        fval,
+                                        Some(key),
+                                        home_idx,
+                                        idx,
+                                        count,
                                     ) {
                                         idx = new_idx;
                                     } else {
@@ -874,9 +881,16 @@ impl<
                         match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
                             (_, true) => {
                                 Self::store_key(addr, fkey);
-                                if let Some(new_idx) =
-                                    Self::adjust_hops(chunk, fkey, fval, None, home_idx, idx, count)
-                                {
+                                if let Some(new_idx) = Self::adjust_hops(
+                                    hop_adjustment,
+                                    chunk,
+                                    fkey,
+                                    fval,
+                                    None,
+                                    home_idx,
+                                    idx,
+                                    count,
+                                ) {
                                     idx = new_idx;
                                 } else {
                                     return ModResult::TableFull;
@@ -1059,6 +1073,7 @@ impl<
     }
 
     fn adjust_hops(
+        needs_adjust: bool,
         chunk: &Chunk<K, V, A, ALLOC>,
         fkey: usize,
         fval: usize,
@@ -1069,8 +1084,10 @@ impl<
     ) -> Option<usize> {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
-        if hops < NUM_HOPS {
-            chunk.set_hop_bit(home_idx, hops);
+        if !needs_adjust {
+            if hops < NUM_HOPS {
+                chunk.set_hop_bit(home_idx, hops);
+            }
             return Some(curr_idx);
         } else {
             'SWAPPING: loop {
