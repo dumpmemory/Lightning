@@ -835,7 +835,7 @@ impl<
             }
             if k == EMPTY_KEY {
                 // trace!("Inserting {}", fkey);
-                let hop_adjustment = !Self::FAT_VAL && count > NUM_HOPS;
+                let hop_adjustment = false; // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let cas_fval = if hop_adjustment { SWAPPING_VALUE } else { fval };
