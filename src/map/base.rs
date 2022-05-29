@@ -838,7 +838,12 @@ impl<
                 let hop_adjustment = false; // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
-                        let cas_fval = if hop_adjustment { SWAPPING_VALUE } else { fval };
+                        let (store_fkey, cas_fval) = if hop_adjustment {
+                            // Use empty key to block probing progression for hops
+                            (EMPTY_KEY, SWAPPING_VALUE) 
+                        } else {
+                            (fkey, fval)
+                        };
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, cas_fval);
                         match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
                             (_, true) => {
@@ -851,7 +856,7 @@ impl<
                                     attachment.set_value((*val).clone(), 0);
                                     Self::store_raw_value(addr, fval);
                                 } else {
-                                    Self::store_key(addr, fkey);
+                                    Self::store_key(addr, store_fkey);
                                     if let Some(new_idx) = Self::adjust_hops(
                                         hop_adjustment,
                                         chunk,
@@ -877,10 +882,14 @@ impl<
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
-                        let cas_fval = if hop_adjustment { SWAPPING_VALUE } else { fval };
+                        let (store_fkey, cas_fval) = if hop_adjustment { 
+                            (EMPTY_KEY, SWAPPING_VALUE) 
+                        } else {
+                            (fkey, fval)
+                        };
                         match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
                             (_, true) => {
-                                Self::store_key(addr, fkey);
+                                Self::store_key(addr, store_fkey);
                                 if let Some(new_idx) = Self::adjust_hops(
                                     hop_adjustment,
                                     chunk,
