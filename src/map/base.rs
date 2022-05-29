@@ -1510,6 +1510,10 @@ impl<
         old_address: usize,
         effective_copy: &mut usize,
     ) -> bool {
+        // Will not migrate swapping keys
+        if fkey == SWAPPED_KEY {
+            return true;
+        }
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be locked
         let mut curr_orig = fvalue.act_val::<V>();
@@ -1533,11 +1537,10 @@ impl<
             fkey
         };
         let cap = new_chunk_ins.capacity;
-        let mut idx = hash;
-        let mut count = 0;
         let cap_mask = new_chunk_ins.cap_mask();
+        let mut idx = hash & cap_mask;
+        let mut count = 0;
         while count < cap {
-            idx &= cap_mask;
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k == fkey {
@@ -1571,6 +1574,7 @@ impl<
                 }
             }
             idx += 1; // reprobe
+            idx &= cap_mask;
             count += 1;
         }
         if count >= cap {
