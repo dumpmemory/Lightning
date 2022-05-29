@@ -15,9 +15,9 @@ pub const SENTINEL_VALUE: FVal = 0b010;
 
 // Last bit set indicates locking
 pub const LOCKED_VALUE: FVal = 0b001;
+pub const SWAPPING_VALUE: FVal = 0b011;
 
 pub const TOMBSTONE_VALUE: FVal = 0b100;
-pub const SWAPPING_VALUE: FVal = 0b101;
 
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
@@ -637,11 +637,15 @@ impl<
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
                 if attachment.probe(key) {
-                    loop {
+                    'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
+                        if val_res.val == SWAPPING_VALUE {
+                            Self::wait_swapping(addr, backoff);
+                            break 'READ_VAL; // Continue probing, slot has been moved forward
+                        }
                         if val_res.is_locked() {
                             backoff.spin();
-                            continue;
+                            continue 'READ_VAL;
                         }
                         return Some((val_res, addr, attachment));
                     }
@@ -813,6 +817,9 @@ impl<
                             }
                         } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
+                        } else if raw == SWAPPING_VALUE {
+                            Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                            continue;
                         } else {
                             // Other tags (except tombstone and locks)
                             if cfg!(debug_assertions) {
@@ -876,6 +883,11 @@ impl<
                                 return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
+                            (SWAPPING_VALUE, false) => {
+                                // Reprobe
+                                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                                continue;
+                            }
                             (_, false) => {
                                 backoff.spin();
                                 continue;
@@ -908,6 +920,11 @@ impl<
                                 return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
+                            (SWAPPING_VALUE, false) => {
+                                // Reprobe
+                                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                                continue;
+                            }
                             (_, false) => {
                                 backoff.spin();
                                 continue;
@@ -927,6 +944,11 @@ impl<
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
+            }
+            if k == SWAPPED_KEY {
+                // Reprobe
+                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                continue;
             }
             {
                 let fval = Self::get_fast_value(addr);
@@ -954,6 +976,20 @@ impl<
                 ModResult::TableFull
             }
             _ => ModResult::NotFound,
+        }
+    }
+
+    #[inline(always)]
+    fn wait_swapping_reprobe(addr: usize, count: &mut usize, idx: &mut usize, home_idx: usize, backoff: &Backoff) {
+        Self::wait_swapping(addr, backoff);
+        *count = 0;
+        *idx = home_idx;
+    }
+
+    #[inline(always)]
+    fn wait_swapping(addr: usize, backoff: &Backoff) {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
+            backoff.spin();
         }
     }
 
@@ -1172,7 +1208,7 @@ impl<
                         // And the key object
                         curr_attachment.set_key(candidate_key);
                         // Then set the fkey, at this point, the entry is available to other thread
-                        Self::store_key(candidate_addr, EMPTY_KEY); // Set the candidate to empty first
+                        Self::store_key(candidate_addr, SWAPPED_KEY); // Set the candidate key
                         Self::store_key(curr_addr, candidate_fkey);
                         // Also update the hop bits
                         chunk.swap_hop_bit(i, j, curr_idx - i);
