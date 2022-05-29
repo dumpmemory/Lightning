@@ -8,6 +8,7 @@ pub type HopVer = u32;
 pub type HopTuple = (HopBits, HopVer);
 
 pub const EMPTY_KEY: FKey = 0;
+pub const SWAPPED_KEY: FKey = 1;
 
 pub const EMPTY_VALUE: FVal = 0b000;
 pub const SENTINEL_VALUE: FVal = 0b010;
@@ -1155,11 +1156,9 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        // Note: Use empty key to block other threads from probing beyond this slot
                         let candidate_fkey = Self::get_fast_key(candidate_addr);
-                        if !Self::cas_key(candidate_addr, candidate_fkey, EMPTY_KEY).1 {
-                            // The slot have been claimed by other adjustment, try next one
-                            j += 1;
+                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
+                            // The slot value have been changed, retry
                             continue;
                         }
                         // Starting to copy it co current idx
@@ -1173,6 +1172,7 @@ impl<
                         // And the key object
                         curr_attachment.set_key(candidate_key);
                         // Then set the fkey, at this point, the entry is available to other thread
+                        Self::store_key(candidate_addr, EMPTY_KEY); // Set the candidate to empty first
                         Self::store_key(curr_addr, candidate_fkey);
                         // Also update the hop bits
                         chunk.swap_hop_bit(i, j, curr_idx - i);
