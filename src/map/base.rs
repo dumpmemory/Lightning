@@ -1021,11 +1021,17 @@ impl<
         }
     }
     #[inline(always)]
-    fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> (usize, bool) {
+    fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> (FVal, bool) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value) }
     }
+
+    #[inline(always)]
+    fn cas_key(entry_addr: usize, original: FKey, value: FKey) -> (FKey, bool) {
+        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(entry_addr as *mut FKey, original, value) }
+    }
+
 
     #[inline(always)]
     fn store_value(entry_addr: usize, value: FVal) {
@@ -1107,6 +1113,10 @@ impl<
                     return None;
                 }
                 let starting = curr_idx - (NUM_HOPS - 1);
+                if starting + NUM_HOPS <= home_idx {
+                    // Out of lower bound and cannot finish migration
+                    return None;
+                }
                 // Find a swappable slot
                 'PROBING: for i in starting..curr_idx {
                     if i <= home_idx {
@@ -1119,6 +1129,10 @@ impl<
                         if candidate_idx >= curr_idx {
                             // Hop out of range, stop checking this slot
                             continue 'PROBING;
+                        }
+                        if candidate_idx <= home_idx {
+                            j += 1;
+                            continue;
                         }
                         let curr_checking_hop = checking_hop >> j;
                         if curr_checking_hop == 0 {
@@ -1141,8 +1155,11 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
-                            // The slot have changed, try again
+                        // Note: Use empty key to block other threads from probing beyond this slot
+                        let candidate_fkey = Self::get_fast_key(candidate_addr);
+                        if !Self::cas_key(candidate_addr, candidate_fkey, EMPTY_KEY).1 {
+                            // The slot have been claimed by other adjustment, try next one
+                            j += 1;
                             continue;
                         }
                         // Starting to copy it co current idx
@@ -1151,12 +1168,12 @@ impl<
                         let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
                         let candidate_key = candidate_attachment.get_key();
                         let curr_attachment = chunk.attachment.prefetch(curr_idx);
-                        curr_attachment.set_key(candidate_key);
-                        // Then set the fkey
-                        let candidate_fkey = Self::get_fast_key(candidate_addr);
-                        Self::store_key(curr_addr, candidate_fkey);
-                        // Finally, set the fvalue. It is SWAPPNING right now which should block other threads trying to checking on it
+                        // First, set the fvalue
                         Self::store_value(curr_addr, candidate_fval.val);
+                        // And the key object
+                        curr_attachment.set_key(candidate_key);
+                        // Then set the fkey, at this point, the entry is available to other thread
+                        Self::store_key(curr_addr, candidate_fkey);
                         // Also update the hop bits
                         chunk.swap_hop_bit(i, j, curr_idx - i);
 
@@ -1165,9 +1182,9 @@ impl<
                         let hop_distance = candidate_idx - home_idx;
                         if hop_distance < NUM_HOPS {
                             // In range, fill the candidate slot with our key and values
+                            Self::store_value(candidate_addr, fval);
                             key.map(|key| candidate_attachment.set_key(key.clone()));
                             Self::store_key(candidate_addr, fkey);
-                            Self::store_value(candidate_addr, fval);
                             chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
                             return Some(candidate_idx);
