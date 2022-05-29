@@ -1083,6 +1083,9 @@ impl<
                 let starting = curr_idx - (NUM_HOPS - 1);
                 // Find a swappable slot
                 'PROBING: for i in starting..curr_idx {
+                    if i <= home_idx {
+                        continue;
+                    }
                     let checking_hop = chunk.get_hop_bits(i);
                     let mut j = 0;
                     while j < NUM_HOPS {
