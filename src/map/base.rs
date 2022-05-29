@@ -818,7 +818,9 @@ impl<
                         } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
-                            Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                            Self::wait_swapping_reprobe(
+                                addr, &mut count, &mut idx, home_idx, &backoff,
+                            );
                             continue;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -843,12 +845,12 @@ impl<
             }
             if k == EMPTY_KEY {
                 // trace!("Inserting {}", fkey);
-                let hop_adjustment = false; // !Self::FAT_VAL && count > NUM_HOPS;
+                let hop_adjustment = Self::need_hop_adjustment(count); // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
                             // Use empty key to block probing progression for hops
-                            (EMPTY_KEY, SWAPPING_VALUE) 
+                            (EMPTY_KEY, SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -885,7 +887,9 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                                Self::wait_swapping_reprobe(
+                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                );
                                 continue;
                             }
                             (_, false) => {
@@ -895,8 +899,8 @@ impl<
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
-                        let (store_fkey, cas_fval) = if hop_adjustment { 
-                            (EMPTY_KEY, SWAPPING_VALUE) 
+                        let (store_fkey, cas_fval) = if hop_adjustment {
+                            (EMPTY_KEY, SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -922,7 +926,9 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                                Self::wait_swapping_reprobe(
+                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                );
                                 continue;
                             }
                             (_, false) => {
@@ -980,7 +986,18 @@ impl<
     }
 
     #[inline(always)]
-    fn wait_swapping_reprobe(addr: usize, count: &mut usize, idx: &mut usize, home_idx: usize, backoff: &Backoff) {
+    fn need_hop_adjustment(count: usize) -> bool {
+        false // !Self::FAT_VAL && count > NUM_HOPS
+    }
+
+    #[inline(always)]
+    fn wait_swapping_reprobe(
+        addr: usize,
+        count: &mut usize,
+        idx: &mut usize,
+        home_idx: usize,
+        backoff: &Backoff,
+    ) {
         Self::wait_swapping(addr, backoff);
         *count = 0;
         *idx = home_idx;
@@ -1066,9 +1083,10 @@ impl<
 
     #[inline(always)]
     fn cas_key(entry_addr: usize, original: FKey, value: FKey) -> (FKey, bool) {
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(entry_addr as *mut FKey, original, value) }
+        unsafe {
+            intrinsics::atomic_cxchg_acqrel_failrelaxed(entry_addr as *mut FKey, original, value)
+        }
     }
-
 
     #[inline(always)]
     fn store_value(entry_addr: usize, value: FVal) {
@@ -1538,7 +1556,8 @@ impl<
         };
         let cap = new_chunk_ins.capacity;
         let cap_mask = new_chunk_ins.cap_mask();
-        let mut idx = hash & cap_mask;
+        let home_idx = hash & cap_mask;
+        let mut idx = home_idx;
         let mut count = 0;
         while count < cap {
             let addr = new_chunk_ins.entry_addr(idx);
@@ -1556,15 +1575,32 @@ impl<
                     break;
                 }
             } else if k == EMPTY_KEY {
-                if Self::cas_value(addr, EMPTY_VALUE, orig).1 {
+                let hop_adjustment = Self::need_hop_adjustment(count);
+                let (store_fkey, cas_fval) = if hop_adjustment {
+                    // Use empty key to block probing progression for hops
+                    (EMPTY_KEY, SWAPPING_VALUE)
+                } else {
+                    (fkey, orig)
+                };
+                if Self::cas_value(addr, EMPTY_VALUE, cas_fval).1 {
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
                     let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
                     let key = old_attachment.get_key();
                     let value = old_attachment.get_value();
-                    new_attachment.set_key(key);
+                    new_attachment.set_key(key.clone());
                     new_attachment.set_value(value, 0);
                     fence(Acquire);
-                    Self::store_key(addr, fkey);
+                    Self::store_key(addr, store_fkey);
+                    Self::adjust_hops(
+                        hop_adjustment,
+                        new_chunk_ins,
+                        fkey,
+                        orig,
+                        Some(&key),
+                        home_idx,
+                        idx,
+                        count,
+                    );
                     break;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
@@ -1572,6 +1608,10 @@ impl<
                     warn!("Migrate {} have conflict", fkey);
                     continue;
                 }
+            } else if k == SWAPPED_KEY {
+                let backoff = crossbeam_utils::Backoff::new();
+                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                continue;
             }
             idx += 1; // reprobe
             idx &= cap_mask;
