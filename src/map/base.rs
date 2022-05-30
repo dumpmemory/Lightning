@@ -1179,13 +1179,9 @@ impl<
                     while j < NUM_HOPS {
                         let candidate_idx = (idx + j) & cap_mask;
                         // Range checking
-                        if home_idx < dest_idx {
-                            // No wrap
-                            if candidate_idx < home_idx {
-                                // Out of lower bound
-                                j += 1;
-                                continue;
-                            }
+                        if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, chunk.capacity) {
+                            j += 1;
+                            continue;
                         }
                         let curr_checking_hop = checking_hop >> j;
                         if curr_checking_hop == 0 {
@@ -1254,6 +1250,26 @@ impl<
                     // Cannot find any slot to swap
                     return None;
                 }
+            }
+        }
+    }
+
+    pub fn out_of_hop_range(home_idx: usize, dest_idx: usize, candidate_idx: usize, capacity: usize) -> bool {
+        if home_idx < dest_idx {
+            // No wrap
+            if candidate_idx >= home_idx && candidate_idx < dest_idx {
+                return false
+            } else {
+                return true;
+            }
+        } else {
+            // Wrapped
+            if candidate_idx >= home_idx && candidate_idx < capacity {
+                return false
+            } else if candidate_idx < dest_idx {
+                return false;
+            } else {
+                return true;
             }
         }
     }
