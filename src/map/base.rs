@@ -9,6 +9,7 @@ pub type HopTuple = (HopBits, HopVer);
 
 pub const EMPTY_KEY: FKey = 0;
 pub const SWAPPED_KEY: FKey = 1;
+pub const DISABLED_KEY: FKey = 2;
 
 pub const EMPTY_VALUE: FVal = 0b000;
 pub const SENTINEL_VALUE: FVal = 0b010;
@@ -1161,25 +1162,35 @@ impl<
             return Some(dest_idx);
         } else {
             let cap_mask = chunk.cap_mask();
+            let cap = chunk.capacity;
+            let mut last_pinned_key = None;
             'SWAPPING: loop {
                 // Need to adjust hops
-                let scaled_curr_idx = dest_idx | chunk.capacity;
+                let scaled_curr_idx = dest_idx | cap;
                 let hop_bits = chunk.get_hop_bits(home_idx);
                 if hop_bits == ALL_HOPS_TAKEN {
                     // No slots in the neighbour is available
+                    if let Some(pinned_addr) = last_pinned_key {
+                        Self::store_key(pinned_addr, DISABLED_KEY);
+                    }
                     return None;
                 }
                 let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
                 let curr_idx = scaled_curr_idx & cap_mask;
+                let (probe_start, probe_end) = if starting < curr_idx {
+                    (starting, curr_idx)
+                } else {
+                    (starting, cap + curr_idx)
+                };
                 // Find a swappable slot
-                'PROBING: for i in starting..curr_idx {
+                'PROBING: for i in probe_start..probe_end {
                     let idx = i & cap_mask;
                     let checking_hop = chunk.get_hop_bits(idx);
                     let mut j = 0;
                     while j < NUM_HOPS {
                         let candidate_idx = (idx + j) & cap_mask;
                         // Range checking
-                        if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, chunk.capacity) {
+                        if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, cap) {
                             j += 1;
                             continue;
                         }
@@ -1196,6 +1207,9 @@ impl<
                         let candidate_addr = chunk.entry_addr(candidate_idx);
                         let candidate_fval = Self::get_fast_value(candidate_addr);
                         if candidate_fval.val == SENTINEL_VALUE {
+                            if let Some(pinned_addr) = last_pinned_key {
+                                Self::store_key(pinned_addr, DISABLED_KEY);
+                            }
                             return None;
                         }
                         if candidate_fval.val < NUM_FIX_V {
@@ -1222,11 +1236,12 @@ impl<
                         // Then set the fkey, at this point, the entry is available to other thread
                         Self::store_key(candidate_addr, SWAPPED_KEY); // Set the candidate key
                         Self::store_key(curr_addr, candidate_fkey);
+                        last_pinned_key = Some(candidate_addr);
                         // Also update the hop bits
                         let hop_distance = if curr_idx > idx {
                             curr_idx - idx
                         } else {
-                            idx - curr_idx
+                            curr_idx + (cap - idx)
                         };
                         chunk.swap_hop_bit(idx, j, hop_distance);
 
@@ -1242,12 +1257,15 @@ impl<
                             chunk.set_hop_bit(home_idx, hop_distance);
                             return Some(candidate_idx);
                         } else {
-                            // Not in range, need to swap it closer
+                            // Not in range, need to swap it closure
                             dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
                     }
                     // Cannot find any slot to swap
+                    if let Some(pinned_addr) = last_pinned_key {
+                        Self::store_key(pinned_addr, DISABLED_KEY);
+                    }
                     return None;
                 }
             }
@@ -1547,8 +1565,8 @@ impl<
         old_address: usize,
         effective_copy: &mut usize,
     ) -> bool {
-        // Will not migrate swapping keys
-        if fkey == SWAPPED_KEY {
+        // Will not migrate meta keys
+        if fkey < NUM_FIX_K {
             return true;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
