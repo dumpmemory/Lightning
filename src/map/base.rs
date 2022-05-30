@@ -3,8 +3,8 @@ use std::{sync::Arc, thread};
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
-pub type HopBits = u32;
-pub type HopVer = u32;
+pub type HopBits = u16;
+pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
 pub const EMPTY_KEY: FKey = 0;
@@ -845,7 +845,7 @@ impl<
             }
             if k == EMPTY_KEY {
                 // trace!("Inserting {}", fkey);
-                let hop_adjustment = Self::need_hop_adjustment(count); // !Self::FAT_VAL && count > NUM_HOPS;
+                let hop_adjustment = Self::need_hop_adjustment(chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
@@ -986,8 +986,8 @@ impl<
     }
 
     #[inline(always)]
-    fn need_hop_adjustment(count: usize) -> bool {
-        false // !Self::FAT_VAL && count > NUM_HOPS
+    fn need_hop_adjustment(chunk: &Chunk<K, V, A, ALLOC>, count: usize) -> bool {
+        !Self::FAT_VAL && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1149,7 +1149,7 @@ impl<
         fval: usize,
         key: Option<&K>,
         home_idx: usize,
-        mut curr_idx: usize,
+        mut dest_idx: usize,
         hops: usize,
     ) -> Option<usize> {
         // This algorithm only swap the current indexed slot with the
@@ -1158,36 +1158,34 @@ impl<
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
             }
-            return Some(curr_idx);
+            return Some(dest_idx);
         } else {
+            let cap_mask = chunk.cap_mask();
             'SWAPPING: loop {
                 // Need to adjust hops
+                let scaled_curr_idx = dest_idx | chunk.capacity;
                 let hop_bits = chunk.get_hop_bits(home_idx);
                 if hop_bits == ALL_HOPS_TAKEN {
                     // No slots in the neighbour is available
                     return None;
                 }
-                let starting = curr_idx - (NUM_HOPS - 1);
-                if starting + NUM_HOPS <= home_idx {
-                    // Out of lower bound and cannot finish migration
-                    return None;
-                }
+                let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
+                let curr_idx = scaled_curr_idx & cap_mask;
                 // Find a swappable slot
                 'PROBING: for i in starting..curr_idx {
-                    if i <= home_idx {
-                        continue;
-                    }
-                    let checking_hop = chunk.get_hop_bits(i);
+                    let idx = i & cap_mask;
+                    let checking_hop = chunk.get_hop_bits(idx);
                     let mut j = 0;
                     while j < NUM_HOPS {
-                        let candidate_idx = j + i;
-                        if candidate_idx >= curr_idx {
-                            // Hop out of range, stop checking this slot
-                            continue 'PROBING;
-                        }
-                        if candidate_idx <= home_idx {
-                            j += 1;
-                            continue;
+                        let candidate_idx = (idx + j) & cap_mask;
+                        // Range checking
+                        if home_idx < dest_idx {
+                            // No wrap
+                            if candidate_idx < home_idx {
+                                // Out of lower bound
+                                j += 1;
+                                continue;
+                            }
                         }
                         let curr_checking_hop = checking_hop >> j;
                         if curr_checking_hop == 0 {
@@ -1229,7 +1227,12 @@ impl<
                         Self::store_key(candidate_addr, SWAPPED_KEY); // Set the candidate key
                         Self::store_key(curr_addr, candidate_fkey);
                         // Also update the hop bits
-                        chunk.swap_hop_bit(i, j, curr_idx - i);
+                        let hop_distance = if curr_idx > idx {
+                            curr_idx - idx
+                        } else {
+                            idx - curr_idx
+                        };
+                        chunk.swap_hop_bit(idx, j, hop_distance);
 
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
@@ -1239,12 +1242,12 @@ impl<
                             Self::store_value(candidate_addr, fval);
                             key.map(|key| candidate_attachment.set_key(key.clone()));
                             Self::store_key(candidate_addr, fkey);
-                            chunk.incr_hop_ver(home_idx);
+                            // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
                             return Some(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
-                            curr_idx = candidate_idx;
+                            dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
                     }
@@ -1575,7 +1578,7 @@ impl<
                     break;
                 }
             } else if k == EMPTY_KEY {
-                let hop_adjustment = Self::need_hop_adjustment(count);
+                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
                     (EMPTY_KEY, SWAPPING_VALUE)
@@ -1838,19 +1841,19 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         }
     }
 
-    #[inline(always)]
-    fn incr_hop_ver(&self, idx: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx + HOP_BYTES) as *mut HopBits;
-        unsafe {
-            intrinsics::atomic_xadd_acqrel(ptr, 1);
-        }
-    }
+    // #[inline(always)]
+    // fn incr_hop_ver(&self, idx: usize) {
+    //     let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx + HOP_BYTES) as *mut HopBits;
+    //     unsafe {
+    //         intrinsics::atomic_xadd_acqrel(ptr, 1);
+    //     }
+    // }
 
-    #[inline(always)]
-    fn get_hop_ver(&self, idx: usize) -> u32 {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx + HOP_BYTES) as *mut HopBits;
-        unsafe { intrinsics::atomic_load_acq(ptr) }
-    }
+    // #[inline(always)]
+    // fn get_hop_ver(&self, idx: usize) -> u32 {
+    //     let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx + HOP_BYTES) as *mut HopBits;
+    //     unsafe { intrinsics::atomic_load_acq(ptr) }
+    // }
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
