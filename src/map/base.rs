@@ -1582,7 +1582,7 @@ impl<
         let mut curr_orig = fvalue.act_val::<V>();
         let primed_orig = fvalue.prime();
         let orig = curr_orig;
-        match Self::cas_value_rt_new(old_address, orig, primed_orig.val) {
+        match Self::cas_value_rt_new(old_address, fvalue.val, primed_orig.val) {
             Some(n) => {
                 // here we obtained the ownership of this fval
                 curr_orig = n;
