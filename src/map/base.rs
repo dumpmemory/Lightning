@@ -846,7 +846,7 @@ impl<
             }
             if k == EMPTY_KEY {
                 // trace!("Inserting {}", fkey);
-                let hop_adjustment = Self::need_hop_adjustment(chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
+                let hop_adjustment = Self::need_hop_adjustment(chunk, new_chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
@@ -987,8 +987,12 @@ impl<
     }
 
     #[inline(always)]
-    fn need_hop_adjustment(chunk: &Chunk<K, V, A, ALLOC>, count: usize) -> bool {
-        !Self::FAT_VAL && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+    fn need_hop_adjustment(
+        chunk: &Chunk<K, V, A, ALLOC>,
+        new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
+        count: usize,
+    ) -> bool {
+        !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1247,7 +1251,6 @@ impl<
 
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
-                        let hop_distance = candidate_idx - home_idx;
                         if hop_distance < NUM_HOPS {
                             // In range, fill the candidate slot with our key and values
                             Self::store_value(candidate_addr, fval);
@@ -1272,18 +1275,23 @@ impl<
         }
     }
 
-    pub fn out_of_hop_range(home_idx: usize, dest_idx: usize, candidate_idx: usize, capacity: usize) -> bool {
+    pub fn out_of_hop_range(
+        home_idx: usize,
+        dest_idx: usize,
+        candidate_idx: usize,
+        capacity: usize,
+    ) -> bool {
         if home_idx < dest_idx {
             // No wrap
             if candidate_idx >= home_idx && candidate_idx < dest_idx {
-                return false
+                return false;
             } else {
                 return true;
             }
         } else {
             // Wrapped
             if candidate_idx >= home_idx && candidate_idx < capacity {
-                return false
+                return false;
             } else if candidate_idx < dest_idx {
                 return false;
             } else {
@@ -1612,7 +1620,7 @@ impl<
                     break;
                 }
             } else if k == EMPTY_KEY {
-                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, count);
+                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
                     (EMPTY_KEY, SWAPPING_VALUE)
