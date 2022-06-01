@@ -880,6 +880,7 @@ impl<
                                     ) {
                                         idx = new_idx;
                                     } else {
+                                        Self::store_value(addr, fval); // Anything but swapping
                                         return ModResult::TableFull;
                                     }
                                 }
@@ -920,6 +921,7 @@ impl<
                                 ) {
                                     idx = new_idx;
                                 } else {
+                                    Self::store_value(addr, fval); // Anything but swapping
                                     return ModResult::TableFull;
                                 }
                                 return ModResult::Done(0, None, idx);
@@ -1637,7 +1639,7 @@ impl<
                     new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, store_fkey);
-                    Self::adjust_hops(
+                    if Self::adjust_hops(
                         hop_adjustment,
                         new_chunk_ins,
                         fkey,
@@ -1646,7 +1648,9 @@ impl<
                         home_idx,
                         idx,
                         count,
-                    );
+                    ).is_none() {
+                        Self::store_value(addr, orig);
+                    }
                     break;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
