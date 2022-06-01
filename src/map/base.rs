@@ -1186,6 +1186,7 @@ impl<
                 } else {
                     (starting, cap + curr_idx)
                 };
+                debug_assert!(probe_start < probe_end);
                 // Find a swappable slot
                 'PROBING: for i in probe_start..probe_end {
                     let idx = i & cap_mask;
@@ -1265,12 +1266,12 @@ impl<
                             continue 'SWAPPING;
                         }
                     }
-                    // Cannot find any slot to swap
-                    if let Some(pinned_addr) = last_pinned_key {
-                        Self::store_key(pinned_addr, DISABLED_KEY);
-                    }
-                    return None;
+                    break;
                 }
+                if let Some(pinned_addr) = last_pinned_key {
+                    Self::store_key(pinned_addr, DISABLED_KEY);
+                }
+                return None;
             }
         }
     }

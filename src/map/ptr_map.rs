@@ -854,6 +854,15 @@ mod ptr_map {
         });
     }
 
+    #[test]
+    fn parallel_overflow() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(FatHashMap::with_capacity(32));
+        for tid in 0..8 {
+            
+        }
+    }
+
     const VAL_SIZE: usize = 2048;
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];
