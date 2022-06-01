@@ -165,7 +165,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if let Some(val) = self.deref_val(fv) {
+                if let Some(val) = self.deref_val(fv & WORD_MUTEX_DATA_BIT_MASK) {
                     return Some(val);
                 }
                 let retry_val = self.retry_get(&mut fv, addr, &backoff);
@@ -911,9 +911,10 @@ mod ptr_map {
                         );
                         let val = {
                             let mut mutex = map.lock(&key).expect(&format!(
-                                "Locking key {}, copying {}",
+                                "Locking key {}, epoch {}, copying {}",
                                 key,
-                                map.table.now_epoch()
+                                map.table.now_epoch(),
+                                map.table.map_is_copying()
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;

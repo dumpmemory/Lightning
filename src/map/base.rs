@@ -309,16 +309,11 @@ impl<
                     continue;
                 }
                 ModResult::TableFull => {
-                    trace!(
-                        "Insertion is too fast for {}, copying {}, cap {}, count {}, old {:?}, new {:?}.",
-                        fkey,
-                        new_chunk.is_some(),
-                        modify_chunk.capacity,
-                        modify_chunk.occupation.load(Relaxed),
-                        chunk_ptr,
-                        new_chunk_ptr
-                    );
-                    backoff.spin();
+                    if new_chunk.is_none() {
+                        self.do_migration(chunk_ptr, &guard);
+                    } else {
+                        backoff.spin();
+                    }
                     continue;
                 }
                 ModResult::Sentinel => {
@@ -710,6 +705,7 @@ impl<
                                         if raw != TOMBSTONE_VALUE {
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         } else {
+                                            chunk.empty_entries.fetch_sub(1, Relaxed);
                                             return ModResult::Done(act_val, None, idx);
                                         }
                                     } else {
@@ -880,7 +876,7 @@ impl<
                                     ) {
                                         idx = new_idx;
                                     } else {
-                                        Self::store_value(addr, fval); // Anything but swapping
+                                        Self::store_value(addr, EMPTY_VALUE);
                                         return ModResult::TableFull;
                                     }
                                 }
@@ -921,7 +917,7 @@ impl<
                                 ) {
                                     idx = new_idx;
                                 } else {
-                                    Self::store_value(addr, fval); // Anything but swapping
+                                    Self::store_value(addr, EMPTY_VALUE);
                                     return ModResult::TableFull;
                                 }
                                 return ModResult::Done(0, None, idx);
