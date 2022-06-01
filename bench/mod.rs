@@ -438,7 +438,7 @@ fn run_and_measure_mix<T: Collection>(
         .into_iter()
         .map(|n| {
             #[cfg(all(not(unsafe_bench), target_os = "linux"))]
-            // let (mem_sender, mem_recv) = channel();
+            let (mem_sender, mem_recv) = channel();
             let mut workload = Workload::new(n, mix);
             workload
                 .operations(fill)
@@ -448,45 +448,45 @@ fn run_and_measure_mix<T: Collection>(
             let (server, server_name) : (IpcOneShotServer<Measurement>, String) = IpcOneShotServer::new().unwrap();
             #[cfg(all(not(unsafe_bench), target_os = "linux"))]
             let self_mem = stat_self().unwrap().rss;
-            // let child_pid = unsafe {
-            //     fork(|| {
-                    // let tx = IpcSender::connect(server_name).unwrap();
+            let child_pid = unsafe {
+                fork(|| {
+                    let tx = IpcSender::connect(server_name).unwrap();
                     let prefilled = workload.prefill::<T>(&data);
                     let m = workload.run_against(data, prefilled);
-            //         tx.send(m).unwrap();
-            //     })
-            // };
+                    tx.send(m).unwrap();
+                })
+            };
             let mut proc_stat: i32 = 0;
-            // #[cfg(all(not(unsafe_bench), target_os = "linux"))]
-            // {
-            //     thread::spawn(move || {
-            //         let mut max = 0;
-            //         while let Ok(memstat) = stat(child_pid) {
-            //             let size = memstat.rss;
-            //             if size > max {
-            //                 max = size;
-            //             }
-            //             thread::sleep(Duration::from_millis(200));
-            //         }
-            //         mem_sender.send(max).unwrap();
-            //     });
-            // }
-            // let proc_res = unsafe {
-            //     libc::wait(&mut proc_stat as *mut c_int)
-            // };
+            #[cfg(all(not(unsafe_bench), target_os = "linux"))]
+            {
+                thread::spawn(move || {
+                    let mut max = 0;
+                    while let Ok(memstat) = stat(child_pid) {
+                        let size = memstat.rss;
+                        if size > max {
+                            max = size;
+                        }
+                        thread::sleep(Duration::from_millis(200));
+                    }
+                    mem_sender.send(max).unwrap();
+                });
+            }
+            let proc_res = unsafe {
+                libc::wait(&mut proc_stat as *mut c_int)
+            };
             let local: DateTime<Local> = Local::now();
-            // assert_eq!(proc_res, child_pid);
+            assert_eq!(proc_res, child_pid);
             let mut calibrated_size = 0;
             let mut size = "".to_string();
-            // #[cfg(all(not(unsafe_bench), target_os = "linux"))]
-            // {
-            //     let max_mem = mem_recv.recv().unwrap();
-            //     calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
-            //     size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
-            // }
+            #[cfg(all(not(unsafe_bench), target_os = "linux"))]
+            {
+                let max_mem = mem_recv.recv().unwrap();
+                calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
+                size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
+            }
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
             if proc_stat == 0 {
-                // let (_, m) = server.accept().unwrap();
+                let (_, m) = server.accept().unwrap();
                 println!(
                     "[{}] Completed with threads {}, range {:.4}, ops {}, spent {:?}, throughput {}, latency {:?}, mem {}",
                     time, n, m.key_range, m.total_ops, m.spent, m.throughput, m.latency, size
