@@ -8,7 +8,6 @@ pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
 pub const EMPTY_KEY: FKey = 0;
-pub const SWAPPED_KEY: FKey = 1;
 pub const DISABLED_KEY: FKey = 2;
 
 pub const EMPTY_VALUE: FVal = 0b000;
@@ -950,11 +949,6 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
-            if k == SWAPPED_KEY {
-                // Reprobe
-                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
-                continue;
-            }
             {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
@@ -1232,12 +1226,11 @@ impl<
                         let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
                         let candidate_key = candidate_attachment.get_key();
                         let curr_attachment = chunk.attachment.prefetch(curr_idx);
-                        // First, set the fvalue
-                        Self::store_value(curr_addr, candidate_fval.val);
                         // And the key object
                         curr_attachment.set_key(candidate_key);
+                        // First, store the current fvalue
+                        Self::store_value(curr_addr, candidate_fval.val);
                         // Then set the fkey, at this point, the entry is available to other thread
-                        Self::store_key(candidate_addr, SWAPPED_KEY); // Set the candidate key
                         Self::store_key(curr_addr, candidate_fkey);
                         last_pinned_key = Some(candidate_addr);
                         // Also update the hop bits
@@ -1252,8 +1245,8 @@ impl<
                         // First check if it is already in range of home neighbourhood
                         if hop_distance < NUM_HOPS {
                             // In range, fill the candidate slot with our key and values
-                            Self::store_value(candidate_addr, fval);
                             key.map(|key| candidate_attachment.set_key(key.clone()));
+                            Self::store_value(candidate_addr, fval);
                             Self::store_key(candidate_addr, fkey);
                             // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
@@ -1472,7 +1465,7 @@ impl<
                 Self::get_fast_key(old_address)
             );
             match fvalue.val {
-                EMPTY_VALUE | TOMBSTONE_VALUE | SWAPPING_VALUE => {
+                EMPTY_VALUE | TOMBSTONE_VALUE => {
                     // Probably does not need this anymore
                     // Need to make sure that during migration, empty value always leads to new chunk
                     if !Self::cas_sentinel(old_address, fvalue.val) {
@@ -1481,7 +1474,7 @@ impl<
                         continue;
                     }
                 }
-                LOCKED_VALUE => {
+                LOCKED_VALUE | SWAPPING_VALUE => {
                     backoff.spin();
                     continue;
                 }
@@ -1654,10 +1647,6 @@ impl<
                     warn!("Migrate {} have conflict", fkey);
                     continue;
                 }
-            } else if k == SWAPPED_KEY {
-                let backoff = crossbeam_utils::Backoff::new();
-                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
-                continue;
             }
             idx += 1; // reprobe
             idx &= cap_mask;
