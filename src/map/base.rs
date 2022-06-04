@@ -984,7 +984,7 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+        false // !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1247,10 +1247,16 @@ impl<
                         let curr_attachment = chunk.attachment.prefetch(curr_idx);
                         // And the key object
                         curr_attachment.set_key(candidate_key);
-                        // First, store the current fvalue
-                        Self::store_value(curr_addr, candidate_fval.val);
                         // Then set the fkey, at this point, the entry is available to other thread
                         Self::store_key(curr_addr, candidate_fkey);
+
+                        // Enable probing on the candidate with inserting key
+                        key.map(|key| candidate_attachment.set_key(key.clone()));
+                        Self::store_key(candidate_addr, fkey);
+
+                        // Discard swapping value on current address by replace it with new value
+                        Self::store_value(curr_addr, candidate_fval.val);
+                        
                         last_pinned_key = Some(candidate_addr);
                         // Also update the hop bits
                         let hop_distance = if curr_idx > idx {
@@ -1264,15 +1270,12 @@ impl<
                         // First check if it is already in range of home neighbourhood
                         if hop_distance < NUM_HOPS {
                             // In range, fill the candidate slot with our key and values
-                            key.map(|key| candidate_attachment.set_key(key.clone()));
                             Self::store_value(candidate_addr, fval);
-                            Self::store_key(candidate_addr, fkey);
                             // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
                             return Some(candidate_idx);
                         } else {
                             // Not in range, need to swap it closure
-                            Self::store_key(candidate_addr, DISABLED_KEY);
                             dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
