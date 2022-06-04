@@ -635,7 +635,7 @@ impl<
                     'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
                         if val_res.val == SWAPPING_VALUE {
-                            Self::wait_swapping(addr, backoff);
+                            Self::wait_swapping(addr, fkey, backoff);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         }
                         if val_res.is_locked() {
@@ -815,7 +815,7 @@ impl<
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
                             Self::wait_swapping_reprobe(
-                                addr, &mut count, &mut idx, home_idx, &backoff,
+                                addr, fkey, &mut count, &mut idx, home_idx, &backoff,
                             );
                             continue;
                         } else {
@@ -885,7 +885,7 @@ impl<
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_swapping_reprobe(
-                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                    addr, EMPTY_KEY, &mut count, &mut idx, home_idx, &backoff,
                                 );
                                 continue;
                             }
@@ -925,7 +925,7 @@ impl<
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_swapping_reprobe(
-                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                    addr, EMPTY_KEY, &mut count, &mut idx, home_idx, &backoff,
                                 );
                                 continue;
                             }
@@ -990,19 +990,22 @@ impl<
     #[inline(always)]
     fn wait_swapping_reprobe(
         addr: usize,
+        expect_key: FKey,
         count: &mut usize,
         idx: &mut usize,
         home_idx: usize,
         backoff: &Backoff,
     ) {
-        Self::wait_swapping(addr, backoff);
+        Self::wait_swapping(addr, expect_key, backoff);
         *count = 0;
         *idx = home_idx;
     }
 
     #[inline(always)]
-    fn wait_swapping(addr: usize, backoff: &Backoff) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
+    fn wait_swapping(addr: usize, expect_key: FKey, backoff: &Backoff) {
+        while (expect_key != EMPTY_VALUE && Self::get_fast_key(addr) == expect_key)
+            && Self::get_fast_value(addr).val == SWAPPING_VALUE
+        {
             backoff.spin();
         }
     }
@@ -1253,6 +1256,7 @@ impl<
                             return Some(candidate_idx);
                         } else {
                             // Not in range, need to swap it closure
+                            Self::store_key(candidate_addr, DISABLED_KEY);
                             dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
@@ -1637,7 +1641,9 @@ impl<
                         home_idx,
                         idx,
                         count,
-                    ).is_none() {
+                    )
+                    .is_none()
+                    {
                         Self::store_value(addr, orig);
                     }
                     break;

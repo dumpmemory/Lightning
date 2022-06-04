@@ -858,9 +858,7 @@ mod ptr_map {
     fn parallel_overflow() {
         let _ = env_logger::try_init();
         let map = Arc::new(FatHashMap::with_capacity(32));
-        for tid in 0..8 {
-            
-        }
+        for tid in 0..8 {}
     }
 
     const VAL_SIZE: usize = 2048;
