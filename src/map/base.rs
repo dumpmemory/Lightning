@@ -3,7 +3,7 @@ use std::{sync::Arc, thread};
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
-pub type HopBits = u16;
+pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
