@@ -884,8 +884,8 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe(
-                                    addr, EMPTY_KEY, &mut count, &mut idx, home_idx, &backoff,
+                                Self::wait_swapping_reprobe_no_key(
+                                    addr, &mut count, &mut idx, home_idx, &backoff,
                                 );
                                 continue;
                             }
@@ -924,8 +924,8 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe(
-                                    addr, EMPTY_KEY, &mut count, &mut idx, home_idx, &backoff,
+                                Self::wait_swapping_reprobe_no_key(
+                                    addr, &mut count, &mut idx, home_idx, &backoff,
                                 );
                                 continue;
                             }
@@ -1002,8 +1002,24 @@ impl<
     }
 
     #[inline(always)]
+    fn wait_swapping_reprobe_no_key(
+        addr: usize,
+        count: &mut usize,
+        idx: &mut usize,
+        home_idx: usize,
+        backoff: &Backoff,
+    ) {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE
+        {
+            backoff.spin();
+        }
+        *count = 0;
+        *idx = home_idx;
+    }
+
+    #[inline(always)]
     fn wait_swapping(addr: usize, expect_key: FKey, backoff: &Backoff) {
-        while (expect_key != EMPTY_VALUE && Self::get_fast_key(addr) == expect_key)
+        while Self::get_fast_key(addr) == expect_key
             && Self::get_fast_value(addr).val == SWAPPING_VALUE
         {
             backoff.spin();
