@@ -1,0 +1,51 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug executable 'lightning-bench'",
+      "cargo": {
+        "args": [
+          "build",
+          "--bin=lightning-bench",
+          "--package=lightning-bench"
+        ],
+        "filter": {
+          "name": "lightning-bench",
+          "kind": "bin"
+        }
+      },
+      "args": [
+        "--file", "db",
+        "runtime",
+        "--stride", "4",
+        "-c",
+        "-l", "26"
+      ],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests in executable 'lightning-bench'",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run",
+          "--bin=lightning-bench",
+          "--package=lightning-bench"
+        ],
+        "filter": {
+          "name": "lightning-bench",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

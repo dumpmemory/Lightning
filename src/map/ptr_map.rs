@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::obj_alloc::{self, AllocGuard, Allocator, Aligned};
+use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
 use super::base::*;
 use super::*;
@@ -14,7 +14,7 @@ pub struct PtrHashMap<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    pub (crate) table: PtrTable<K, V, ALLOC, H>,
+    pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
     shadow: PhantomData<(K, V, H)>,
 }
@@ -165,7 +165,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if let Some(val) = self.deref_val(fv) {
+                if let Some(val) = self.deref_val(fv & WORD_MUTEX_DATA_BIT_MASK) {
                     return Some(val);
                 }
                 let retry_val = self.retry_get(&mut fv, addr, &backoff);
@@ -854,6 +854,13 @@ mod ptr_map {
         });
     }
 
+    #[test]
+    fn parallel_overflow() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(FatHashMap::with_capacity(32));
+        for tid in 0..8 {}
+    }
+
     const VAL_SIZE: usize = 2048;
     pub type Key = [u8; 128];
     pub type Value = [u8; VAL_SIZE];
@@ -902,9 +909,10 @@ mod ptr_map {
                         );
                         let val = {
                             let mut mutex = map.lock(&key).expect(&format!(
-                                "Locking key {}, copying {}",
+                                "Locking key {}, epoch {}, copying {}",
                                 key,
-                                map.table.now_epoch()
+                                map.table.now_epoch(),
+                                map.table.map_is_copying()
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
