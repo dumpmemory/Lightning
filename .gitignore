@@ -19,4 +19,6 @@ callgrind.*
 *.zip
 *.png
 *.svg 
+perf.data
+perf.data.*
 !doc/*
