@@ -678,8 +678,8 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let mut idx = hash & cap_mask;
         let home_idx = idx;
+        let mut addr = chunk.entry_addr(idx);
         while count <= cap {
-            let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
@@ -968,6 +968,7 @@ impl<
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
             idx = (idx + 1) & cap_mask; // reprobe
+            addr = chunk.entry_addr(idx);
             count += 1;
         }
         match op {
@@ -1275,7 +1276,7 @@ impl<
                             chunk.set_hop_bit(home_idx, hop_distance);
                             return Some(candidate_idx);
                         } else {
-                            // Not in range, need to swap it closure
+                            // Not in range, need to swap it closer
                             dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
