@@ -986,7 +986,7 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        false // !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+        !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
