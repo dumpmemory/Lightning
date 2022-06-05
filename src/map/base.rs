@@ -621,13 +621,12 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
-        let mut idx = hash;
         let cap = chunk.capacity;
         let cap_mask = chunk.cap_mask();
+        let mut idx = hash & cap_mask;
         let mut counter = 0;
+        let mut addr = chunk.entry_addr(idx);
         while counter < cap {
-            idx &= cap_mask;
-            let addr = chunk.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
@@ -653,6 +652,8 @@ impl<
                 Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
             });
             idx += 1; // reprobe
+            idx &= cap_mask;
+            addr = chunk.entry_addr(idx);
             counter += 1;
         }
 
