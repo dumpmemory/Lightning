@@ -257,6 +257,13 @@ pub type PerfPlotData = Vec<(
 
 fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) {
     let data = vec![
+        run_perf_test_set::<lfmap::TestTable>(
+            file_name,
+            "lightning - base",
+            load,
+            contention,
+            stride,
+        ),
         run_perf_test_set::<ptr_lfmap::TestTable>(
             file_name,
             "lightning - ptr",
@@ -288,13 +295,6 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
         run_perf_test_set::<lite_lfmap_arc::TestTable>(
             file_name,
             "lightning - arc",
-            load,
-            contention,
-            stride,
-        ),
-        run_perf_test_set::<lfmap::TestTable>(
-            file_name,
-            "lightning - base",
             load,
             contention,
             stride,

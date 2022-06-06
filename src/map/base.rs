@@ -265,7 +265,7 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
-                if new_chunk.occupation.sum() >= new_chunk.occu_limit {
+                if new_chunk.occupation.sum_strong() >= new_chunk.occu_limit {
                     backoff.spin();
                     continue;
                 }
@@ -1326,13 +1326,14 @@ impl<
     }
 
     /// Failed return old shared
+    #[inline(always)]
     fn check_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        let occupation = old_chunk_ref.occupation.sum();
+        let occupation = old_chunk_ref.occupation.sum_approx();
         let occu_limit = old_chunk_ref.occu_limit;
         if occupation < occu_limit {
             return ResizeResult::NoNeed;
@@ -1340,6 +1341,7 @@ impl<
         self.do_migration(old_chunk_ptr, guard)
     }
 
+    #[inline(never)]
     fn do_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
@@ -1349,7 +1351,7 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        let empty_entries = old_chunk_ins.empty_entries.sum();
+        let empty_entries = old_chunk_ins.empty_entries.sum_strong();
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // Clear tombstones
@@ -1372,7 +1374,7 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        let old_occupation = old_chunk_ins.occupation.sum();
+        let old_occupation = old_chunk_ins.occupation.sum_strong();
         trace!(
             "--- Resizing {:?}. New size is {}, was {}, occ {}",
             old_chunk_ptr,
