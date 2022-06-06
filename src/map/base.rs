@@ -1549,7 +1549,7 @@ impl<
             );
         } else if effective_copy < old_occupation {
             let delta = old_occupation - effective_copy;
-            new_chunk_ins.occupation.incr(delta);
+            new_chunk_ins.occupation.decr(delta);
             debug!(
                 "Occupation {}-{} offset neg {}",
                 effective_copy, old_occupation, delta
