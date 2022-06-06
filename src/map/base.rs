@@ -1333,9 +1333,9 @@ impl<
         old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        let occupation = old_chunk_ref.occupation.sum_approx();
+        let occupation_approx = old_chunk_ref.occupation.sum_approx();
         let occu_limit = old_chunk_ref.occu_limit;
-        if occupation < occu_limit {
+        if occupation_approx < occu_limit {
             return ResizeResult::NoNeed;
         }
         self.do_migration(old_chunk_ptr, guard)
@@ -1351,18 +1351,6 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        let empty_entries = old_chunk_ins.empty_entries.sum_strong();
-        let old_cap = old_chunk_ins.capacity;
-        let new_cap = if empty_entries > (old_cap >> 1) {
-            // Clear tombstones
-            old_cap
-        } else {
-            let mut cap = old_cap << 1;
-            if cap < 2048 {
-                cap <<= 1;
-            }
-            cap
-        };
         // Swap in old chunk as placeholder for the lock
         let old_chunk_lock = old_chunk_ptr.with_tag(1);
         if let Err(_) =
@@ -1375,6 +1363,22 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_occupation = old_chunk_ins.occupation.sum_strong();
+        if old_occupation < old_chunk_ins.occu_limit {
+            self.meta.chunk.store(old_chunk_ptr, Relaxed);
+            return ResizeResult::NoNeed;
+        }
+        let empty_entries = old_chunk_ins.empty_entries.sum_approx();
+        let old_cap = old_chunk_ins.capacity;
+        let new_cap = if empty_entries > (old_cap >> 1) {
+            // Clear tombstones
+            old_cap
+        } else {
+            let mut cap = old_cap << 1;
+            if cap < 2048 {
+                cap <<= 1;
+            }
+            cap
+        };
         trace!(
             "--- Resizing {:?}. New size is {}, was {}, occ {}",
             old_chunk_ptr,

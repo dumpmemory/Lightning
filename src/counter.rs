@@ -10,7 +10,7 @@ use crate::thread_local::ThreadMeta;
 const SPREAD_COUNT: usize = 32;
 const ID_MASK: usize = SPREAD_COUNT - 1;
 const DEFAULT_CNT: AtomicIsize = AtomicIsize::new(0);
-const DICE_MASK: usize = !0 << 2;
+const DICE_MASK: usize = !(!0 << 2);
 
 pub struct Counter {
   subcnt: [AtomicIsize; SPREAD_COUNT],
@@ -65,7 +65,9 @@ impl Counter {
   #[inline(always)]
   fn update_approx(&self, change: usize, n: isize) {
     if n as usize & DICE_MASK == 0b10 || change > 10 {
-      self.approx_sum.store(self.sum(), Relaxed);
+      unsafe {
+        ptr::write(self.approx_sum.as_mut_ptr(), self.sum())
+      }
     }
   }
 
