@@ -16,7 +16,7 @@ thread_local! {
   static THREAD_META: ThreadMeta = ThreadMeta::new();
 }
 
-struct ThreadMeta {
+pub struct ThreadMeta {
     tid: usize,
 }
 

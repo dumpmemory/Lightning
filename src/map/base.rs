@@ -1,11 +1,15 @@
 use std::{sync::Arc, thread};
 
+use crate::counter::Counter;
+
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
 pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
+
+pub const ENABLE_HOPSCOTCH: bool = true;
 
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
@@ -84,8 +88,8 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     occu_limit: usize,
-    occupation: AtomicUsize,
-    empty_entries: AtomicUsize,
+    occupation: Counter,
+    empty_entries: Counter,
     total_size: usize,
     hop_base: usize,
     pub attachment: A,
@@ -99,7 +103,7 @@ pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
     meta: Arc<ChunkMeta<K, V, A, ALLOC>>,
     attachment_init_meta: A::InitMeta,
-    count: AtomicUsize,
+    count: Counter,
     init_cap: usize,
     mark: PhantomData<H>,
 }
@@ -135,7 +139,7 @@ impl<
                 new_chunk: Atomic::null(),
                 epoch: AtomicUsize::new(0),
             }),
-            count: AtomicUsize::new(0),
+            count: Counter::new(),
             init_cap: cap,
             attachment_init_meta,
             mark: PhantomData,
@@ -261,7 +265,7 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
-                if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
+                if new_chunk.occupation.sum() >= new_chunk.occu_limit {
                     backoff.spin();
                     continue;
                 }
@@ -288,8 +292,8 @@ impl<
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _, _) => {
-                    modify_chunk.occupation.fetch_add(1, Relaxed);
-                    self.count.fetch_add(1, Relaxed);
+                    modify_chunk.occupation.incr(1);
+                    self.count.incr(1);
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => {
                     result = Some((fv, v.unwrap()))
@@ -300,7 +304,7 @@ impl<
                         "Insertion failed, do migration and retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
                         new_chunk.is_some(),
                         modify_chunk.capacity,
-                        modify_chunk.occupation.load(Relaxed),
+                        modify_chunk.occupation.sum(),
                         chunk_ptr,
                         new_chunk_ptr
                     );
@@ -336,7 +340,7 @@ impl<
                             new_chunk.map(|c| &**c),
                         ) {
                             ModResult::Done(_, _, _) => {
-                                chunk.occupation.fetch_add(1, AcqRel);
+                                chunk.occupation.incr(1);
                             }
                             ModResult::Replaced(fv, val, _) => {
                                 if fv > TOMBSTONE_VALUE {
@@ -425,7 +429,7 @@ impl<
                 .store(owned_new.into_shared(&guard), Release);
             self.meta.new_chunk.store(Shared::null(), Release);
             dfence();
-            self.count.fetch_sub(len, AcqRel);
+            self.count.decr(len);
             break;
         }
     }
@@ -545,7 +549,7 @@ impl<
     pub fn remove(&self, key: &K, fkey: FKey) -> Option<(FVal, V)> {
         let tagging_res = self.insert(InsertOp::Tombstone, key, None, fkey, TOMBSTONE_VALUE);
         if tagging_res.is_some() {
-            self.count.fetch_sub(1, AcqRel);
+            self.count.decr(1);
         }
         return tagging_res;
     }
@@ -579,7 +583,7 @@ impl<
         let chunk = unsafe { chunk_ptr.deref() };
         (
             chunk.occu_limit,
-            chunk.occupation.load(Relaxed),
+            chunk.occupation.sum(),
             chunk.capacity,
         )
     }
@@ -608,7 +612,7 @@ impl<
     }
 
     pub fn len(&self) -> usize {
-        self.count.load(Relaxed)
+        self.count.sum_strong() as usize
     }
 
     fn get_from_chunk(
@@ -705,7 +709,7 @@ impl<
                                         if raw != TOMBSTONE_VALUE {
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         } else {
-                                            chunk.empty_entries.fetch_sub(1, Relaxed);
+                                            chunk.empty_entries.decr(1);
                                             return ModResult::Done(act_val, None, idx);
                                         }
                                     } else {
@@ -741,7 +745,7 @@ impl<
                                         // we have put tombstone on the value, get the attachment and erase it
                                         let value = read_attachment.then(|| attachment.get_value());
                                         attachment.erase(raw);
-                                        chunk.empty_entries.fetch_add(1, Relaxed);
+                                        chunk.empty_entries.incr(1);
                                         return ModResult::Replaced(act_val, value, idx);
                                     }
                                 }
@@ -986,7 +990,7 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+        ENABLE_HOPSCOTCH && !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1032,7 +1036,7 @@ impl<
         let mut idx = 0;
         let cap = chunk.capacity;
         let mut counter = 0;
-        let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed));
+        let mut res = Vec::with_capacity(chunk.occupation.sum());
         let cap_mask = chunk.cap_mask();
         while counter < cap {
             idx &= cap_mask;
@@ -1160,6 +1164,7 @@ impl<
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
+    #[inline]
     fn adjust_hops(
         needs_adjust: bool,
         chunk: &Chunk<K, V, A, ALLOC>,
@@ -1172,6 +1177,9 @@ impl<
     ) -> Option<usize> {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
+        if !ENABLE_HOPSCOTCH {
+            return Some(dest_idx);
+        }
         if !needs_adjust {
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
@@ -1324,7 +1332,7 @@ impl<
         old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        let occupation = old_chunk_ref.occupation.load(Relaxed);
+        let occupation = old_chunk_ref.occupation.sum();
         let occu_limit = old_chunk_ref.occu_limit;
         if occupation < occu_limit {
             return ResizeResult::NoNeed;
@@ -1341,7 +1349,7 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
+        let empty_entries = old_chunk_ins.empty_entries.sum();
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // Clear tombstones
@@ -1364,7 +1372,7 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        let old_occupation = old_chunk_ins.occupation.load(Relaxed);
+        let old_occupation = old_chunk_ins.occupation.sum();
         trace!(
             "--- Resizing {:?}. New size is {}, was {}, occ {}",
             old_chunk_ptr,
@@ -1374,7 +1382,7 @@ impl<
         );
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
-            (*new_chunk).occupation.store(old_occupation, Relaxed);
+            (*new_chunk).occupation.incr(old_occupation);
         }
         let new_chunk_ptr = Owned::new(ChunkPtr::new(new_chunk))
             .into_shared(guard)
@@ -1532,14 +1540,14 @@ impl<
         // resize finished, make changes on the numbers
         if effective_copy > old_occupation {
             let delta = effective_copy - old_occupation;
-            new_chunk_ins.occupation.fetch_add(delta, Relaxed);
+            new_chunk_ins.occupation.incr(delta);
             debug!(
                 "Occupation {}-{} offset {}",
                 effective_copy, old_occupation, delta
             );
         } else if effective_copy < old_occupation {
             let delta = old_occupation - effective_copy;
-            new_chunk_ins.occupation.fetch_sub(delta, Relaxed);
+            new_chunk_ins.occupation.incr(delta);
             debug!(
                 "Occupation {}-{} offset neg {}",
                 effective_copy, old_occupation, delta
@@ -1801,8 +1809,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                 Self {
                     base: data_base,
                     capacity,
-                    occupation: AtomicUsize::new(0),
-                    empty_entries: AtomicUsize::new(0),
+                    occupation: Counter::new(),
+                    empty_entries: Counter::new(),
                     occu_limit: occupation_limit(capacity),
                     total_size,
                     hop_base,
@@ -1925,7 +1933,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 new_chunk: Default::default(),
                 epoch: AtomicUsize::new(0),
             }),
-            count: AtomicUsize::new(0),
+            count: Counter::new(),
             init_cap: self.init_cap,
             attachment_init_meta: self.attachment_init_meta.clone(),
             mark: PhantomData,
@@ -1965,7 +1973,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 new_table.meta.new_chunk.store(Shared::null(), Release);
             }
         }
-        new_table.count.store(self.count.load(Acquire), Release);
+        new_table.count.incr(self.count.sum_strong());
         new_table
     }
 }
