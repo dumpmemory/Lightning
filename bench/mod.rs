@@ -264,50 +264,50 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
             contention,
             stride,
         ),
-        // run_perf_test_set::<lite_lfmap::TestTable>(
-        //     file_name,
-        //     "lightning - lite",
-        //     load,
-        //     contention,
-        //     stride,
-        // ),
-        // run_perf_test_set::<obj_lfmap::TestTable>(
-        //     file_name,
-        //     "lightning - obj",
-        //     load,
-        //     contention,
-        //     stride,
-        // ),
-        // run_perf_test_set::<fat_lfmap::TestTable>(
-        //     file_name,
-        //     "lightning - lock",
-        //     load,
-        //     contention,
-        //     stride,
-        // ),
-        // run_perf_test_set::<lite_lfmap_arc::TestTable>(
-        //     file_name,
-        //     "lightning - arc",
-        //     load,
-        //     contention,
-        //     stride,
-        // ),
-        // run_perf_test_set::<lfmap::TestTable>(
-        //     file_name,
-        //     "lightning - base",
-        //     load,
-        //     contention,
-        //     stride,
-        // ),
-        // run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
-        // run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
-        // run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
-        // run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
-        // run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride),
-        // run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
-        // run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride), // Too slow
-        // run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
-        // run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
+        run_perf_test_set::<lite_lfmap::TestTable>(
+            file_name,
+            "lightning - lite",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<obj_lfmap::TestTable>(
+            file_name,
+            "lightning - obj",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<fat_lfmap::TestTable>(
+            file_name,
+            "lightning - lock",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<lite_lfmap_arc::TestTable>(
+            file_name,
+            "lightning - arc",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<lfmap::TestTable>(
+            file_name,
+            "lightning - base",
+            load,
+            contention,
+            stride,
+        ),
+        run_perf_test_set::<cht::Table>(file_name, "cht", load, contention, stride), // Potential OOM
+        run_perf_test_set::<scc::Table>(file_name, "scc::HashMap", load, contention, stride),
+        run_perf_test_set::<contrie::Table>(file_name, "contrie", load, contention, stride),
+        run_perf_test_set::<dashmap::Table>(file_name, "dashmap", load, contention, stride),
+        run_perf_test_set::<flurry::Table>(file_name, "flurry", load, contention, stride),
+        run_perf_test_set::<chashmap::Table>(file_name, "chashmap", load, contention, stride),
+        run_perf_test_set::<lockfree::Table>(file_name, "lockfree::map", load, contention, stride), // Too slow
+        run_perf_test_set::<arc_rwlock_std::Table>(file_name, "rw", load, contention, stride),
+        run_perf_test_set::<arc_mutex_std::Table>(file_name, "mutex", load, contention, stride),
     ];
     draw_perf_plots(data);
     println!("PERF TEST COMPLETED...");
@@ -335,18 +335,20 @@ fn run_perf_test_set<'a, T: Collection>(
         //     1.0,
         //     stride,
         // );
-        let of = vec![
-            {
-                println!("Oversize");
-                let oversize_measurement =
-                    run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
-                write_measurements(
-                    &format!("{}_{}_oversize.csv", file_name, format!("{}_overflow", ds_name)),
-                    &oversize_measurement,
-                );
-                ("overflow", oversize_measurement)
-            }
-        ];
+        let of = vec![{
+            println!("Oversize");
+            let oversize_measurement =
+                run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
+            write_measurements(
+                &format!(
+                    "{}_{}_oversize.csv",
+                    file_name,
+                    format!("{}_overflow", ds_name)
+                ),
+                &oversize_measurement,
+            );
+            ("overflow", oversize_measurement)
+        }];
         let lo = run_and_record_contention::<T>(
             file_name,
             &format!("{}_lo", ds_name),
@@ -375,7 +377,7 @@ fn run_perf_test_set<'a, T: Collection>(
                 ("lo", lo),
                 ("mi", mi),
                 ("hi", hi),
-                ("of", of)
+                ("of", of),
             ],
         )
     } else {
