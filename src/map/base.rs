@@ -1384,7 +1384,7 @@ impl<
         );
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
-            (*new_chunk).occupation.incr(old_occupation);
+            (*new_chunk).occupation.store(old_occupation);
         }
         let new_chunk_ptr = Owned::new(ChunkPtr::new(new_chunk))
             .into_shared(guard)
@@ -1975,7 +1975,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 new_table.meta.new_chunk.store(Shared::null(), Release);
             }
         }
-        new_table.count.incr(self.count.sum_strong());
+        new_table.count.store(self.count.sum_strong());
         new_table
     }
 }

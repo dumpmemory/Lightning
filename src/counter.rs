@@ -68,4 +68,13 @@ impl Counter {
       self.approx_sum.store(self.sum(), Relaxed);
     }
   }
+
+  #[inline(always)]
+  pub fn store(&self, num: usize) {
+    let now_count = self.sum_strong() as isize;
+    let delta = num as isize - now_count;
+    let id = ThreadMeta::get_id() & ID_MASK;
+    self.subcnt[id].fetch_add(delta, Relaxed);
+    self.approx_sum.store(self.sum(), Relaxed);
+  }
 }
