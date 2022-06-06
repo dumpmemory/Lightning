@@ -581,11 +581,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
         let chunk = unsafe { chunk_ptr.deref() };
-        (
-            chunk.occu_limit,
-            chunk.occupation.sum(),
-            chunk.capacity,
-        )
+        (chunk.occu_limit, chunk.occupation.sum(), chunk.capacity)
     }
 
     pub(crate) fn dump_dist(&self) {
@@ -990,7 +986,11 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        ENABLE_HOPSCOTCH && !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+        ENABLE_HOPSCOTCH
+            && !Self::FAT_VAL
+            && new_chunk.is_none()
+            && chunk.capacity > NUM_HOPS
+            && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1015,8 +1015,7 @@ impl<
         home_idx: usize,
         backoff: &Backoff,
     ) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE
-        {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
             backoff.spin();
         }
         *count = 0;
@@ -1266,7 +1265,7 @@ impl<
 
                         // Discard swapping value on current address by replace it with new value
                         Self::store_value(curr_addr, candidate_fval.val);
-                        
+
                         last_pinned_key = Some(candidate_addr);
                         // Also update the hop bits
                         let hop_distance = if curr_idx > idx {
