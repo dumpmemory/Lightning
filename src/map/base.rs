@@ -433,6 +433,10 @@ impl<
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
+            if new_chunk.is_some() {
+                backoff.spin();
+                continue;
+            }
             if let Some(new_chunk) = new_chunk {
                 // && self.now_epoch() == epoch
                 // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
@@ -518,10 +522,7 @@ impl<
                 ModResult::Aborted => SwapResult::Aborted,
                 ModResult::Fail => SwapResult::Failed,
                 ModResult::NotFound => SwapResult::NotFound,
-                ModResult::Sentinel => {
-                    backoff.spin();
-                    continue;
-                }
+                ModResult::Sentinel => unreachable!("Swap sentinel"),
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
                 ModResult::Done(_, _, _) => unreachable!("Swap Done"),
                 ModResult::TableFull => unreachable!("Swap table full"),
@@ -778,10 +779,14 @@ impl<
                                     }
                                 }
                                 ModOp::SwapFastVal(ref swap) => {
-                                    if act_val == TOMBSTONE_VALUE {
+                                    if v.val == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if act_val >= NUM_FIX_V {
+                                    if v.is_primed() {
+                                        // Do not compete with migration
+                                        return ModResult::Fail;
+                                    }
+                                    if v.is_valued() {
                                         if let Some(sv) = swap(act_val) {
                                             if Self::cas_value(addr, v.val, sv).1 {
                                                 // swap success
@@ -1759,7 +1764,7 @@ impl FastValue {
     #[inline(always)]
     fn is_primed(self) -> bool {
         let v = self.val;
-        v & VAL_BIT_MASK != v
+        self.val | VAL_PRIME_MASK == v
     }
 
     fn prime(self) -> Self {

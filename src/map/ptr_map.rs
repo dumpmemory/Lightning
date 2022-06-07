@@ -401,7 +401,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     };
                     break;
                 }
-                SwapResult::Failed | SwapResult::Aborted => {
+                SwapResult::Failed => {
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::Aborted => {
                     backoff.spin();
                     continue;
                 }
@@ -466,11 +470,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
         let val = self.value.clone();
-        let key = self.key.clone();
-        let fval = self.map.ref_val(val, &guard) & WORD_MUTEX_DATA_BIT_MASK;
+        let fval = self.map.ref_val(val, &guard);
+        debug_assert_eq!(fval & WORD_MUTEX_DATA_BIT_MASK, fval);
         self.map
             .table
-            .insert(InsertOp::Insert, &key, Some(&()), 0, fval);
+            .insert(InsertOp::Insert, &self.key, Some(&()), 0, fval);
     }
 }
 
@@ -886,6 +890,72 @@ mod ptr_map {
     fn parallel_ptr_map_multi_mutex() {
         let _ = env_logger::try_init();
         let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(16));
+        let mut threads = vec![];
+        let num_threads = 16;
+        let test_load = 4096;
+        let update_load = 128;
+        for thread_id in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let target = thread_id;
+                for i in 0..test_load {
+                    let key = target * 1000000 + i;
+                    {
+                        let mut mutex = map.insert_locked(&key, 0).unwrap();
+                        *mutex = 1;
+                    }
+                    for j in 1..update_load {
+                        assert!(
+                            map.get(&key).is_some(),
+                            "Pre getting value for mutex, key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
+                        let val = {
+                            let mut mutex = map.lock(&key).expect(&format!(
+                                "Locking key {}, epoch {}, copying {}, deletion {}, can found {}",
+                                key,
+                                map.table.now_epoch(),
+                                map.table.map_is_copying(), 
+                                j % 7 == 0,
+                                map.get(&key).is_some()
+                            ));
+                            assert_eq!(*mutex, j);
+                            *mutex += 1;
+                            *mutex
+                        };
+                        assert!(
+                            map.get(&key).is_some(),
+                            "Post getting value for mutex, key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
+                        if j % 7 == 0 {
+                            {
+                                let mutex = map.lock(&key).expect(&format!(
+                                    "Remove locking key {}, copying {}",
+                                    key,
+                                    map.table.now_epoch()
+                                ));
+                                mutex.remove();
+                            }
+                            assert!(map.lock(&key).is_none());
+                            *map.insert_locked(&key, 0).unwrap() = val;
+                        }
+                    }
+                    assert_eq!(*map.lock(&key).unwrap(), update_load);
+                }
+            }));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
+    }
+
+    #[test]
+    fn parallel_ptr_map_multi_mutex_no_resize() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(65536));
         let mut threads = vec![];
         let num_threads = 16;
         let test_load = 4096;
