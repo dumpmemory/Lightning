@@ -909,10 +909,12 @@ mod ptr_map {
                         );
                         let val = {
                             let mut mutex = map.lock(&key).expect(&format!(
-                                "Locking key {}, epoch {}, copying {}",
+                                "Locking key {}, epoch {}, copying {}, deletion {}, can found {}",
                                 key,
                                 map.table.now_epoch(),
-                                map.table.map_is_copying()
+                                map.table.map_is_copying(), 
+                                j % 7 == 0,
+                                map.get(&key).is_some()
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;

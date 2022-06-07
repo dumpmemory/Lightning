@@ -53,6 +53,7 @@ enum ModResult<V> {
     Done(FVal, Option<V>, usize), // _, value, index
     TableFull,
     Aborted,
+    TombstonePut(FVal, Option<V>, usize)
 }
 
 enum ModOp<'a, V> {
@@ -246,7 +247,7 @@ impl<
             .map(|(a, b, _)| (a, b))
     }
 
-    pub fn insert(
+    pub fn  insert(
         &self,
         op: InsertOp,
         key: &K,
@@ -285,7 +286,13 @@ impl<
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
-                InsertOp::Tombstone => ModOp::Tombstone,
+                InsertOp::Tombstone => {
+                    if new_chunk.is_some() {
+                        backoff.spin();
+                        continue;
+                    }
+                    ModOp::Tombstone
+                },
             };
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
@@ -325,33 +332,10 @@ impl<
                     continue;
                 }
                 ModResult::NotFound => {
-                    // Only possible for Tombstone op
-                    if new_chunk.is_some() {
-                        // Cannot find the item to delete during migration
-                        // If can be in the old chunk which we can try to jut a sentinel
-                        match self.modify_entry(
-                            chunk,
-                            hash,
-                            key,
-                            fkey,
-                            ModOp::Sentinel,
-                            true,
-                            &guard,
-                            new_chunk.map(|c| &**c),
-                        ) {
-                            ModResult::Done(_, _, _) => {
-                                chunk.occupation.incr(1);
-                            }
-                            ModResult::Replaced(fv, val, _) => {
-                                if fv > TOMBSTONE_VALUE {
-                                    return Some((fv, val.unwrap()));
-                                }
-                            }
-                            _ => {}
-                        }
-                        backoff.spin();
-                        continue;
-                    }
+                    return None;
+                }
+                ModResult::TombstonePut(fv, v, _) => {
+                    result = Some((fv, v.unwrap()));
                 }
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
@@ -541,6 +525,7 @@ impl<
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
                 ModResult::Done(_, _, _) => unreachable!("Swap Done"),
                 ModResult::TableFull => unreachable!("Swap table full"),
+                ModResult::TombstonePut(_, _, _) => unreachable!("Swap tombstone put"),
             };
         }
     }
@@ -742,7 +727,7 @@ impl<
                                         let value = read_attachment.then(|| attachment.get_value());
                                         attachment.erase(raw);
                                         chunk.empty_entries.incr(1);
-                                        return ModResult::Replaced(act_val, value, idx);
+                                        return ModResult::TombstonePut(act_val, value, idx);
                                     }
                                 }
                                 ModOp::UpsertFastVal(ref fv) => {
@@ -2059,6 +2044,7 @@ impl<V> Debug for ModResult<V> {
             Self::Done(arg0, _arg1, arg2) => f.debug_tuple("Done").field(arg0).field(arg2).finish(),
             Self::TableFull => write!(f, "TableFull"),
             Self::Aborted => write!(f, "Aborted"),
+            Self::TombstonePut(_, _, _) => write!(f, "TombstonePut"),
         }
     }
 }

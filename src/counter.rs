@@ -10,7 +10,6 @@ use crate::thread_local::ThreadMeta;
 const SPREAD_COUNT: usize = 32;
 const ID_MASK: usize = SPREAD_COUNT - 1;
 const DEFAULT_CNT: AtomicIsize = AtomicIsize::new(0);
-const DICE_MASK: usize = !(!0 << 2);
 
 pub struct Counter {
     subcnt: [AtomicIsize; SPREAD_COUNT],
@@ -42,10 +41,14 @@ impl Counter {
 
     #[inline(always)]
     pub fn sum(&self) -> usize {
-        self.subcnt
+        let mut sum = self.subcnt
             .iter()
             .map(|c| unsafe { ptr::read(c.as_mut_ptr()) })
-            .sum::<isize>() as usize
+            .sum::<isize>();
+		if sum < 0 {
+			sum = self.sum_strong_inner();
+		}
+		return sum as usize;
     }
 
     #[inline(always)]
@@ -55,13 +58,19 @@ impl Counter {
 
     #[inline(always)]
     pub fn sum_strong(&self) -> usize {
-        self.subcnt.iter().map(|c| c.load(Acquire)).sum::<isize>() as usize
+        self.sum_strong_inner() as usize
     }
+
+	#[inline(always)]
+	pub fn sum_strong_inner(&self) -> isize {
+		self.subcnt.iter().map(|c| c.load(Acquire)).sum::<isize>()
+	}
 
     #[inline(always)]
     fn update_approx(&self, change: usize, n: isize) {
-        if n as usize & DICE_MASK == 0b10 || change > 10 {
-            unsafe { ptr::write(self.approx_sum.as_mut_ptr(), self.sum()) }
+        if n as usize & 1 == 1 || change > 10 {
+			let sum = self.sum();
+            unsafe { ptr::write(self.approx_sum.as_mut_ptr(), sum) }
         }
     }
 
