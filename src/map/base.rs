@@ -19,9 +19,10 @@ pub const SENTINEL_VALUE: FVal = 0b010;
 
 // Last bit set indicates locking
 pub const LOCKED_VALUE: FVal = 0b001;
-pub const SWAPPING_VALUE: FVal = 0b011;
+pub const SWAPPING_FORWARD_VALUE: FVal = 0b011;
+pub const SWAPPING_BACKWARD_VALUE: FVal = 0b111;
 
-pub const TOMBSTONE_VALUE: FVal = 0b100;
+pub const TOMBSTONE_VALUE: FVal = 0b110;
 
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
@@ -616,7 +617,8 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap = chunk.capacity;
         let cap_mask = chunk.cap_mask();
-        let mut idx = hash & cap_mask;
+        let home_idx =  hash & cap_mask;
+        let mut idx = home_idx;
         let mut counter = 0;
         let mut addr = chunk.entry_addr(idx);
         while counter < cap {
@@ -626,8 +628,9 @@ impl<
                 if attachment.probe(key) {
                     'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
-                        if val_res.val == SWAPPING_VALUE {
-                            Self::wait_swapping(addr, fkey, backoff);
+                        let raw = val_res.val;
+                        if val_res.is_swapping() {
+                            Self::wait_swapping_reprobe(addr, &mut counter, &mut idx, home_idx, raw, backoff);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         }
                         if val_res.is_locked() {
@@ -806,9 +809,9 @@ impl<
                             }
                         } else if raw == SENTINEL_VALUE {
                             return ModResult::Sentinel;
-                        } else if raw == SWAPPING_VALUE {
+                        } else if v.is_swapping() {
                             Self::wait_swapping_reprobe(
-                                addr, fkey, &mut count, &mut idx, home_idx, &backoff,
+                                addr, &mut count, &mut idx, raw, home_idx, &backoff,
                             );
                             continue;
                         } else {
@@ -839,7 +842,7 @@ impl<
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
                             // Use empty key to block probing progression for hops
-                            (fkey, SWAPPING_VALUE)
+                            (fkey, SWAPPING_BACKWARD_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -866,22 +869,18 @@ impl<
                                 return Self::mod_res_from_adj(adj_res, chunk);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (SWAPPING_VALUE, false) => {
-                                // Reprobe
-                                Self::wait_swapping_reprobe_no_key(
-                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                            (origin_raw, false) => {
+                                 // Reprobe
+                                Self::wait_swapping_reprobe(
+                                    addr, &mut count, &mut idx, home_idx, origin_raw, &backoff,
                                 );
-                                continue;
-                            }
-                            (_, false) => {
-                                backoff.spin();
                                 continue;
                             }
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
-                            (fkey, SWAPPING_VALUE)
+                            (fkey, SWAPPING_BACKWARD_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -901,16 +900,12 @@ impl<
                                 return Self::mod_res_from_adj(adj_res, chunk);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (SWAPPING_VALUE, false) => {
+                            (origin_raw, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe_no_key(
-                                    addr, &mut count, &mut idx, home_idx, &backoff,
-                                );
-                                continue;
-                            }
-                            (_, false) => {
-                                backoff.spin();
-                                continue;
+                               Self::wait_swapping_reprobe(
+                                   addr, &mut count, &mut idx, home_idx, origin_raw, &backoff,
+                               );
+                               continue;
                             }
                         }
                     }
@@ -940,6 +935,11 @@ impl<
                         }
                         _ => {}
                     }
+                } else if fval.is_swapping() {
+                    Self::wait_swapping_reprobe(
+                        addr, &mut count, &mut idx, home_idx, raw, &backoff,
+                    );
+                    continue;
                 }
                 //  else if let Some(new_chunk) = new_chunk {
                 //     Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
@@ -974,38 +974,24 @@ impl<
     #[inline(always)]
     fn wait_swapping_reprobe(
         addr: usize,
-        expect_key: FKey,
         count: &mut usize,
         idx: &mut usize,
         home_idx: usize,
+        origin_raw: FVal,
         backoff: &Backoff,
     ) {
-        Self::wait_swapping(addr, expect_key, backoff);
-        *count = 0;
-        *idx = home_idx;
-    }
-
-    #[inline(always)]
-    fn wait_swapping_reprobe_no_key(
-        addr: usize,
-        count: &mut usize,
-        idx: &mut usize,
-        home_idx: usize,
-        backoff: &Backoff,
-    ) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
+        let mut prev_raw = origin_raw;
+        loop {
+            let fval = Self::get_fast_value(addr);
+            if !fval.is_swapping() {
+                if prev_raw == SWAPPING_BACKWARD_VALUE {
+                    *count = 0;
+                    *idx = home_idx;
+                }
+                return;
+            }
             backoff.spin();
-        }
-        *count = 0;
-        *idx = home_idx;
-    }
-
-    #[inline(always)]
-    fn wait_swapping(addr: usize, expect_key: FKey, backoff: &Backoff) {
-        while Self::get_fast_key(addr) == expect_key
-            && Self::get_fast_value(addr).val == SWAPPING_VALUE
-        {
-            backoff.spin();
+            prev_raw = fval.val;
         }
     }
 
@@ -1188,7 +1174,7 @@ impl<
                 debug_assert_eq!({
                     let curr_addr = chunk.entry_addr(dest_idx);
                     Self::get_fast_value(curr_addr).val
-                }, SWAPPING_VALUE);
+                }, SWAPPING_BACKWARD_VALUE);
                 // Find a swappable slot
                 'PROBING: for i in probe_start..probe_end {
                     let idx = i & cap_mask;
@@ -1225,7 +1211,7 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
+                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_FORWARD_VALUE).1 {
                             // The slot value have been changed, retry
                             continue;
                         }
@@ -1269,6 +1255,7 @@ impl<
                             return HopAdjustResult::Adjusted(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
+                            Self::store_value(candidate_addr, SWAPPING_BACKWARD_VALUE);
                             dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
@@ -1496,7 +1483,7 @@ impl<
                         continue;
                     }
                 }
-                LOCKED_VALUE | SWAPPING_VALUE => {
+                LOCKED_VALUE | SWAPPING_FORWARD_VALUE | SWAPPING_BACKWARD_VALUE => {
                     backoff.spin();
                     continue;
                 }
@@ -1622,6 +1609,7 @@ impl<
         let home_idx = hash & cap_mask;
         let mut idx = home_idx;
         let mut count = 0;
+        let backoff = crossbeam_utils::Backoff::new();
         while count < cap {
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
@@ -1641,7 +1629,7 @@ impl<
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
-                    (fkey, SWAPPING_VALUE)
+                    (fkey, SWAPPING_BACKWARD_VALUE)
                 } else {
                     (fkey, orig)
                 };
@@ -1679,6 +1667,17 @@ impl<
                     // Here we didn't put the fval into the new chunk due to slot conflict with
                     // other thread. Need to retry
                     warn!("Migrate {} have conflict", fkey);
+                    backoff.spin();
+                    continue;
+                }
+            }
+            {
+                let fval = Self::get_fast_value(addr);
+                let raw = fval.val;
+                if fval.is_swapping() {
+                    Self::wait_swapping_reprobe(
+                        addr, &mut count, &mut idx, home_idx, raw, &backoff,
+                    );
                     continue;
                 }
             }
@@ -1778,6 +1777,12 @@ impl FastValue {
     fn next_version(old: FVal, new: FVal) -> FVal {
         let new_ver = (old | FVAL_VAL_BIT_MASK).wrapping_add(1);
         new & FVAL_VAL_BIT_MASK | (new_ver & FVAL_VER_BIT_MASK)
+    }
+
+    #[inline(always)]
+    fn is_swapping(self) -> bool {
+        let v = self.val;
+        v == SWAPPING_FORWARD_VALUE || v == SWAPPING_BACKWARD_VALUE
     }
 
     #[inline(always)]
