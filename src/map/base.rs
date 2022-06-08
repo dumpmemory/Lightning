@@ -65,6 +65,13 @@ enum ModOp<'a, V> {
     Tombstone,
 }
 
+enum HopAdjustResult {
+    Sentinel(usize), // Meet a sentinel
+    Adjusted(usize), // Successfully adjusted to new idx
+    Full(usize), // Cannot adjust, stopped at idx
+    Untouched(usize),
+}
+
 pub enum InsertOp {
     Insert,
     UpsertFast,
@@ -854,7 +861,7 @@ impl<
                                     Self::store_raw_value(addr, fval);
                                 } else {
                                     Self::store_key(addr, store_fkey);
-                                    if let Some(new_idx) = Self::adjust_hops(
+                                    let adj_res = Self::adjust_hops(
                                         hop_adjustment,
                                         chunk,
                                         fkey,
@@ -863,14 +870,9 @@ impl<
                                         home_idx,
                                         idx,
                                         count,
-                                    ) {
-                                        idx = new_idx;
-                                    } else {
-                                        Self::store_value(addr, EMPTY_VALUE);
-                                        return ModResult::TableFull;
-                                    }
+                                    );
+                                    return Self::mod_res_from_adj(adj_res, chunk);
                                 }
-                                return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
@@ -895,7 +897,7 @@ impl<
                         match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
                             (_, true) => {
                                 Self::store_key(addr, store_fkey);
-                                if let Some(new_idx) = Self::adjust_hops(
+                                let adj_res = Self::adjust_hops(
                                     hop_adjustment,
                                     chunk,
                                     fkey,
@@ -904,13 +906,8 @@ impl<
                                     home_idx,
                                     idx,
                                     count,
-                                ) {
-                                    idx = new_idx;
-                                } else {
-                                    Self::store_value(addr, EMPTY_VALUE);
-                                    return ModResult::TableFull;
-                                }
-                                return ModResult::Done(0, None, idx);
+                                );
+                                return Self::mod_res_from_adj(adj_res, chunk);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
@@ -1163,17 +1160,17 @@ impl<
         home_idx: usize,
         mut dest_idx: usize,
         hops: usize,
-    ) -> Option<usize> {
+    ) -> HopAdjustResult {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
         if !ENABLE_HOPSCOTCH {
-            return Some(dest_idx);
+            return HopAdjustResult::Untouched(dest_idx);
         }
         if !needs_adjust {
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
             }
-            return Some(dest_idx);
+            return HopAdjustResult::Untouched(dest_idx);
         } else {
             let cap_mask = chunk.cap_mask();
             let cap = chunk.capacity;
@@ -1187,7 +1184,7 @@ impl<
                     if let Some(pinned_addr) = last_pinned_key {
                         Self::store_key(pinned_addr, DISABLED_KEY);
                     }
-                    return None;
+                    return HopAdjustResult::Full(dest_idx);
                 }
                 let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
                 let curr_idx = scaled_curr_idx & cap_mask;
@@ -1225,7 +1222,7 @@ impl<
                             if let Some(pinned_addr) = last_pinned_key {
                                 Self::store_key(pinned_addr, DISABLED_KEY);
                             }
-                            return None;
+                            return HopAdjustResult::Sentinel(dest_idx);
                         }
                         if candidate_fval.val < NUM_FIX_V {
                             // Do not temper with non value slot, try next one
@@ -1272,7 +1269,7 @@ impl<
                             Self::store_value(candidate_addr, fval);
                             // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
-                            return Some(candidate_idx);
+                            return HopAdjustResult::Adjusted(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
                             dest_idx = candidate_idx;
@@ -1284,7 +1281,7 @@ impl<
                 if let Some(pinned_addr) = last_pinned_key {
                     Self::store_key(pinned_addr, DISABLED_KEY);
                 }
-                return None;
+                return HopAdjustResult::Full(dest_idx);
             }
         }
     }
@@ -1593,6 +1590,10 @@ impl<
         old_address: usize,
         effective_copy: &mut usize,
     ) -> bool {
+        // Wait on insertion process finished
+        if fkey == EMPTY_KEY {
+            return false;
+        }
         // Will not migrate meta keys
         if fkey < NUM_FIX_K {
             return true;
@@ -1640,7 +1641,7 @@ impl<
                     break;
                 }
             } else if k == EMPTY_KEY {
-                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
+                let hop_adjustment = false; //Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
                     (EMPTY_KEY, SWAPPING_VALUE)
@@ -1656,19 +1657,30 @@ impl<
                     new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, store_fkey);
-                    if Self::adjust_hops(
-                        hop_adjustment,
-                        new_chunk_ins,
-                        fkey,
-                        orig,
-                        Some(&key),
-                        home_idx,
-                        idx,
-                        count,
-                    )
-                    .is_none()
-                    {
-                        Self::store_value(addr, orig);
+                    if hop_adjustment {
+                        match Self::adjust_hops(
+                            hop_adjustment,
+                            new_chunk_ins,
+                            fkey,
+                            orig,
+                            Some(&key),
+                            home_idx,
+                            idx,
+                            count,
+                        ) {
+                            HopAdjustResult::Untouched(_) => {
+                                Self::store_value(addr, orig);
+                                Self::store_key(addr, fkey);
+                            },
+                            HopAdjustResult::Adjusted(_) => {},
+                            HopAdjustResult::Sentinel(idx) | HopAdjustResult::Full(idx) => {
+                                let addr = new_chunk_ins.entry_addr(idx);
+                                let new_attachment = new_chunk_ins.attachment.prefetch(idx);
+                                Self::store_value(addr, orig);
+                                new_attachment.set_key(key.clone());
+                                Self::store_key(addr, fkey);
+                            }
+                        }
                     }
                     break;
                 } else {
@@ -1697,6 +1709,27 @@ impl<
         }
         *effective_copy += 1;
         return true;
+    }
+
+    #[inline(always)]
+    fn mod_res_from_adj(adj_res: HopAdjustResult, chunk: &Chunk<K, V, A, ALLOC>) -> ModResult<V> {
+        match adj_res {
+            HopAdjustResult::Untouched(new_idx) | HopAdjustResult::Adjusted(new_idx) => {
+                return ModResult::Done(0, None, new_idx);
+            }
+            HopAdjustResult::Sentinel(idx) => {
+                let addr = chunk.entry_addr(idx);
+                Self::store_key(addr, DISABLED_KEY);
+                Self::store_sentinel(addr);
+                return ModResult::Sentinel;
+            }
+            HopAdjustResult::Full(idx) => {
+                let addr = chunk.entry_addr(idx);
+                Self::store_key(addr, DISABLED_KEY);
+                Self::store_value(addr, TOMBSTONE_VALUE);
+                return ModResult::TableFull;
+            }
+        }
     }
 
     pub fn map_is_copying(&self) -> bool {

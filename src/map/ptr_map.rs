@@ -889,7 +889,7 @@ mod ptr_map {
     #[test]
     fn parallel_ptr_map_multi_mutex() {
         let _ = env_logger::try_init();
-        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(16));
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
         let mut threads = vec![];
         let num_threads = 16;
         let test_load = 4096;
