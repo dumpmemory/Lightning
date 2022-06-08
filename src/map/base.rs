@@ -852,27 +852,23 @@ impl<
                         match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
                             (_, true) => {
                                 let attachment = chunk.attachment.prefetch(idx);
-                                if !hop_adjustment {
-                                    attachment.set_key(key.clone());
-                                }
+                                attachment.set_key(key.clone());
+                                attachment.set_value((*val).clone(), 0);
+                                Self::store_key(addr, store_fkey);
                                 if Self::FAT_VAL {
-                                    Self::store_key(addr, fkey);
-                                    attachment.set_value((*val).clone(), 0);
                                     Self::store_raw_value(addr, fval);
-                                } else {
-                                    Self::store_key(addr, store_fkey);
-                                    let adj_res = Self::adjust_hops(
-                                        hop_adjustment,
-                                        chunk,
-                                        fkey,
-                                        fval,
-                                        Some(key),
-                                        home_idx,
-                                        idx,
-                                        count,
-                                    );
-                                    return Self::mod_res_from_adj(adj_res, chunk);
                                 }
+                                let adj_res = Self::adjust_hops(
+                                    hop_adjustment,
+                                    chunk,
+                                    fkey,
+                                    fval,
+                                    Some(key),
+                                    home_idx,
+                                    idx,
+                                    count,
+                                );
+                                return Self::mod_res_from_adj(adj_res, chunk);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
@@ -1654,7 +1650,7 @@ impl<
                     let key = old_attachment.get_key();
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
-                    new_attachment.set_value(value, 0);
+                    new_attachment.set_value(value.clone(), 0);
                     fence(Acquire);
                     Self::store_key(addr, store_fkey);
                     if hop_adjustment {
@@ -1669,16 +1665,17 @@ impl<
                             count,
                         ) {
                             HopAdjustResult::Untouched(_) => {
-                                Self::store_value(addr, orig);
                                 Self::store_key(addr, fkey);
+                                Self::store_value(addr, orig);
                             },
                             HopAdjustResult::Adjusted(_) => {},
                             HopAdjustResult::Sentinel(idx) | HopAdjustResult::Full(idx) => {
                                 let addr = new_chunk_ins.entry_addr(idx);
                                 let new_attachment = new_chunk_ins.attachment.prefetch(idx);
-                                Self::store_value(addr, orig);
                                 new_attachment.set_key(key.clone());
+                                new_attachment.set_value(value.clone(), 0);
                                 Self::store_key(addr, fkey);
+                                Self::store_value(addr, orig);
                             }
                         }
                     }
