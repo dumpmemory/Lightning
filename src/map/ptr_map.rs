@@ -865,13 +865,14 @@ mod ptr_map {
         for tid in 0..8 {}
     }
 
-    const VAL_SIZE: usize = 2048;
-    pub type Key = [u8; 128];
+    const VAL_SIZE: usize = 32;
+    const KEY_SIZE: usize = 16;
+    pub type Key = [u8; KEY_SIZE];
     pub type Value = [u8; VAL_SIZE];
     pub type FatHashMap = PtrHashMap<Key, Value, System>;
 
     fn key_from(num: usize) -> Key {
-        let mut r = [0u8; 128];
+        let mut r = [0u8; KEY_SIZE];
         for (i, b) in num.to_be_bytes().iter().enumerate() {
             r[i] = *b
         }

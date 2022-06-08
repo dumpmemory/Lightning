@@ -682,6 +682,9 @@ impl<
                         let v = Self::get_fast_value(addr);
                         let raw = v.val;
                         if raw >= TOMBSTONE_VALUE {
+                            if v.is_primed() {
+                                return ModResult::Sentinel;
+                            }
                             let act_val = v.act_val::<V>();
                             match op {
                                 ModOp::Insert(fval, ov) => {
@@ -790,7 +793,7 @@ impl<
                                         return ModResult::NotFound;
                                     }
                                     if let Some(sv) = swap(act_val) {
-                                        if Self::cas_value(addr, v.val, sv).1 {
+                                        if Self::cas_value(addr, raw, sv).1 {
                                             // swap success
                                             return ModResult::Replaced(act_val, None, idx);
                                         } else {
@@ -801,7 +804,7 @@ impl<
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE || v.is_primed() {
+                        } else if raw == SENTINEL_VALUE {
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
                             Self::wait_swapping_reprobe(
@@ -1633,7 +1636,7 @@ impl<
                     break;
                 }
             } else if k == EMPTY_KEY {
-                let hop_adjustment = false; //Self::need_hop_adjustment(new_chunk_ins, None, count);
+                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
                     (EMPTY_KEY, SWAPPING_VALUE)
@@ -1649,30 +1652,24 @@ impl<
                     new_attachment.set_value(value.clone(), 0);
                     fence(Acquire);
                     Self::store_key(addr, store_fkey);
-                    if hop_adjustment {
-                        match Self::adjust_hops(
-                            hop_adjustment,
-                            new_chunk_ins,
-                            fkey,
-                            orig,
-                            Some(&key),
-                            home_idx,
-                            idx,
-                            count,
-                        ) {
-                            HopAdjustResult::Untouched(_) => {
-                                Self::store_key(addr, fkey);
-                                Self::store_value(addr, orig);
-                            },
-                            HopAdjustResult::Adjusted(_) => {},
-                            HopAdjustResult::Sentinel(idx) | HopAdjustResult::Full(idx) => {
-                                let addr = new_chunk_ins.entry_addr(idx);
-                                let new_attachment = new_chunk_ins.attachment.prefetch(idx);
-                                new_attachment.set_key(key.clone());
-                                new_attachment.set_value(value.clone(), 0);
-                                Self::store_key(addr, fkey);
-                                Self::store_value(addr, orig);
-                            }
+                    match Self::adjust_hops(
+                        hop_adjustment,
+                        new_chunk_ins,
+                        fkey,
+                        orig,
+                        Some(&key),
+                        home_idx,
+                        idx,
+                        count,
+                    ) {
+                        HopAdjustResult::Untouched(_) | HopAdjustResult::Adjusted(_) => {},
+                        HopAdjustResult::Sentinel(idx) | HopAdjustResult::Full(idx) => {
+                            let addr = new_chunk_ins.entry_addr(idx);
+                            let new_attachment = new_chunk_ins.attachment.prefetch(idx);
+                            new_attachment.set_key(key.clone());
+                            new_attachment.set_value(value.clone(), 0);
+                            Self::store_key(addr, fkey);
+                            Self::store_value(addr, orig);
                         }
                     }
                     break;
