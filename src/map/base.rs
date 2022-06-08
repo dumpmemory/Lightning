@@ -1190,6 +1190,10 @@ impl<
                     (starting, cap + curr_idx)
                 };
                 debug_assert!(probe_start < probe_end);
+                debug_assert_eq!({
+                    let curr_addr = chunk.entry_addr(dest_idx);
+                    Self::get_fast_value(curr_addr).val
+                }, SWAPPING_VALUE);
                 // Find a swappable slot
                 'PROBING: for i in probe_start..probe_end {
                     let idx = i & cap_mask;
@@ -1226,11 +1230,11 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        let candidate_fkey = Self::get_fast_key(candidate_addr);
                         if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
                             // The slot value have been changed, retry
                             continue;
                         }
+                        let candidate_fkey = Self::get_fast_key(candidate_addr);
                         // Starting to copy it co current idx
                         let curr_addr = chunk.entry_addr(curr_idx);
                         // Start from key object in the attachment
