@@ -786,26 +786,18 @@ impl<
                                     }
                                 }
                                 ModOp::SwapFastVal(ref swap) => {
-                                    if v.val == TOMBSTONE_VALUE {
+                                    if act_val == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if v.is_primed() {
-                                        // Do not compete with migration
-                                        return ModResult::Fail;
-                                    }
-                                    if v.is_valued() {
-                                        if let Some(sv) = swap(act_val) {
-                                            if Self::cas_value(addr, v.val, sv).1 {
-                                                // swap success
-                                                return ModResult::Replaced(act_val, None, idx);
-                                            } else {
-                                                return ModResult::Fail;
-                                            }
+                                    if let Some(sv) = swap(act_val) {
+                                        if Self::cas_value(addr, v.val, sv).1 {
+                                            // swap success
+                                            return ModResult::Replaced(act_val, None, idx);
                                         } else {
-                                            return ModResult::Aborted;
+                                            return ModResult::Fail;
                                         }
                                     } else {
-                                        return ModResult::Fail;
+                                        return ModResult::Aborted;
                                     }
                                 }
                             }
