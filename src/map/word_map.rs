@@ -626,20 +626,45 @@ mod test {
         }
         for i in 1..64 {
             let map = map.clone();
-            for j in 0..repeats {
-                let key = i * 100000 + j;
-                assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-            }
-            for j in 0..repeats {
-                let key = i * 100000 + j;
-                assert_eq!(map.insert(key, key), Some(key), "reinserting at key {}", key - NUM_FIX_K);
-            }
-            for j in 0..repeats {
-                let key = i * 100000 + j;
-                assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
-            }
             threads.push(thread::spawn(move || {
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                }
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(map.insert(key, key), Some(key), "reinserting at key {}", key - NUM_FIX_K);
+                }
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                }
+            }));
+        }
+        threads.into_iter().for_each(|t| t.join().unwrap());
+    }
 
+    #[test]
+    fn checking_inserion_with_migrations() {       
+        let _ = env_logger::try_init();
+        let repeats: usize = 4096;
+        let map = Arc::new(WordMap::<System>::with_capacity(8));
+        let mut threads = vec![];
+        for i in 1..64 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                }
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(map.insert(key, key), Some(key), "reinserting at key {}", key - NUM_FIX_K);
+                }
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                }
             }));
         }
         threads.into_iter().for_each(|t| t.join().unwrap());

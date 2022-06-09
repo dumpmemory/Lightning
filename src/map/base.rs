@@ -7,6 +7,8 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
+pub const ENABLE_HOPSOTCH: bool = false;
+
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
 
@@ -634,7 +636,7 @@ impl<
                     'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
                         if val_res.val == SWAPPING_VALUE {
-                            Self::wait_swapping(addr, fkey, backoff);
+                            Self::wait_swapping(addr, backoff);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         }
                         if val_res.is_locked() {
@@ -816,7 +818,7 @@ impl<
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
                             Self::wait_swapping_reprobe(
-                                addr, fkey, &mut count, &mut idx, home_idx, &backoff,
+                                addr, &mut count, &mut idx, home_idx, &backoff,
                             );
                             continue;
                         } else {
@@ -963,6 +965,12 @@ impl<
                         _ => {}
                     }
                 }
+                if raw == SWAPPING_VALUE {
+                    Self::wait_swapping_reprobe(
+                        addr, &mut count, &mut idx, home_idx, &backoff,
+                    );
+                    continue;
+                }
                 //  else if let Some(new_chunk) = new_chunk {
                 //     Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
                 // }
@@ -986,19 +994,18 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+        ENABLE_HOPSOTCH && !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
     fn wait_swapping_reprobe(
         addr: usize,
-        expect_key: FKey,
         count: &mut usize,
         idx: &mut usize,
         home_idx: usize,
         backoff: &Backoff,
     ) {
-        Self::wait_swapping(addr, expect_key, backoff);
+        Self::wait_swapping(addr, backoff);
         *count = 0;
         *idx = home_idx;
     }
@@ -1020,9 +1027,8 @@ impl<
     }
 
     #[inline(always)]
-    fn wait_swapping(addr: usize, expect_key: FKey, backoff: &Backoff) {
-        while Self::get_fast_key(addr) == expect_key
-            && Self::get_fast_value(addr).val == SWAPPING_VALUE
+    fn wait_swapping(addr: usize, backoff: &Backoff) {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE
         {
             backoff.spin();
         }
@@ -1674,6 +1680,14 @@ impl<
                     warn!("Migrate {} have conflict", fkey);
                     continue;
                 }
+            }
+            let v = Self::get_fast_value(addr);
+            if v.val == SWAPPING_VALUE {
+                let backoff = crossbeam_utils::Backoff::new();
+                Self::wait_swapping_reprobe(
+                    addr, &mut count, &mut idx, home_idx, &backoff,
+                );
+                continue;
             }
             idx += 1; // reprobe
             idx &= cap_mask;
