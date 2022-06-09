@@ -9,7 +9,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSCOTCH: bool = true;
+pub const ENABLE_HOPSCOTCH: bool = false;
 
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
@@ -339,9 +339,7 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                ModResult::NotFound => {
-                    return None;
-                }
+                ModResult::NotFound => {}
                 ModResult::TombstonePut(fv, v, _) => {
                     result = Some((fv, v.unwrap()));
                 }
@@ -1303,7 +1301,7 @@ impl<
         old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        let occupation_approx = old_chunk_ref.occupation.sum_approx();
+        let occupation_approx = old_chunk_ref.occupation.sum_strong();
         let occu_limit = old_chunk_ref.occu_limit;
         if occupation_approx < occu_limit {
             return ResizeResult::NoNeed;
@@ -1394,6 +1392,7 @@ impl<
         //     old_chunk_addr,
         //     new_chunk_addr,
         //     old_chunk_lock,
+        //     old_occupation,
         // );
         ResizeResult::InProgress
     }
@@ -1454,7 +1453,7 @@ impl<
         old_occupation: usize,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
-        trace!(
+        debug!(
             "Migrating entries from {:?} to {:?}",
             old_chunk_ins.base,
             new_chunk_ins.base
@@ -1493,6 +1492,7 @@ impl<
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
+                    debug!("Migrating value {}", fvalue.val);
                     if !fvalue.is_primed() {
                         let fkey = Self::get_fast_key(old_address);
                         if !Self::migrate_entry(
@@ -1534,7 +1534,7 @@ impl<
                 effective_copy, old_occupation
             );
         }
-        trace!("Migrated {} entries to new chunk", effective_copy);
+        debug!("Migrated {} entries to new chunk", effective_copy);
         return effective_copy;
     }
 
