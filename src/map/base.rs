@@ -1,15 +1,11 @@
 use std::{sync::Arc, thread};
 
-use crate::counter::Counter;
-
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
 pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
-
-pub const ENABLE_HOPSCOTCH: bool = false;
 
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
@@ -19,10 +15,9 @@ pub const SENTINEL_VALUE: FVal = 0b010;
 
 // Last bit set indicates locking
 pub const LOCKED_VALUE: FVal = 0b001;
-pub const SWAPPING_FORWARD_VALUE: FVal = 0b011;
-pub const SWAPPING_BACKWARD_VALUE: FVal = 0b111;
+pub const SWAPPING_VALUE: FVal = 0b011;
 
-pub const TOMBSTONE_VALUE: FVal = 0b110;
+pub const TOMBSTONE_VALUE: FVal = 0b100;
 
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
@@ -54,7 +49,6 @@ enum ModResult<V> {
     Done(FVal, Option<V>, usize), // _, value, index
     TableFull,
     Aborted,
-    TombstonePut(FVal, Option<V>, usize)
 }
 
 enum ModOp<'a, V> {
@@ -64,13 +58,6 @@ enum ModOp<'a, V> {
     SwapFastVal(Box<dyn Fn(FVal) -> Option<FVal>>),
     Sentinel,
     Tombstone,
-}
-
-enum HopAdjustResult {
-    Sentinel(usize), // Meet a sentinel
-    Adjusted(usize), // Successfully adjusted to new idx
-    Full(usize), // Cannot adjust, stopped at idx
-    Untouched(usize),
 }
 
 pub enum InsertOp {
@@ -97,8 +84,8 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
     occu_limit: usize,
-    occupation: Counter,
-    empty_entries: Counter,
+    occupation: AtomicUsize,
+    empty_entries: AtomicUsize,
     total_size: usize,
     hop_base: usize,
     pub attachment: A,
@@ -112,7 +99,7 @@ pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
     meta: Arc<ChunkMeta<K, V, A, ALLOC>>,
     attachment_init_meta: A::InitMeta,
-    count: Counter,
+    count: AtomicUsize,
     init_cap: usize,
     mark: PhantomData<H>,
 }
@@ -148,7 +135,7 @@ impl<
                 new_chunk: Atomic::null(),
                 epoch: AtomicUsize::new(0),
             }),
-            count: Counter::new(),
+            count: AtomicUsize::new(0),
             init_cap: cap,
             attachment_init_meta,
             mark: PhantomData,
@@ -255,7 +242,7 @@ impl<
             .map(|(a, b, _)| (a, b))
     }
 
-    pub fn  insert(
+    pub fn insert(
         &self,
         op: InsertOp,
         key: &K,
@@ -274,7 +261,7 @@ impl<
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
-                if new_chunk.occupation.sum_strong() >= new_chunk.occu_limit {
+                if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
                     backoff.spin();
                     continue;
                 }
@@ -294,21 +281,15 @@ impl<
                 InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
-                InsertOp::Tombstone => {
-                    if new_chunk.is_some() {
-                        backoff.spin();
-                        continue;
-                    }
-                    ModOp::Tombstone
-                },
+                InsertOp::Tombstone => ModOp::Tombstone,
             };
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
             let mut result = None;
             match value_insertion {
                 ModResult::Done(_, _, _) => {
-                    modify_chunk.occupation.incr(1);
-                    self.count.incr(1);
+                    modify_chunk.occupation.fetch_add(1, Relaxed);
+                    self.count.fetch_add(1, Relaxed);
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => {
                     result = Some((fv, v.unwrap()))
@@ -319,7 +300,7 @@ impl<
                         "Insertion failed, do migration and retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
                         new_chunk.is_some(),
                         modify_chunk.capacity,
-                        modify_chunk.occupation.sum(),
+                        modify_chunk.occupation.load(Relaxed),
                         chunk_ptr,
                         new_chunk_ptr
                     );
@@ -339,9 +320,34 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                ModResult::NotFound => {}
-                ModResult::TombstonePut(fv, v, _) => {
-                    result = Some((fv, v.unwrap()));
+                ModResult::NotFound => {
+                    // Only possible for Tombstone op
+                    if new_chunk.is_some() {
+                        // Cannot find the item to delete during migration
+                        // If can be in the old chunk which we can try to jut a sentinel
+                        match self.modify_entry(
+                            chunk,
+                            hash,
+                            key,
+                            fkey,
+                            ModOp::Sentinel,
+                            true,
+                            &guard,
+                            new_chunk.map(|c| &**c),
+                        ) {
+                            ModResult::Done(_, _, _) => {
+                                chunk.occupation.fetch_add(1, AcqRel);
+                            }
+                            ModResult::Replaced(fv, val, _) => {
+                                if fv > TOMBSTONE_VALUE {
+                                    return Some((fv, val.unwrap()));
+                                }
+                            }
+                            _ => {}
+                        }
+                        backoff.spin();
+                        continue;
+                    }
                 }
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
@@ -419,7 +425,7 @@ impl<
                 .store(owned_new.into_shared(&guard), Release);
             self.meta.new_chunk.store(Shared::null(), Release);
             dfence();
-            self.count.decr(len);
+            self.count.fetch_sub(len, AcqRel);
             break;
         }
     }
@@ -439,58 +445,54 @@ impl<
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
-            if new_chunk.is_some() {
-                backoff.spin();
-                continue;
+            if let Some(new_chunk) = new_chunk {
+                // && self.now_epoch() == epoch
+                // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
+                if let Some((old_parsed_val, old_addr, attachment)) =
+                    self.get_from_chunk(chunk, hash, key, fkey, &backoff, Some(&**new_chunk))
+                {
+                    let old_fval = old_parsed_val.act_val::<V>();
+                    if old_fval == LOCKED_VALUE {
+                        backoff.spin();
+                        continue;
+                    }
+                    if old_fval >= NUM_FIX_V {
+                        if let Some(new_val) = func(old_fval) {
+                            let val = attachment.get_value();
+                            match self.modify_entry(
+                                new_chunk,
+                                hash,
+                                key,
+                                fkey,
+                                ModOp::AttemptInsert(new_val, &val),
+                                false,
+                                guard,
+                                None,
+                            ) {
+                                ModResult::Done(_, _, new_index)
+                                | ModResult::Replaced(_, _, new_index) => {
+                                    if Self::cas_sentinel(old_addr, old_parsed_val.val) {
+                                        // Put a sentinel in the old chunk
+                                        return SwapResult::Succeed(
+                                            old_fval,
+                                            new_index,
+                                            new_chunk_ptr,
+                                        );
+                                    } else {
+                                        // If fail, we may have some problem here
+                                        // The best strategy can be CAS a tombstone to the new index and try everything again
+                                        // Note that we use attempt insert, it will be safe to just `remove` it
+                                        let new_addr = new_chunk.entry_addr(new_index);
+                                        let _ = Self::cas_tombstone(new_addr, new_val);
+                                        continue;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
-            // if let Some(new_chunk) = new_chunk {
-            //     // && self.now_epoch() == epoch
-            //     // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-            //     if let Some((old_parsed_val, old_addr, attachment)) =
-            //         self.get_from_chunk(chunk, hash, key, fkey, &backoff, Some(&**new_chunk))
-            //     {
-            //         let old_fval = old_parsed_val.act_val::<V>();
-            //         if old_fval == LOCKED_VALUE {
-            //             backoff.spin();
-            //             continue;
-            //         }
-            //         if old_fval >= NUM_FIX_V {
-            //             if let Some(new_val) = func(old_fval) {
-            //                 let val = attachment.get_value();
-            //                 match self.modify_entry(
-            //                     new_chunk,
-            //                     hash,
-            //                     key,
-            //                     fkey,
-            //                     ModOp::AttemptInsert(new_val, &val),
-            //                     false,
-            //                     guard,
-            //                     None,
-            //                 ) {
-            //                     ModResult::Done(_, _, new_index)
-            //                     | ModResult::Replaced(_, _, new_index) => {
-            //                         if Self::cas_sentinel(old_addr, old_parsed_val.val) {
-            //                             // Put a sentinel in the old chunk
-            //                             return SwapResult::Succeed(
-            //                                 old_fval,
-            //                                 new_index,
-            //                                 new_chunk_ptr,
-            //                             );
-            //                         } else {
-            //                             // If fail, we may have some problem here
-            //                             // The best strategy can be CAS a tombstone to the new index and try everything again
-            //                             // Note that we use attempt insert, it will be safe to just `remove` it
-            //                             let new_addr = new_chunk.entry_addr(new_index);
-            //                             let _ = Self::cas_tombstone(new_addr, new_val);
-            //                             continue;
-            //                         }
-            //                     }
-            //                     _ => {}
-            //                 }
-            //             }
-            //         }
-            //     }
-            // }
             let modify_chunk_ptr = if new_chunk.is_some() {
                 new_chunk_ptr
             } else {
@@ -508,31 +510,33 @@ impl<
                 guard,
                 None,
             );
-            // if new_chunk.is_some() {
-            //     debug_assert_ne!(chunk_ptr, new_chunk_ptr);
-            //     debug_assert_ne!(new_chunk_ptr, Shared::null());
-            //     let res = self.modify_entry(
-            //         chunk,
-            //         hash,
-            //         key,
-            //         fkey,
-            //         ModOp::Sentinel,
-            //         false,
-            //         &guard,
-            //         new_chunk.map(|c| &**c),
-            //     );
-            //     self.manually_drop_sentinel_res(&res, chunk);
-            // }
+            if new_chunk.is_some() {
+                debug_assert_ne!(chunk_ptr, new_chunk_ptr);
+                debug_assert_ne!(new_chunk_ptr, Shared::null());
+                let res = self.modify_entry(
+                    chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Sentinel,
+                    false,
+                    &guard,
+                    new_chunk.map(|c| &**c),
+                );
+                self.manually_drop_sentinel_res(&res, chunk);
+            }
             return match mod_res {
                 ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v, idx, modify_chunk_ptr),
                 ModResult::Aborted => SwapResult::Aborted,
                 ModResult::Fail => SwapResult::Failed,
                 ModResult::NotFound => SwapResult::NotFound,
-                ModResult::Sentinel => unreachable!("Swap sentinel"),
+                ModResult::Sentinel => {
+                    backoff.spin();
+                    continue;
+                }
                 ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
                 ModResult::Done(_, _, _) => unreachable!("Swap Done"),
                 ModResult::TableFull => unreachable!("Swap table full"),
-                ModResult::TombstonePut(_, _, _) => unreachable!("Swap tombstone put"),
             };
         }
     }
@@ -541,7 +545,7 @@ impl<
     pub fn remove(&self, key: &K, fkey: FKey) -> Option<(FVal, V)> {
         let tagging_res = self.insert(InsertOp::Tombstone, key, None, fkey, TOMBSTONE_VALUE);
         if tagging_res.is_some() {
-            self.count.decr(1);
+            self.count.fetch_sub(1, AcqRel);
         }
         return tagging_res;
     }
@@ -573,7 +577,11 @@ impl<
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
         let chunk = unsafe { chunk_ptr.deref() };
-        (chunk.occu_limit, chunk.occupation.sum(), chunk.capacity)
+        (
+            chunk.occu_limit,
+            chunk.occupation.load(Relaxed),
+            chunk.capacity,
+        )
     }
 
     pub(crate) fn dump_dist(&self) {
@@ -600,7 +608,7 @@ impl<
     }
 
     pub fn len(&self) -> usize {
-        self.count.sum_strong() as usize
+        self.count.load(Relaxed)
     }
 
     fn get_from_chunk(
@@ -615,8 +623,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap = chunk.capacity;
         let cap_mask = chunk.cap_mask();
-        let home_idx =  hash & cap_mask;
-        let mut idx = home_idx;
+        let mut idx = hash & cap_mask;
         let mut counter = 0;
         let mut addr = chunk.entry_addr(idx);
         while counter < cap {
@@ -626,9 +633,8 @@ impl<
                 if attachment.probe(key) {
                     'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
-                        let raw = val_res.val;
-                        if val_res.is_swapping() {
-                            Self::wait_swapping_reprobe(addr, &mut counter, &mut idx, home_idx, raw, backoff);
+                        if val_res.val == SWAPPING_VALUE {
+                            Self::wait_swapping(addr, fkey, backoff);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         }
                         if val_res.is_locked() {
@@ -683,9 +689,6 @@ impl<
                         let v = Self::get_fast_value(addr);
                         let raw = v.val;
                         if raw >= TOMBSTONE_VALUE {
-                            if v.is_primed() {
-                                return ModResult::Sentinel;
-                            }
                             let act_val = v.act_val::<V>();
                             match op {
                                 ModOp::Insert(fval, ov) => {
@@ -702,7 +705,7 @@ impl<
                                         if raw != TOMBSTONE_VALUE {
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         } else {
-                                            chunk.empty_entries.decr(1);
+                                            chunk.empty_entries.fetch_sub(1, Relaxed);
                                             return ModResult::Done(act_val, None, idx);
                                         }
                                     } else {
@@ -738,8 +741,8 @@ impl<
                                         // we have put tombstone on the value, get the attachment and erase it
                                         let value = read_attachment.then(|| attachment.get_value());
                                         attachment.erase(raw);
-                                        chunk.empty_entries.incr(1);
-                                        return ModResult::TombstonePut(act_val, value, idx);
+                                        chunk.empty_entries.fetch_add(1, Relaxed);
+                                        return ModResult::Replaced(act_val, value, idx);
                                     }
                                 }
                                 ModOp::UpsertFastVal(ref fv) => {
@@ -793,23 +796,27 @@ impl<
                                     if act_val == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if let Some(sv) = swap(act_val) {
-                                        if Self::cas_value(addr, raw, sv).1 {
-                                            // swap success
-                                            return ModResult::Replaced(act_val, None, idx);
+                                    if act_val >= NUM_FIX_V {
+                                        if let Some(sv) = swap(act_val) {
+                                            if Self::cas_value(addr, v.val, sv).1 {
+                                                // swap success
+                                                return ModResult::Replaced(act_val, None, idx);
+                                            } else {
+                                                return ModResult::Fail;
+                                            }
                                         } else {
-                                            return ModResult::Fail;
+                                            return ModResult::Aborted;
                                         }
                                     } else {
-                                        return ModResult::Aborted;
+                                        return ModResult::Fail;
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE {
+                        } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
-                        } else if v.is_swapping() {
+                        } else if raw == SWAPPING_VALUE {
                             Self::wait_swapping_reprobe(
-                                addr, &mut count, &mut idx, home_idx, raw, &backoff,
+                                addr, fkey, &mut count, &mut idx, home_idx, &backoff,
                             );
                             continue;
                         } else {
@@ -840,7 +847,7 @@ impl<
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
                             // Use empty key to block probing progression for hops
-                            (fkey, SWAPPING_BACKWARD_VALUE)
+                            (EMPTY_KEY, SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -848,44 +855,57 @@ impl<
                         match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
                             (_, true) => {
                                 let attachment = chunk.attachment.prefetch(idx);
-                                attachment.set_key(key.clone());
-                                attachment.set_value((*val).clone(), 0);
-                                Self::store_key(addr, store_fkey);
-                                if Self::FAT_VAL {
-                                    Self::store_raw_value(addr, fval);
+                                if !hop_adjustment {
+                                    attachment.set_key(key.clone());
                                 }
-                                let adj_res = Self::adjust_hops(
-                                    hop_adjustment,
-                                    chunk,
-                                    fkey,
-                                    fval,
-                                    Some(key),
-                                    home_idx,
-                                    idx,
-                                    count,
-                                );
-                                return Self::mod_res_from_adj(adj_res, chunk);
+                                if Self::FAT_VAL {
+                                    Self::store_key(addr, fkey);
+                                    attachment.set_value((*val).clone(), 0);
+                                    Self::store_raw_value(addr, fval);
+                                } else {
+                                    Self::store_key(addr, store_fkey);
+                                    if let Some(new_idx) = Self::adjust_hops(
+                                        hop_adjustment,
+                                        chunk,
+                                        fkey,
+                                        fval,
+                                        Some(key),
+                                        home_idx,
+                                        idx,
+                                        count,
+                                    ) {
+                                        idx = new_idx;
+                                    } else {
+                                        Self::store_value(addr, EMPTY_VALUE);
+                                        return ModResult::TableFull;
+                                    }
+                                }
+                                return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (origin_raw, false) => {
-                                 // Reprobe
-                                Self::wait_swapping_reprobe(
-                                    addr, &mut count, &mut idx, home_idx, origin_raw, &backoff,
+                            (SWAPPING_VALUE, false) => {
+                                // Reprobe
+                                Self::wait_swapping_reprobe_no_key(
+                                    addr, &mut count, &mut idx, home_idx, &backoff,
                                 );
+                                continue;
+                            }
+                            (_, false) => {
+                                backoff.spin();
                                 continue;
                             }
                         }
                     }
                     ModOp::UpsertFastVal(fval) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
-                            (fkey, SWAPPING_BACKWARD_VALUE)
+                            (EMPTY_KEY, SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
                         match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
                             (_, true) => {
                                 Self::store_key(addr, store_fkey);
-                                let adj_res = Self::adjust_hops(
+                                if let Some(new_idx) = Self::adjust_hops(
                                     hop_adjustment,
                                     chunk,
                                     fkey,
@@ -894,16 +914,25 @@ impl<
                                     home_idx,
                                     idx,
                                     count,
-                                );
-                                return Self::mod_res_from_adj(adj_res, chunk);
+                                ) {
+                                    idx = new_idx;
+                                } else {
+                                    Self::store_value(addr, EMPTY_VALUE);
+                                    return ModResult::TableFull;
+                                }
+                                return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (origin_raw, false) => {
+                            (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                               Self::wait_swapping_reprobe(
-                                   addr, &mut count, &mut idx, home_idx, origin_raw, &backoff,
-                               );
-                               continue;
+                                Self::wait_swapping_reprobe_no_key(
+                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                );
+                                continue;
+                            }
+                            (_, false) => {
+                                backoff.spin();
+                                continue;
                             }
                         }
                     }
@@ -933,11 +962,6 @@ impl<
                         }
                         _ => {}
                     }
-                } else if fval.is_swapping() {
-                    Self::wait_swapping_reprobe(
-                        addr, &mut count, &mut idx, home_idx, raw, &backoff,
-                    );
-                    continue;
                 }
                 //  else if let Some(new_chunk) = new_chunk {
                 //     Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
@@ -962,34 +986,45 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        ENABLE_HOPSCOTCH
-            && !Self::FAT_VAL
-            && new_chunk.is_none()
-            && chunk.capacity > NUM_HOPS
-            && count > NUM_HOPS
+        !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
     fn wait_swapping_reprobe(
         addr: usize,
+        expect_key: FKey,
         count: &mut usize,
         idx: &mut usize,
         home_idx: usize,
-        origin_raw: FVal,
         backoff: &Backoff,
     ) {
-        let mut prev_raw = origin_raw;
-        loop {
-            let fval = Self::get_fast_value(addr);
-            if !fval.is_swapping() {
-                if prev_raw == SWAPPING_BACKWARD_VALUE {
-                    *count = 0;
-                    *idx = home_idx;
-                }
-                return;
-            }
+        Self::wait_swapping(addr, expect_key, backoff);
+        *count = 0;
+        *idx = home_idx;
+    }
+
+    #[inline(always)]
+    fn wait_swapping_reprobe_no_key(
+        addr: usize,
+        count: &mut usize,
+        idx: &mut usize,
+        home_idx: usize,
+        backoff: &Backoff,
+    ) {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE
+        {
             backoff.spin();
-            prev_raw = fval.val;
+        }
+        *count = 0;
+        *idx = home_idx;
+    }
+
+    #[inline(always)]
+    fn wait_swapping(addr: usize, expect_key: FKey, backoff: &Backoff) {
+        while Self::get_fast_key(addr) == expect_key
+            && Self::get_fast_value(addr).val == SWAPPING_VALUE
+        {
+            backoff.spin();
         }
     }
 
@@ -997,7 +1032,7 @@ impl<
         let mut idx = 0;
         let cap = chunk.capacity;
         let mut counter = 0;
-        let mut res = Vec::with_capacity(chunk.occupation.sum());
+        let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed));
         let cap_mask = chunk.cap_mask();
         while counter < cap {
             idx &= cap_mask;
@@ -1125,7 +1160,6 @@ impl<
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
-    #[inline]
     fn adjust_hops(
         needs_adjust: bool,
         chunk: &Chunk<K, V, A, ALLOC>,
@@ -1135,17 +1169,14 @@ impl<
         home_idx: usize,
         mut dest_idx: usize,
         hops: usize,
-    ) -> HopAdjustResult {
+    ) -> Option<usize> {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
-        if !ENABLE_HOPSCOTCH {
-            return HopAdjustResult::Untouched(dest_idx);
-        }
         if !needs_adjust {
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
             }
-            return HopAdjustResult::Untouched(dest_idx);
+            return Some(dest_idx);
         } else {
             let cap_mask = chunk.cap_mask();
             let cap = chunk.capacity;
@@ -1159,7 +1190,7 @@ impl<
                     if let Some(pinned_addr) = last_pinned_key {
                         Self::store_key(pinned_addr, DISABLED_KEY);
                     }
-                    return HopAdjustResult::Full(dest_idx);
+                    return None;
                 }
                 let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
                 let curr_idx = scaled_curr_idx & cap_mask;
@@ -1169,10 +1200,6 @@ impl<
                     (starting, cap + curr_idx)
                 };
                 debug_assert!(probe_start < probe_end);
-                debug_assert_eq!({
-                    let curr_addr = chunk.entry_addr(dest_idx);
-                    Self::get_fast_value(curr_addr).val
-                }, SWAPPING_BACKWARD_VALUE);
                 // Find a swappable slot
                 'PROBING: for i in probe_start..probe_end {
                     let idx = i & cap_mask;
@@ -1201,7 +1228,7 @@ impl<
                             if let Some(pinned_addr) = last_pinned_key {
                                 Self::store_key(pinned_addr, DISABLED_KEY);
                             }
-                            return HopAdjustResult::Sentinel(dest_idx);
+                            return None;
                         }
                         if candidate_fval.val < NUM_FIX_V {
                             // Do not temper with non value slot, try next one
@@ -1209,11 +1236,11 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_FORWARD_VALUE).1 {
+                        let candidate_fkey = Self::get_fast_key(candidate_addr);
+                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
                             // The slot value have been changed, retry
                             continue;
                         }
-                        let candidate_fkey = Self::get_fast_key(candidate_addr);
                         // Starting to copy it co current idx
                         let curr_addr = chunk.entry_addr(curr_idx);
                         // Start from key object in the attachment
@@ -1222,18 +1249,16 @@ impl<
                         let curr_attachment = chunk.attachment.prefetch(curr_idx);
                         // And the key object
                         curr_attachment.set_key(candidate_key);
-                        fence(Acquire);
                         // Then set the fkey, at this point, the entry is available to other thread
                         Self::store_key(curr_addr, candidate_fkey);
 
                         // Enable probing on the candidate with inserting key
                         key.map(|key| candidate_attachment.set_key(key.clone()));
-                        fence(Acquire);
                         Self::store_key(candidate_addr, fkey);
 
                         // Discard swapping value on current address by replace it with new value
                         Self::store_value(curr_addr, candidate_fval.val);
-
+                        
                         last_pinned_key = Some(candidate_addr);
                         // Also update the hop bits
                         let hop_distance = if curr_idx > idx {
@@ -1250,10 +1275,9 @@ impl<
                             Self::store_value(candidate_addr, fval);
                             // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
-                            return HopAdjustResult::Adjusted(candidate_idx);
+                            return Some(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
-                            Self::store_value(candidate_addr, SWAPPING_BACKWARD_VALUE);
                             dest_idx = candidate_idx;
                             continue 'SWAPPING;
                         }
@@ -1263,7 +1287,7 @@ impl<
                 if let Some(pinned_addr) = last_pinned_key {
                     Self::store_key(pinned_addr, DISABLED_KEY);
                 }
-                return HopAdjustResult::Full(dest_idx);
+                return None;
             }
         }
     }
@@ -1294,22 +1318,20 @@ impl<
     }
 
     /// Failed return old shared
-    #[inline(always)]
     fn check_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        let occupation_approx = old_chunk_ref.occupation.sum_strong();
+        let occupation = old_chunk_ref.occupation.load(Relaxed);
         let occu_limit = old_chunk_ref.occu_limit;
-        if occupation_approx < occu_limit {
+        if occupation < occu_limit {
             return ResizeResult::NoNeed;
         }
         self.do_migration(old_chunk_ptr, guard)
     }
 
-    #[inline(never)]
     fn do_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
@@ -1319,23 +1341,7 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        // Swap in old chunk as placeholder for the lock
-        let old_chunk_lock = old_chunk_ptr.with_tag(1);
-        if let Err(_) =
-            self.meta
-                .chunk
-                .compare_exchange(old_chunk_ptr, old_chunk_lock, AcqRel, Relaxed, guard)
-        {
-            // other thread have allocated new chunk and wins the competition, exit
-            trace!("Cannot obtain lock for resize, will retry");
-            return ResizeResult::SwapFailed;
-        }
-        let old_occupation = old_chunk_ins.occupation.sum_strong();
-        if old_occupation < old_chunk_ins.occu_limit {
-            self.meta.chunk.store(old_chunk_ptr, Relaxed);
-            return ResizeResult::NoNeed;
-        }
-        let empty_entries = old_chunk_ins.empty_entries.sum_approx();
+        let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // Clear tombstones
@@ -1347,6 +1353,18 @@ impl<
             }
             cap
         };
+        // Swap in old chunk as placeholder for the lock
+        let old_chunk_lock = old_chunk_ptr.with_tag(1);
+        if let Err(_) =
+            self.meta
+                .chunk
+                .compare_exchange(old_chunk_ptr, old_chunk_lock, AcqRel, Relaxed, guard)
+        {
+            // other thread have allocated new chunk and wins the competition, exit
+            trace!("Cannot obtain lock for resize, will retry");
+            return ResizeResult::SwapFailed;
+        }
+        let old_occupation = old_chunk_ins.occupation.load(Relaxed);
         trace!(
             "--- Resizing {:?}. New size is {}, was {}, occ {}",
             old_chunk_ptr,
@@ -1356,7 +1374,7 @@ impl<
         );
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
-            (*new_chunk).occupation.store(old_occupation);
+            (*new_chunk).occupation.store(old_occupation, Relaxed);
         }
         let new_chunk_ptr = Owned::new(ChunkPtr::new(new_chunk))
             .into_shared(guard)
@@ -1392,7 +1410,6 @@ impl<
         //     old_chunk_addr,
         //     new_chunk_addr,
         //     old_chunk_lock,
-        //     old_occupation,
         // );
         ResizeResult::InProgress
     }
@@ -1453,7 +1470,7 @@ impl<
         old_occupation: usize,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
-        debug!(
+        trace!(
             "Migrating entries from {:?} to {:?}",
             old_chunk_ins.base,
             new_chunk_ins.base
@@ -1482,7 +1499,7 @@ impl<
                         continue;
                     }
                 }
-                LOCKED_VALUE | SWAPPING_FORWARD_VALUE | SWAPPING_BACKWARD_VALUE => {
+                LOCKED_VALUE | SWAPPING_VALUE => {
                     backoff.spin();
                     continue;
                 }
@@ -1492,7 +1509,6 @@ impl<
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
-                    debug!("Migrating value {}", fvalue.val);
                     if !fvalue.is_primed() {
                         let fkey = Self::get_fast_key(old_address);
                         if !Self::migrate_entry(
@@ -1516,14 +1532,14 @@ impl<
         // resize finished, make changes on the numbers
         if effective_copy > old_occupation {
             let delta = effective_copy - old_occupation;
-            new_chunk_ins.occupation.incr(delta);
+            new_chunk_ins.occupation.fetch_add(delta, Relaxed);
             debug!(
                 "Occupation {}-{} offset {}",
                 effective_copy, old_occupation, delta
             );
         } else if effective_copy < old_occupation {
             let delta = old_occupation - effective_copy;
-            new_chunk_ins.occupation.decr(delta);
+            new_chunk_ins.occupation.fetch_sub(delta, Relaxed);
             debug!(
                 "Occupation {}-{} offset neg {}",
                 effective_copy, old_occupation, delta
@@ -1534,7 +1550,7 @@ impl<
                 effective_copy, old_occupation
             );
         }
-        debug!("Migrated {} entries to new chunk", effective_copy);
+        trace!("Migrated {} entries to new chunk", effective_copy);
         return effective_copy;
     }
 
@@ -1574,10 +1590,6 @@ impl<
         old_address: usize,
         effective_copy: &mut usize,
     ) -> bool {
-        // Wait on insertion process finished
-        if fkey == EMPTY_KEY {
-            return false;
-        }
         // Will not migrate meta keys
         if fkey < NUM_FIX_K {
             return true;
@@ -1609,7 +1621,6 @@ impl<
         let home_idx = hash & cap_mask;
         let mut idx = home_idx;
         let mut count = 0;
-        let backoff = crossbeam_utils::Backoff::new();
         while count < cap {
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
@@ -1629,7 +1640,7 @@ impl<
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
-                    (fkey, SWAPPING_BACKWARD_VALUE)
+                    (EMPTY_KEY, SWAPPING_VALUE)
                 } else {
                     (fkey, orig)
                 };
@@ -1639,10 +1650,10 @@ impl<
                     let key = old_attachment.get_key();
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
-                    new_attachment.set_value(value.clone(), 0);
+                    new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, store_fkey);
-                    match Self::adjust_hops(
+                    if Self::adjust_hops(
                         hop_adjustment,
                         new_chunk_ins,
                         fkey,
@@ -1651,33 +1662,16 @@ impl<
                         home_idx,
                         idx,
                         count,
-                    ) {
-                        HopAdjustResult::Untouched(_) | HopAdjustResult::Adjusted(_) => {},
-                        HopAdjustResult::Sentinel(idx) | HopAdjustResult::Full(idx) => {
-                            let addr = new_chunk_ins.entry_addr(idx);
-                            let new_attachment = new_chunk_ins.attachment.prefetch(idx);
-                            new_attachment.set_key(key.clone());
-                            new_attachment.set_value(value.clone(), 0);
-                            Self::store_key(addr, fkey);
-                            Self::store_value(addr, orig);
-                        }
+                    )
+                    .is_none()
+                    {
+                        Self::store_value(addr, orig);
                     }
                     break;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
                     // other thread. Need to retry
                     warn!("Migrate {} have conflict", fkey);
-                    backoff.spin();
-                    continue;
-                }
-            }
-            {
-                let fval = Self::get_fast_value(addr);
-                let raw = fval.val;
-                if fval.is_swapping() {
-                    Self::wait_swapping_reprobe(
-                        addr, &mut count, &mut idx, home_idx, raw, &backoff,
-                    );
                     continue;
                 }
             }
@@ -1700,27 +1694,6 @@ impl<
         }
         *effective_copy += 1;
         return true;
-    }
-
-    #[inline(always)]
-    fn mod_res_from_adj(adj_res: HopAdjustResult, chunk: &Chunk<K, V, A, ALLOC>) -> ModResult<V> {
-        match adj_res {
-            HopAdjustResult::Untouched(new_idx) | HopAdjustResult::Adjusted(new_idx) => {
-                return ModResult::Done(0, None, new_idx);
-            }
-            HopAdjustResult::Sentinel(idx) => {
-                let addr = chunk.entry_addr(idx);
-                Self::store_key(addr, DISABLED_KEY);
-                Self::store_sentinel(addr);
-                return ModResult::Sentinel;
-            }
-            HopAdjustResult::Full(idx) => {
-                let addr = chunk.entry_addr(idx);
-                Self::store_key(addr, DISABLED_KEY);
-                Self::store_value(addr, TOMBSTONE_VALUE);
-                return ModResult::TableFull;
-            }
-        }
     }
 
     pub fn map_is_copying(&self) -> bool {
@@ -1780,12 +1753,6 @@ impl FastValue {
     }
 
     #[inline(always)]
-    fn is_swapping(self) -> bool {
-        let v = self.val;
-        v == SWAPPING_FORWARD_VALUE || v == SWAPPING_BACKWARD_VALUE
-    }
-
-    #[inline(always)]
     fn is_locked(self) -> bool {
         let v = self.val;
         v == LOCKED_VALUE
@@ -1794,7 +1761,7 @@ impl FastValue {
     #[inline(always)]
     fn is_primed(self) -> bool {
         let v = self.val;
-        self.val | VAL_PRIME_MASK == v
+        v & VAL_BIT_MASK != v
     }
 
     fn prime(self) -> Self {
@@ -1834,8 +1801,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                 Self {
                     base: data_base,
                     capacity,
-                    occupation: Counter::new(),
-                    empty_entries: Counter::new(),
+                    occupation: AtomicUsize::new(0),
+                    empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
                     total_size,
                     hop_base,
@@ -1958,7 +1925,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 new_chunk: Default::default(),
                 epoch: AtomicUsize::new(0),
             }),
-            count: Counter::new(),
+            count: AtomicUsize::new(0),
             init_cap: self.init_cap,
             attachment_init_meta: self.attachment_init_meta.clone(),
             mark: PhantomData,
@@ -1998,7 +1965,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 new_table.meta.new_chunk.store(Shared::null(), Release);
             }
         }
-        new_table.count.store(self.count.sum_strong());
+        new_table.count.store(self.count.load(Acquire), Release);
         new_table
     }
 }
@@ -2079,7 +2046,6 @@ impl<V> Debug for ModResult<V> {
             Self::Done(arg0, _arg1, arg2) => f.debug_tuple("Done").field(arg0).field(arg2).finish(),
             Self::TableFull => write!(f, "TableFull"),
             Self::Aborted => write!(f, "Aborted"),
-            Self::TombstonePut(_, _, _) => write!(f, "TombstonePut"),
         }
     }
 }
