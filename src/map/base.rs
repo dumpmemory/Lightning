@@ -811,7 +811,7 @@ impl<
                             return ModResult::Sentinel;
                         } else if v.is_swapping() {
                             Self::wait_swapping_reprobe(
-                                addr, &mut count, &mut idx, raw, home_idx, &backoff,
+                                addr, &mut count, &mut idx, home_idx, raw, &backoff,
                             );
                             continue;
                         } else {
