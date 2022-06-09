@@ -265,7 +265,10 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 
 #[cfg(test)]
 mod test {
-    use crate::map::{*, base::{NUM_FIX_K, NUM_FIX_V}};
+    use crate::map::{
+        base::{NUM_FIX_K, NUM_FIX_V},
+        *,
+    };
     use alloc::sync::Arc;
     use rayon::prelude::*;
     use std::{thread, time::Duration};
@@ -567,13 +570,18 @@ mod test {
         map.insert(key, base_val - NUM_FIX_V);
         let offset_key = key + NUM_FIX_K;
         for j in 0..4096 {
-            let curr_val = base_val + j ;
+            let curr_val = base_val + j;
             let next_val = curr_val + 1;
             map.insert(key, curr_val - NUM_FIX_V);
-            map.table.swap(offset_key, &(), move |v| {
-                assert_eq!(v, curr_val);
-                Some(next_val)
-            }, &guard);
+            map.table.swap(
+                offset_key,
+                &(),
+                move |v| {
+                    assert_eq!(v, curr_val);
+                    Some(next_val)
+                },
+                &guard,
+            );
         }
         let mut threads = vec![];
         for i in 0..16 {
@@ -588,10 +596,15 @@ mod test {
                     let curr_val = base_val + j;
                     let next_val = curr_val + 1;
                     debug_assert_eq!(map.get(&key), Some(curr_val - NUM_FIX_V));
-                    map.table.swap(offset_key, &(), move |v| {
-                        assert_eq!(v, curr_val);
-                        Some(next_val)
-                    }, &guard);
+                    map.table.swap(
+                        offset_key,
+                        &(),
+                        move |v| {
+                            assert_eq!(v, curr_val);
+                            Some(next_val)
+                        },
+                        &guard,
+                    );
                 }
             }));
         }
@@ -615,12 +628,29 @@ mod test {
                 for j in 0..repeats {
                     let curr_val = base_val + j;
                     let next_val = curr_val + 1;
-                    debug_assert_eq!(map.get(&key), Some(curr_val - NUM_FIX_V), "Value checking before swap");
-                    map.table.swap(offset_key, &(), move |v| {
-                        assert_eq!(v, curr_val, "Fail check swapping offsetted {} from {} to {}", offset_key, curr_val, next_val);
-                        Some(next_val)
-                    }, &guard);
-                    debug_assert_eq!(map.get(&key), Some(next_val - NUM_FIX_V), "Value checking after swap");
+                    debug_assert_eq!(
+                        map.get(&key),
+                        Some(curr_val - NUM_FIX_V),
+                        "Value checking before swap"
+                    );
+                    map.table.swap(
+                        offset_key,
+                        &(),
+                        move |v| {
+                            assert_eq!(
+                                v, curr_val,
+                                "Fail check swapping offsetted {} from {} to {}",
+                                offset_key, curr_val, next_val
+                            );
+                            Some(next_val)
+                        },
+                        &guard,
+                    );
+                    debug_assert_eq!(
+                        map.get(&key),
+                        Some(next_val - NUM_FIX_V),
+                        "Value checking after swap"
+                    );
                 }
             }));
         }
@@ -633,7 +663,12 @@ mod test {
                 }
                 for j in 0..repeats {
                     let key = i * 100000 + j;
-                    assert_eq!(map.insert(key, key), Some(key), "reinserting at key {}", key - NUM_FIX_K);
+                    assert_eq!(
+                        map.insert(key, key),
+                        Some(key),
+                        "reinserting at key {}",
+                        key - NUM_FIX_K
+                    );
                 }
                 for j in 0..repeats {
                     let key = i * 100000 + j;
@@ -645,7 +680,7 @@ mod test {
     }
 
     #[test]
-    fn checking_inserion_with_migrations() {       
+    fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
         let repeats: usize = 4096;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
@@ -659,7 +694,12 @@ mod test {
                 }
                 for j in 0..repeats {
                     let key = i * 100000 + j;
-                    assert_eq!(map.insert(key, key), Some(key), "reinserting at key {}", key - NUM_FIX_K);
+                    assert_eq!(
+                        map.insert(key, key),
+                        Some(key),
+                        "reinserting at key {}",
+                        key - NUM_FIX_K
+                    );
                 }
                 for j in 0..repeats {
                     let key = i * 100000 + j;
@@ -669,7 +709,6 @@ mod test {
         }
         threads.into_iter().for_each(|t| t.join().unwrap());
     }
-
 
     #[bench]
     fn resizing_before(b: &mut Bencher) {

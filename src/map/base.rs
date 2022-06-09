@@ -966,9 +966,7 @@ impl<
                     }
                 }
                 if raw == SWAPPING_VALUE {
-                    Self::wait_swapping_reprobe(
-                        addr, &mut count, &mut idx, home_idx, &backoff,
-                    );
+                    Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
                     continue;
                 }
                 //  else if let Some(new_chunk) = new_chunk {
@@ -994,7 +992,11 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
-        ENABLE_HOPSOTCH && !Self::FAT_VAL && new_chunk.is_none() && chunk.capacity > NUM_HOPS && count > NUM_HOPS
+        ENABLE_HOPSOTCH
+            && !Self::FAT_VAL
+            && new_chunk.is_none()
+            && chunk.capacity > NUM_HOPS
+            && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1018,8 +1020,7 @@ impl<
         home_idx: usize,
         backoff: &Backoff,
     ) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE
-        {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
             backoff.spin();
         }
         *count = 0;
@@ -1028,8 +1029,7 @@ impl<
 
     #[inline(always)]
     fn wait_swapping(addr: usize, backoff: &Backoff) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE
-        {
+        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
             backoff.spin();
         }
     }
@@ -1264,7 +1264,7 @@ impl<
 
                         // Discard swapping value on current address by replace it with new value
                         Self::store_value(curr_addr, candidate_fval.val);
-                        
+
                         last_pinned_key = Some(candidate_addr);
                         // Also update the hop bits
                         let hop_distance = if curr_idx > idx {
@@ -1684,9 +1684,7 @@ impl<
             let v = Self::get_fast_value(addr);
             if v.val == SWAPPING_VALUE {
                 let backoff = crossbeam_utils::Backoff::new();
-                Self::wait_swapping_reprobe(
-                    addr, &mut count, &mut idx, home_idx, &backoff,
-                );
+                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
                 continue;
             }
             idx += 1; // reprobe
