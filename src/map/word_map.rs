@@ -697,8 +697,8 @@ mod test {
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
-                        "reinserting at key {}",
-                        key - NUM_FIX_K
+                        "reinserting at key {}, get {:?}, epoch {}",
+                        key - NUM_FIX_K, map.get(&key), map.table.now_epoch()
                     );
                 }
                 for j in 0..repeats {
