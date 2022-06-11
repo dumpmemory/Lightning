@@ -22,7 +22,6 @@ pub mod rw_spin;
 pub mod spin;
 pub mod stack;
 pub mod ttl_cache;
-pub mod counter;
 
 pub mod aarc;
 pub mod obj_alloc;
