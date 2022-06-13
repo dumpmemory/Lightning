@@ -285,6 +285,9 @@ impl<
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
+            let old_chunk_val = new_chunk.map(|_| {
+                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff, None)
+            });
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
             let mut result = None;
@@ -353,43 +356,27 @@ impl<
                 }
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            if new_chunk.is_some() {
-                debug_assert_ne!(
-                    chunk_ptr, new_chunk_ptr,
-                    "at epoch {}, inserting k:{}, v:{}",
-                    epoch, fkey, fvalue
-                );
-                debug_assert_ne!(
-                    new_chunk_ptr,
-                    Shared::null(),
-                    "at epoch {}, inserting k:{}, v:{}",
-                    epoch,
-                    fkey,
-                    fvalue
-                );
-                let old_val = self.modify_entry(
-                    chunk,
-                    hash,
-                    key,
-                    fkey,
-                    ModOp::Sentinel,
-                    true,
-                    &guard,
-                    new_chunk.map(|c| &**c),
-                );
-                trace!("Put sentinel to old chunk for {} got {:?}", fkey, old_val);
-                // Here, we may have a value that was in old chunk and had never been updated during sentinel
-                // If we had not got anything from new chunk yet, shall return this one
-                match (&old_val, &result) {
-                    (ModResult::Replaced(fv, v, _), None) | (ModResult::Existed(fv, v), None) => {
-                        if *fv > NUM_FIX_V {
-                            result = Some((*fv, v.clone().unwrap()))
-                        }
+            match old_chunk_val {
+                Some(Some((fval, addr, attachment))) => {
+                    if !Self::cas_sentinel(addr, fval.val) {
+                        backoff.spin();
+                        continue;
                     }
-                    _ => {
-                        self.manually_drop_sentinel_res(&old_val, chunk);
+                    if result.is_none() && fval.is_valued() {
+                        return Some((fval.act_val::<V>(), attachment.get_value()));
                     }
                 }
+                Some(None) => {
+                    match self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, new_chunk.map(|c| &**c)) {
+                        ModResult::Replaced(fval, val, _) | ModResult::Existed(fval, val) => {
+                            if result.is_none() && fval >= NUM_FIX_V {
+                                return Some((fval, val.unwrap().clone()))
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+                None => {}
             }
             // trace!("Inserted key {}, with value {}", fkey, fvalue);
             return result;
