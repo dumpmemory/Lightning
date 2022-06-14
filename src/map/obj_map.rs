@@ -396,7 +396,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         map.get(&1).unwrap().validate(num_threads);
     }
@@ -441,7 +441,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 256..265 {
             for j in 5..60 {

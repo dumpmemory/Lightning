@@ -325,7 +325,7 @@ mod test {
             }
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 100..900 {
             for j in 5..60 {
@@ -419,7 +419,7 @@ mod test {
         }
         info!("Waiting for intensive insertion to finish");
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         info!("Checking final value");
         (0..num_threads)
@@ -468,7 +468,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 256..265 {
             for j in 5..60 {
@@ -487,12 +487,15 @@ mod test {
         for _ in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let mut guard = map.lock(1).unwrap();
-                *guard += 1;
+                if let Some(mut guard) = map.lock(1) {
+                    *guard += 1;
+                } else {
+                    panic!("Cannot find key at epoch {}", map.table.now_epoch())
+                }
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         assert_eq!(map.get(&1).unwrap(), num_threads);
     }
@@ -556,7 +559,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
     }
 
@@ -698,7 +701,9 @@ mod test {
                         map.insert(key, key),
                         Some(key),
                         "reinserting at key {}, get {:?}, epoch {}",
-                        key - NUM_FIX_K, map.get(&key), map.table.now_epoch()
+                        key - NUM_FIX_K,
+                        map.get(&key),
+                        map.table.now_epoch()
                     );
                 }
                 for j in 0..repeats {
