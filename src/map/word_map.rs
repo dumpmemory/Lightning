@@ -95,14 +95,15 @@ pub struct WordMutexGuard<
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     fn create(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
-        let key = key + NUM_FIX_K;
         let value = 0;
+        let offset_key = key + NUM_FIX_K;
+        let offset_value = 0 + NUM_FIX_V;
         match table.insert(
             InsertOp::TryInsert,
             &(),
             Some(&()),
-            key,
-            value | MUTEX_BIT_MASK,
+            offset_key,
+            offset_value | MUTEX_BIT_MASK,
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
@@ -165,10 +166,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
     }
 
     pub fn remove(self) -> FVal {
+        let offset_key = self.key + NUM_FIX_V;
         trace!("Removing {}", self.key);
-        let res = self.table.remove(&(), self.key).unwrap().0;
+        let res = self.table.remove(&(), offset_key).unwrap().0;
         mem::forget(self);
-        res | MUTEX_BIT_MASK
+        res & WORD_MUTEX_DATA_BIT_MASK
     }
 }
 
