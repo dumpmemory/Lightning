@@ -479,6 +479,7 @@ impl<
                 }
                 ModResult::NotFound => {
                     // Probably should try the old chunk see if it is there
+                    trace!("Cannot find {} to swap", fkey);
                 }
                 _ => unreachable!("{:?}", fast_mod_res),
             }
@@ -576,6 +577,8 @@ impl<
                     Some(None) => {}
                     None => {}
                 }
+            } else if let Some((fval_actual, idx, chunk_ptr)) = result {
+                return SwapResult::Succeed(fval_actual, idx, chunk_ptr);
             }
             // Here both old and new chunk cannot find it, return
             return SwapResult::NotFound;

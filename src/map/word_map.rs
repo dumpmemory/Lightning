@@ -115,13 +115,13 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         }
     }
     fn new(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
-        let key = key + NUM_FIX_K;
+        let offset_key = key + NUM_FIX_K;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
         loop {
             let swap_res = table.swap(
-                key,
+                offset_key,
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
@@ -190,7 +190,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
-        self.value += NUM_FIX_V;
+        let offset_key = self.key + NUM_FIX_V;
+        let offset_val = self.value + NUM_FIX_V;
         trace!(
             "Release lock for key {} with value {}",
             self.key,
@@ -200,8 +201,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
             InsertOp::UpsertFast,
             &(),
             None,
-            self.key,
-            self.value & WORD_MUTEX_DATA_BIT_MASK,
+            offset_key,
+            offset_val & WORD_MUTEX_DATA_BIT_MASK,
         );
     }
 }
@@ -490,7 +491,7 @@ mod test {
                 if let Some(mut guard) = map.lock(1) {
                     *guard += 1;
                 } else {
-                    panic!("Cannot find key at epoch {}", map.table.now_epoch())
+                    panic!("Cannot find key at epoch {}, get {:?}", map.table.now_epoch(), map.get(&1))
                 }
             }));
         }
@@ -569,8 +570,8 @@ mod test {
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         let key = 10;
         let offsetted_key = key + NUM_FIX_K;
-        let num_threads = 32;
-        let num_rounds = 409600;
+        let num_threads = 256;
+        let num_rounds = 40960;
         let mut threads = vec![];
         map.insert(key, 0);
         for _ in 0..num_threads {
