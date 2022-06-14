@@ -564,6 +564,33 @@ mod test {
     }
 
     #[test]
+    fn swap_single_key() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(WordMap::<System>::with_capacity(32));
+        let key = 10;
+        let offsetted_key = key + NUM_FIX_K;
+        let num_threads = 32;
+        let num_rounds = 409600;
+        let mut threads = vec![];
+        map.insert(key, 0);
+        for _ in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let guard = crossbeam_epoch::pin();
+                for _ in 0..num_rounds {
+                    map.table.swap(offsetted_key, &(), |n| {
+                        Some(n + 1)
+                    }, &guard);
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
+    }
+
+    #[test]
     fn swap_no_resize() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(32));
