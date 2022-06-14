@@ -506,7 +506,7 @@ mod fat_tests {
             }
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 100..900 {
             for j in 5..60 {
@@ -609,7 +609,7 @@ mod fat_tests {
         }
         info!("Waiting for intensive insertion to finish");
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         info!("Checking final value");
         (0..num_threads).for_each(|i| {
@@ -683,7 +683,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         map.get(&1).unwrap().validate(num_threads);
     }
@@ -713,7 +713,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 256..265 {
             for j in 5..60 {

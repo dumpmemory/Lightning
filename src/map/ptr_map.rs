@@ -558,7 +558,7 @@ mod ptr_map {
             }
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 100..900 {
             for j in 5..60 {
@@ -605,7 +605,7 @@ mod ptr_map {
             }
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 100..200 {
             for j in 5..256 {
@@ -707,7 +707,7 @@ mod ptr_map {
         }
         info!("Waiting for intensive insertion to finish");
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         info!("Checking final value");
         (0..num_threads).for_each(|i| {
@@ -831,7 +831,7 @@ mod ptr_map {
         }
         info!("Waiting for intensive insertion to finish");
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         info!("Checking final value");
         (0..num_threads).for_each(|i| {
@@ -942,7 +942,7 @@ mod ptr_map {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
     }
 

@@ -95,14 +95,15 @@ pub struct WordMutexGuard<
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     fn create(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
-        let key = key + NUM_FIX_K;
         let value = 0;
+        let offset_key = key + NUM_FIX_K;
+        let offset_value = 0 + NUM_FIX_V;
         match table.insert(
             InsertOp::TryInsert,
             &(),
             Some(&()),
-            key,
-            value | MUTEX_BIT_MASK,
+            offset_key,
+            offset_value | MUTEX_BIT_MASK,
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
@@ -115,13 +116,13 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         }
     }
     fn new(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
-        let key = key + NUM_FIX_K;
+        let offset_key = key + NUM_FIX_K;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
         loop {
             let swap_res = table.swap(
-                key,
+                offset_key,
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
@@ -165,10 +166,11 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
     }
 
     pub fn remove(self) -> FVal {
+        let offset_key = self.key + NUM_FIX_V;
         trace!("Removing {}", self.key);
-        let res = self.table.remove(&(), self.key).unwrap().0;
+        let res = self.table.remove(&(), offset_key).unwrap().0;
         mem::forget(self);
-        res | MUTEX_BIT_MASK
+        res & WORD_MUTEX_DATA_BIT_MASK
     }
 }
 
@@ -190,7 +192,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
-        self.value += NUM_FIX_V;
+        let offset_key = self.key + NUM_FIX_V;
+        let offset_val = self.value + NUM_FIX_V;
         trace!(
             "Release lock for key {} with value {}",
             self.key,
@@ -200,8 +203,8 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
             InsertOp::UpsertFast,
             &(),
             None,
-            self.key,
-            self.value & WORD_MUTEX_DATA_BIT_MASK,
+            offset_key,
+            offset_val & WORD_MUTEX_DATA_BIT_MASK,
         );
     }
 }
@@ -325,7 +328,7 @@ mod test {
             }
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 100..900 {
             for j in 5..60 {
@@ -419,7 +422,7 @@ mod test {
         }
         info!("Waiting for intensive insertion to finish");
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         info!("Checking final value");
         (0..num_threads)
@@ -468,7 +471,7 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         for i in 256..265 {
             for j in 5..60 {
@@ -487,12 +490,15 @@ mod test {
         for _ in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let mut guard = map.lock(1).unwrap();
-                *guard += 1;
+                if let Some(mut guard) = map.lock(1) {
+                    *guard += 1;
+                } else {
+                    panic!("Cannot find key at epoch {}, get {:?}", map.table.now_epoch(), map.get(&1))
+                }
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
         assert_eq!(map.get(&1).unwrap(), num_threads);
     }
@@ -556,8 +562,35 @@ mod test {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
+    }
+
+    #[test]
+    fn swap_single_key() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(WordMap::<System>::with_capacity(32));
+        let key = 10;
+        let offsetted_key = key + NUM_FIX_K;
+        let num_threads = 256;
+        let num_rounds = 40960;
+        let mut threads = vec![];
+        map.insert(key, 0);
+        for _ in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let guard = crossbeam_epoch::pin();
+                for _ in 0..num_rounds {
+                    map.table.swap(offsetted_key, &(), |n| {
+                        Some(n + 1)
+                    }, &guard);
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
     }
 
     #[test]
@@ -698,7 +731,9 @@ mod test {
                         map.insert(key, key),
                         Some(key),
                         "reinserting at key {}, get {:?}, epoch {}",
-                        key - NUM_FIX_K, map.get(&key), map.table.now_epoch()
+                        key - NUM_FIX_K,
+                        map.get(&key),
+                        map.table.now_epoch()
                     );
                 }
                 for j in 0..repeats {

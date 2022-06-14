@@ -54,9 +54,9 @@ enum ModResult<V> {
 }
 
 enum ModOp<'a, V> {
-    Insert(FVal, &'a V),
+    Insert(FVal, Option<&'a V>),
     UpsertFastVal(FVal),
-    AttemptInsert(FVal, &'a V),
+    AttemptInsert(FVal, Option<&'a V>),
     SwapFastVal(Box<dyn Fn(FVal) -> Option<FVal>>),
     Sentinel,
     Tombstone,
@@ -280,13 +280,13 @@ impl<
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
-                InsertOp::Insert => ModOp::Insert(masked_value, value.unwrap()),
+                InsertOp::Insert => ModOp::Insert(masked_value, value),
                 InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
-                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value.unwrap()),
+                InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value),
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
             let old_chunk_val = new_chunk.map(|_| {
-                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff, None)
+                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff, new_chunk.map(|c| &**c))
             });
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
@@ -367,12 +367,21 @@ impl<
                     }
                 }
                 Some(None) => {
-                    match self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, new_chunk.map(|c| &**c)) {
+                    match self.modify_entry(
+                        chunk,
+                        hash,
+                        key,
+                        fkey,
+                        ModOp::Sentinel,
+                        true,
+                        &guard,
+                        new_chunk.map(|c| &**c),
+                    ) {
                         ModResult::Replaced(fval, val, _) | ModResult::Existed(fval, val) => {
                             if result.is_none() && fval >= NUM_FIX_V {
-                                return Some((fval, val.unwrap().clone()))
+                                return Some((fval, val.unwrap().clone()));
                             }
-                        },
+                        }
                         _ => {}
                     }
                 }
@@ -434,99 +443,145 @@ impl<
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
-            if let Some(new_chunk) = new_chunk {
-                // && self.now_epoch() == epoch
-                // Copying is on the way, should try to get old value from old chunk then put new value in new chunk
-                if let Some((old_parsed_val, old_addr, attachment)) =
-                    self.get_from_chunk(chunk, hash, key, fkey, &backoff, Some(&**new_chunk))
-                {
-                    let old_fval = old_parsed_val.act_val::<V>();
-                    if old_fval == LOCKED_VALUE {
-                        backoff.spin();
-                        continue;
-                    }
-                    if old_fval >= NUM_FIX_V {
-                        if let Some(new_val) = func(old_fval) {
-                            let val = attachment.get_value();
-                            match self.modify_entry(
-                                new_chunk,
-                                hash,
-                                key,
-                                fkey,
-                                ModOp::AttemptInsert(new_val, &val),
-                                false,
-                                guard,
-                                None,
-                            ) {
-                                ModResult::Done(_, _, new_index)
-                                | ModResult::Replaced(_, _, new_index) => {
-                                    if Self::cas_sentinel(old_addr, old_parsed_val.val) {
-                                        // Put a sentinel in the old chunk
-                                        return SwapResult::Succeed(
-                                            old_fval,
-                                            new_index,
-                                            new_chunk_ptr,
-                                        );
-                                    } else {
-                                        // If fail, we may have some problem here
-                                        // The best strategy can be CAS a tombstone to the new index and try everything again
-                                        // Note that we use attempt insert, it will be safe to just `remove` it
-                                        let new_addr = new_chunk.entry_addr(new_index);
-                                        let _ = Self::cas_tombstone(new_addr, new_val);
-                                        continue;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-            let modify_chunk_ptr = if new_chunk.is_some() {
-                new_chunk_ptr
-            } else {
+
+            // First try UPDATE new_chunk if it exists
+            // This is the fast path
+            let update_chunk_ptr = if new_chunk_ptr.is_null() {
                 chunk_ptr
+            } else {
+                new_chunk_ptr
             };
-            let modify_chunk = new_chunk.unwrap_or(chunk);
-            trace!("Swaping for key {}, copying {}", fkey, new_chunk.is_some());
-            let mod_res = self.modify_entry(
-                modify_chunk,
+            let update_chunk = new_chunk.unwrap_or(chunk);
+            let mut result = None;
+            let fast_mod_res = self.modify_entry(
+                update_chunk,
                 hash,
                 key,
                 fkey,
                 ModOp::SwapFastVal(Box::new(func)),
                 false,
-                guard,
+                &guard,
                 None,
             );
-            if new_chunk.is_some() {
-                debug_assert_ne!(chunk_ptr, new_chunk_ptr);
-                debug_assert_ne!(new_chunk_ptr, Shared::null());
-                let res = self.modify_entry(
-                    chunk,
-                    hash,
-                    key,
-                    fkey,
-                    ModOp::Sentinel,
-                    false,
-                    &guard,
-                    new_chunk.map(|c| &**c),
-                );
-                self.manually_drop_sentinel_res(&res, chunk);
-            }
-            return match mod_res {
-                ModResult::Replaced(v, _, idx) => SwapResult::Succeed(v, idx, modify_chunk_ptr),
-                ModResult::Aborted => SwapResult::Aborted,
-                ModResult::Fail => SwapResult::Failed,
-                ModResult::NotFound => SwapResult::NotFound,
-                ModResult::Sentinel => {
+            match fast_mod_res {
+                ModResult::Replaced(fval, _, idx) => {
+                    // That's it
+                    result = Some((fval, idx, update_chunk_ptr));
+                }
+                ModResult::Fail | ModResult::Sentinel => {
+                    // The key exists in the chunk, retry
                     backoff.spin();
                     continue;
                 }
-                ModResult::Existed(_, _) => unreachable!("Swap have existed result"),
-                ModResult::Done(_, _, _) => unreachable!("Swap Done"),
-                ModResult::TableFull => unreachable!("Swap table full"),
-            };
+                ModResult::Aborted => {
+                    // Key exists but aborted by user function, just return
+                    return SwapResult::Aborted;
+                }
+                ModResult::NotFound => {
+                    // Probably should try the old chunk see if it is there
+                    trace!("Cannot find {} to swap", fkey);
+                }
+                _ => unreachable!("{:?}", fast_mod_res),
+            }
+            if let Some(new_chunk_de) = new_chunk {
+                let new_chunk_ref = new_chunk.map(|c| &**c);
+                if let Some((fval, idx, mod_chunk_ptr)) = result {
+                    // Just try to CAS a sentinel in the old chunk and we are done
+                    self.modify_entry(
+                        chunk,
+                        hash,
+                        key,
+                        fkey,
+                        ModOp::Sentinel,
+                        false,
+                        &guard,
+                        new_chunk_ref,
+                    );
+                    return SwapResult::Succeed(fval, idx, mod_chunk_ptr);
+                }
+                // Try get value from the old chunk and insert into new chunk
+                let old_chunk_val = new_chunk.map(|_| {
+                    self.get_from_chunk(&*chunk, hash, key, fkey, &backoff, new_chunk_ref)
+                });
+                match old_chunk_val {
+                    Some(Some((fval, addr, _))) => {
+                        if fval.is_valued() && !fval.is_primed() {
+                            let mut fval_actual = fval.act_val::<V>();
+                            if let Some(mut new_fval) = func(fval_actual) {
+                                // Do two things after:
+                                // 1. try insert the new value into the new chunk with lock value
+                                // 2. Put the sentinel into the old chunk. 
+                                // 3. Store the new value into the locked value
+                                match self.modify_entry(
+                                    new_chunk_de,
+                                    hash,
+                                    key,
+                                    fkey,
+                                    ModOp::AttemptInsert(LOCKED_VALUE, None),
+                                    false,
+                                    guard,
+                                    new_chunk_ref,
+                                ) {
+                                    ModResult::Replaced(_, _, idx) | ModResult::Done(_, _, idx)  => {
+                                        result = Some((fval_actual, idx, new_chunk_ptr));
+                                    },
+                                    _ => {
+                                        // Cannot put new value into new chunk, retry
+                                        backoff.spin();
+                                        continue;
+                                    }
+                                }
+                                let lock_idx = result.as_ref().unwrap().1;
+                                let lock_addr = new_chunk_de.entry_addr(lock_idx);
+                                if !Self::cas_sentinel(addr, fval.val) {
+                                    // Cannot CAS with the address, try CAS by searching
+                                    // Because the lock have already gone through to the new chunk, need the guarantee
+                                    loop {
+                                        match self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard, None) {
+                                            ModResult::Replaced(fv, _, idx) | ModResult::Done(fv, _, idx) => {
+                                                if fv > NUM_FIX_V {
+                                                    // Got another new value, should recompute the function result
+                                                    fval_actual = FastValue::new(fv).act_val::<V>();
+                                                    if let Some(nfv) = func(fv) {
+                                                        new_fval = nfv;
+                                                        result = Some((fval_actual, idx, chunk_ptr));
+                                                        break;
+                                                    } else {
+                                                        // Aborted, revert the slot to old value implies migration
+                                                        Self::store_value(lock_addr, fv);
+                                                        return SwapResult::Aborted
+                                                    }
+                                                }
+                                            },
+                                            _ => {
+                                                backoff.spin();
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Here, just store the value on the locked slot;
+                                Self::store_value(lock_addr, new_fval);
+                                let (fval_actual, idx, chunk_ptr) = result.unwrap();
+                                return SwapResult::Succeed(fval_actual, idx, chunk_ptr);
+                            } else {
+                                return SwapResult::Aborted;
+                            }
+                        } else {
+                            // Key exists but not useful to compute a replacement, retry
+                            backoff.spin();
+                            continue;
+                        }
+                    }
+                    // Cannot find anything used in old chunk or no new chunk, continue to return not found
+                    Some(None) => {}
+                    None => {}
+                }
+            } else if let Some((fval_actual, idx, chunk_ptr)) = result {
+                return SwapResult::Succeed(fval_actual, idx, chunk_ptr);
+            }
+            // Here both old and new chunk cannot find it, return
+            return SwapResult::NotFound;
         }
     }
 
@@ -687,7 +742,7 @@ impl<
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     let val_to_store = Self::value_to_store(raw, fval);
                                     if Self::cas_value(addr, raw, primed_fval).1 {
-                                        attachment.set_value(ov.clone(), raw);
+                                        ov.map(|ov| attachment.set_value(ov.clone(), raw));
                                         if Self::FAT_VAL {
                                             Self::store_raw_value(addr, val_to_store);
                                         }
@@ -756,7 +811,9 @@ impl<
                                             read_attachment.then(|| attachment.get_value());
                                         let val_to_store = Self::value_to_store(raw, fval);
                                         if Self::cas_value(addr, v.val, primed_fval).1 {
-                                            attachment.set_value((*oval).clone(), raw);
+                                            oval.map(|oval| {
+                                                attachment.set_value((*oval).clone(), raw)
+                                            });
                                             if Self::FAT_VAL {
                                                 Self::store_raw_value(addr, val_to_store);
                                             }
@@ -849,7 +906,7 @@ impl<
                                 }
                                 if Self::FAT_VAL {
                                     Self::store_key(addr, fkey);
-                                    attachment.set_value((*val).clone(), 0);
+                                    val.map(|val| attachment.set_value((*val).clone(), 0));
                                     Self::store_raw_value(addr, fval);
                                 } else {
                                     Self::store_key(addr, store_fkey);
