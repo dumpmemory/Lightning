@@ -37,6 +37,9 @@ pub const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 pub const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
 pub const PLACEHOLDER_VAL: FVal = NUM_FIX_V + 1;
 
+pub const KEY_BIT_MASK: FKey = VAL_BIT_MASK;
+pub const KEY_PRIME_MASK: FKey = !KEY_BIT_MASK;
+
 pub const HOP_BYTES: usize = mem::size_of::<HopBits>();
 pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
@@ -1823,6 +1826,7 @@ impl FastValue {
         v & VAL_BIT_MASK != v
     }
 
+    #[inline(always)]
     fn prime(self) -> Self {
         Self {
             val: self.val | VAL_PRIME_MASK,
