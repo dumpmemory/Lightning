@@ -1320,17 +1320,19 @@ impl<
                         key.map(|key| candidate_attachment.set_key(key.clone()));
                         Self::store_key(candidate_addr, fkey);
 
-                        // Discard swapping value on current address by replace it with new value
-                        Self::store_value(curr_addr, candidate_fval.val);
-
-                        last_pinned_key = Some(candidate_addr);
-                        // Also update the hop bits
+                        // Update the hop bits
                         let hop_distance = if curr_idx > idx {
                             curr_idx - idx
                         } else {
                             curr_idx + (cap - idx)
                         };
                         chunk.swap_hop_bit(idx, j, hop_distance);
+                        // Do this BEFORE replacing SWAP_VALUE to block other adjustments
+
+                        // Discard swapping value on current address by replace it with new value
+                        Self::store_value(curr_addr, candidate_fval.val);
+
+                        last_pinned_key = Some(candidate_addr);
 
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
