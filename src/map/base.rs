@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
@@ -688,6 +688,10 @@ impl<
                             backoff.spin();
                             continue 'READ_VAL;
                         }
+                        if Self::get_fast_key(addr) != k {
+                            // Recursion check for hopsotch
+                            continue;
+                        }
                         return Some((val_res, addr, attachment));
                     }
                 }
@@ -727,7 +731,7 @@ impl<
         let mut idx = hash & cap_mask;
         let home_idx = idx;
         let mut addr = chunk.entry_addr(idx);
-        while count <= cap {
+        'MAIN: while count <= cap {
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
@@ -737,6 +741,10 @@ impl<
                         let raw = v.val;
                         if raw >= TOMBSTONE_VALUE {
                             let act_val = v.act_val::<V>();
+                            if Self::get_fast_key(addr) != k {
+                                // For hopsotch
+                                continue 'MAIN;
+                            }
                             match op {
                                 ModOp::Insert(fval, ov) => {
                                     // Insert with attachment should prime value first when
@@ -896,7 +904,7 @@ impl<
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
                             // Use empty key to block probing progression for hops
-                            (EMPTY_KEY, SWAPPING_VALUE)
+                            (fkey, SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -947,7 +955,7 @@ impl<
                     }
                     ModOp::UpsertFastVal(fval) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
-                            (EMPTY_KEY, SWAPPING_VALUE)
+                            (fkey, SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -1292,11 +1300,11 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        let candidate_fkey = Self::get_fast_key(candidate_addr);
                         if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
                             // The slot value have been changed, retry
                             continue;
                         }
+                        let candidate_fkey = Self::get_fast_key(candidate_addr);
                         // Starting to copy it co current idx
                         let curr_addr = chunk.entry_addr(curr_idx);
                         // Start from key object in the attachment

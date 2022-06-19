@@ -654,7 +654,7 @@ mod test {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 let guard = crossbeam_epoch::pin();
-                let base_val = 10000000;
+                let base_val = (i + 20) * 10000000;
                 let key = i + 20;
                 map.insert(key, base_val - NUM_FIX_V);
                 let offset_key = key + NUM_FIX_K;
@@ -666,14 +666,16 @@ mod test {
                         Some(curr_val - NUM_FIX_V),
                         "Value checking before swap"
                     );
+                    let epoch = map.table.now_epoch();
+                    let read_val = map.get(&key);
                     map.table.swap(
                         offset_key,
                         &(),
                         move |v| {
                             assert_eq!(
                                 v, curr_val,
-                                "Fail check swapping offsetted {} from {} to {}",
-                                offset_key, curr_val, next_val
+                                "Fail check {} swapping offsetted {} from {} to {}, got {}. Get val {:?}. epoch {}",
+                                key, offset_key, curr_val, next_val, v, read_val, epoch
                             );
                             Some(next_val)
                         },
@@ -687,28 +689,28 @@ mod test {
                 }
             }));
         }
-        for i in 1..64 {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(
-                        map.insert(key, key),
-                        Some(key),
-                        "reinserting at key {}",
-                        key - NUM_FIX_K
-                    );
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
-                }
-            }));
-        }
+        // for i in 1..64 {
+        //     let map = map.clone();
+        //     threads.push(thread::spawn(move || {
+        //         for j in 0..repeats {
+        //             let key = i * 100000 + j;
+        //             assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+        //         }
+        //         for j in 0..repeats {
+        //             let key = i * 100000 + j;
+        //             assert_eq!(
+        //                 map.insert(key, key),
+        //                 Some(key),
+        //                 "reinserting at key {}",
+        //                 key - NUM_FIX_K
+        //             );
+        //         }
+        //         for j in 0..repeats {
+        //             let key = i * 100000 + j;
+        //             assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+        //         }
+        //     }));
+        // }
         threads.into_iter().for_each(|t| t.join().unwrap());
     }
 
