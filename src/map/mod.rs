@@ -148,8 +148,12 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
     // must be all zeroed
     unsafe {
         let addr = alloc.alloc(layout) as usize;
-        ptr::write_bytes(addr as *mut u8, 0, size);
         debug_assert_eq!(addr % 64, 0);
         addr
     }
+}
+
+#[inline(always)]
+unsafe fn fill_zeros(addr: usize, size: usize) {
+    ptr::write_bytes(addr as *mut u8, 0, size);
 }

@@ -1867,6 +1867,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_base = data_base + chunk_size_aligned;
         let attachment_base = hop_base + hop_size_aligned;
         unsafe {
+            fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
             ptr::write(
                 ptr,
                 Self {
@@ -1944,14 +1945,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     fn set_hop_bit(&self, idx: usize, pos: usize) {
         let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
         let set_bit = 1 << pos;
-        loop {
-            unsafe {
-                let orig_bits = intrinsics::atomic_load_acq(ptr);
-                let target_bits = orig_bits | set_bit;
-                if intrinsics::atomic_cxchg_acqrel(ptr, orig_bits, target_bits).1 {
-                    return;
-                }
-            }
+        unsafe {
+            intrinsics::atomic_or_relaxed(ptr, set_bit);
         }
     }
 
@@ -1964,7 +1959,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             unsafe {
                 let orig_bits = intrinsics::atomic_load_acq(ptr);
                 let target_bits = orig_bits | set_bit & unset_mask;
-                if intrinsics::atomic_cxchg_acqrel(ptr, orig_bits, target_bits).1 {
+                if intrinsics::atomic_cxchg_relaxed(ptr, orig_bits, target_bits).1 {
                     return;
                 }
             }
