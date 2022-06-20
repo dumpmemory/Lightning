@@ -743,6 +743,8 @@ impl<
                             let act_val = v.act_val::<V>();
                             if Self::get_fast_key(addr) != k {
                                 // For hopsotch
+                                // Here hash collision is impossible becasue hopsotch only swap with
+                                // slots have different hash key
                                 continue 'MAIN;
                             }
                             match op {
