@@ -1706,7 +1706,7 @@ impl<
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
-                    (EMPTY_KEY, SWAPPING_VALUE)
+                    (fkey, SWAPPING_VALUE)
                 } else {
                     (fkey, orig)
                 };
