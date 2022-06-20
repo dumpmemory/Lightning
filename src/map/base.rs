@@ -690,6 +690,7 @@ impl<
                         }
                         if Self::get_fast_key(addr) != k {
                             // Recursion check for hopsotch
+                            backoff.spin();
                             continue;
                         }
                         return Some((val_res, addr, attachment));
@@ -745,6 +746,7 @@ impl<
                                 // For hopsotch
                                 // Here hash collision is impossible becasue hopsotch only swap with
                                 // slots have different hash key
+                                backoff.spin();
                                 continue 'MAIN;
                             }
                             match op {
