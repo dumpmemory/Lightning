@@ -24,21 +24,24 @@ pub const TOMBSTONE_VALUE: FVal = 0b100;
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
-pub const VAL_BIT_MASK: FVal = !0 << 1 >> 1;
+pub const VAL_BIT_MASK: FVal = (!0 << 1 >> 1) & (!VAL_KEY_DIGEST_MASK);
 pub const VAL_PRIME_MASK: FVal = !VAL_BIT_MASK;
-pub const VAL_FLAGGED_MASK: FVal = !(!0 << NUM_FIX_V.trailing_zeros());
 pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 pub const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
 
+// For key digest
+pub const KEY_DIGEST_DIGITS: usize = 4; // Steal 4 bits for key digest in value
+pub const KEY_DIGEST_MASK: usize = !(!0 << KEY_DIGEST_DIGITS >> KEY_DIGEST_DIGITS); // Take leading bits
+pub const VAL_KEY_DIGEST_SHIFT: usize = 2;
+pub const VAL_KEY_DIGEST_MASK: usize = KEY_DIGEST_MASK >> VAL_KEY_DIGEST_SHIFT;
+
+// For fat objects
 pub const FVAL_BITS: usize = mem::size_of::<FVal>() * 8;
 pub const FVAL_VER_POS: FVal = (FVAL_BITS as FVal) / 2;
 pub const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 pub const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
 pub const PLACEHOLDER_VAL: FVal = NUM_FIX_V + 1;
-
-pub const KEY_BIT_MASK: FKey = VAL_BIT_MASK;
-pub const KEY_PRIME_MASK: FKey = !KEY_BIT_MASK;
 
 pub const HOP_BYTES: usize = mem::size_of::<HopBits>();
 pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
@@ -740,8 +743,8 @@ impl<
                     loop {
                         let v = Self::get_fast_value(addr);
                         let raw = v.val;
+                        let act_val = v.act_val::<V>();
                         if raw >= TOMBSTONE_VALUE {
-                            let act_val = v.act_val::<V>();
                             if Self::get_fast_key(addr) != k {
                                 // For hopsotch
                                 // Here hash collision is impossible becasue hopsotch only swap with
@@ -1179,17 +1182,6 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_value_rt_new(entry_addr: usize, original: FVal, value: FVal) -> Option<FVal> {
-        debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe {
-            intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value)
-                .1
-                .then(|| value)
-        }
-    }
-
-    #[inline(always)]
     fn value_to_store(original: FVal, value: FVal) -> usize {
         if Self::FAT_VAL {
             FastValue::next_version(original, value)
@@ -1248,18 +1240,10 @@ impl<
         } else {
             let cap_mask = chunk.cap_mask();
             let cap = chunk.capacity;
-            let mut last_pinned_key = None;
+            let target_key_digest = key_digest(fkey);
             'SWAPPING: loop {
                 // Need to adjust hops
                 let scaled_curr_idx = dest_idx | cap;
-                let hop_bits = chunk.get_hop_bits(home_idx);
-                if hop_bits == ALL_HOPS_TAKEN {
-                    // No slots in the neighbour is available
-                    if let Some(pinned_addr) = last_pinned_key {
-                        Self::store_key(pinned_addr, DISABLED_KEY);
-                    }
-                    return None;
-                }
                 let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
                 let curr_idx = scaled_curr_idx & cap_mask;
                 let (probe_start, probe_end) = if starting < curr_idx {
@@ -1267,6 +1251,12 @@ impl<
                 } else {
                     (starting, cap + curr_idx)
                 };
+                let hop_bits = chunk.get_hop_bits(home_idx);
+                if hop_bits == ALL_HOPS_TAKEN {
+                    // No slots in the neighbour is available
+                    Self::store_key(chunk.entry_addr(curr_idx), DISABLED_KEY);
+                    return None;
+                }
                 debug_assert!(probe_start < probe_end);
                 // Find a swappable slot
                 'PROBING: for i in probe_start..probe_end {
@@ -1293,9 +1283,7 @@ impl<
                         let candidate_addr = chunk.entry_addr(candidate_idx);
                         let candidate_fval = Self::get_fast_value(candidate_addr);
                         if candidate_fval.val == SENTINEL_VALUE {
-                            if let Some(pinned_addr) = last_pinned_key {
-                                Self::store_key(pinned_addr, DISABLED_KEY);
-                            }
+                            Self::store_key(chunk.entry_addr(curr_idx), DISABLED_KEY);
                             return None;
                         }
                         if candidate_fval.val < NUM_FIX_V {
@@ -1309,6 +1297,15 @@ impl<
                             continue;
                         }
                         let candidate_fkey = Self::get_fast_key(candidate_addr);
+                        let candidate_key_digest = key_digest(candidate_fkey);
+                        if target_key_digest == candidate_key_digest {
+                            // Don't swap with key that have the same digest
+                            // Such that write swap can always detect slot shifting by hopsotch
+                            // This should be rate but we need to handle it
+                            Self::store_value(candidate_addr, candidate_fval.val); // Put it back and move to next candidate
+                            j += 1;
+                            continue;
+                        }
                         // Starting to copy it co current idx
                         let curr_addr = chunk.entry_addr(curr_idx);
                         // Start from key object in the attachment
@@ -1334,9 +1331,8 @@ impl<
                         // Do this BEFORE replacing SWAP_VALUE to block other adjustments
 
                         // Discard swapping value on current address by replace it with new value
-                        Self::store_value(curr_addr, candidate_fval.val);
-
-                        last_pinned_key = Some(candidate_addr);
+                        let primed_candidate_val = syn_val_digest(candidate_key_digest, candidate_fval.val);
+                        Self::store_value(curr_addr, primed_candidate_val);
 
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
@@ -1354,9 +1350,7 @@ impl<
                     }
                     break;
                 }
-                if let Some(pinned_addr) = last_pinned_key {
-                    Self::store_key(pinned_addr, DISABLED_KEY);
-                }
+                Self::store_key(chunk.entry_addr(curr_idx), DISABLED_KEY);
                 return None;
             }
         }
@@ -1569,9 +1563,16 @@ impl<
                         continue;
                     }
                 }
-                LOCKED_VALUE | SWAPPING_VALUE => {
+                LOCKED_VALUE => {
                     backoff.spin();
                     continue;
+                }
+                SWAPPING_VALUE => {
+                    let fkey = Self::get_fast_key(old_address);
+                    if fkey != DISABLED_KEY {
+                        backoff.spin();
+                        continue;
+                    }
                 }
                 SENTINEL_VALUE => {
                     // Sentinel, skip
@@ -1579,8 +1580,8 @@ impl<
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
+                    let fkey = Self::get_fast_key(old_address);
                     if !fvalue.is_primed() {
-                        let fkey = Self::get_fast_key(old_address);
                         if !Self::migrate_entry(
                             fkey,
                             idx,
@@ -1666,26 +1667,23 @@ impl<
         }
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be locked
-        let mut curr_orig = fvalue.act_val::<V>();
+        let curr_orig = fvalue.act_val::<V>();
         let primed_orig = fvalue.prime();
-        let orig = curr_orig;
-        match Self::cas_value_rt_new(old_address, fvalue.val, primed_orig.val) {
-            Some(n) => {
-                // here we obtained the ownership of this fval
-                curr_orig = n;
-            }
-            None => {
-                // here the ownership have been taken by other thread
-                trace!("Entry {} has changed", fkey);
-                return false;
-            }
+
+        // Prime the old address to avoid modification
+        if !Self::cas_value(old_address, fvalue.val, primed_orig.val).1 {
+            // here the ownership have been taken by other thread
+            trace!("Entry {} has changed", fkey);
+            return false;
         }
+
         // Make insertion for migration inlined, hopefully the ordering will be right
         let hash = if Self::WORD_KEY {
             hash_key::<_, H>(&fkey)
         } else {
             fkey
         };
+
         let cap = new_chunk_ins.capacity;
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
@@ -1704,7 +1702,8 @@ impl<
                     old_chunk_ins
                         .attachment
                         .manually_drop(fvalue.act_val::<V>());
-                    break;
+                    Self::cas_sentinel(old_address, curr_orig);
+                    return false;
                 }
             } else if k == EMPTY_KEY {
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
@@ -1712,7 +1711,7 @@ impl<
                     // Use empty key to block probing progression for hops
                     (fkey, SWAPPING_VALUE)
                 } else {
-                    (fkey, orig)
+                    (fkey, curr_orig)
                 };
                 if Self::cas_value(addr, EMPTY_VALUE, cas_fval).1 {
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
@@ -1727,7 +1726,7 @@ impl<
                         hop_adjustment,
                         new_chunk_ins,
                         fkey,
-                        orig,
+                        curr_orig,
                         Some(&key),
                         home_idx,
                         idx,
@@ -1735,9 +1734,12 @@ impl<
                     )
                     .is_none()
                     {
-                        Self::store_value(addr, orig);
+                        // Nothing else we can do, just take the distant slot
+                        Self::store_value(addr, curr_orig);
                     }
-                    break;
+                    Self::store_sentinel(old_address);
+                    *effective_copy += 1;
+                    return true;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
                     // other thread. Need to retry
@@ -1755,21 +1757,7 @@ impl<
             idx &= cap_mask;
             count += 1;
         }
-        if count >= cap {
-            warn!("End of table during migrating {}", fkey);
-        }
-        if curr_orig != orig {
-            trace!("Copy Entry {} success", fkey);
-            Self::store_sentinel(old_address);
-        } else if Self::cas_sentinel(old_address, curr_orig) {
-            warn!("Key {} is not migrared", fkey);
-            // continue
-        } else {
-            trace!("Migrate entry {} has failed", fkey);
-            return false;
-        }
-        *effective_copy += 1;
-        return true;
+        return false;
     }
 
     pub fn map_is_copying(&self) -> bool {
@@ -2119,5 +2107,32 @@ impl<V> Debug for ModResult<V> {
             Self::TableFull => write!(f, "TableFull"),
             Self::Aborted => write!(f, "Aborted"),
         }
+    }
+}
+
+#[inline(always)]
+fn syn_val_digest(digest: FVal, val: FVal) -> FVal {
+    val & VAL_BIT_MASK | digest
+}
+
+#[inline(always)]
+fn syn_val_key(key: FVal, val: FVal) -> FVal {
+    val & VAL_BIT_MASK | key_digest(key)
+}
+
+#[inline(always)]
+fn key_digest(key: FKey) -> FKey {
+    key & VAL_KEY_DIGEST_MASK
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn const_check() {
+        println!("KEY Digest mask is {:064b}", KEY_DIGEST_MASK);
+        println!("VAL Digest mask is {:064b}", VAL_KEY_DIGEST_MASK);
+        assert_eq!(VAL_KEY_DIGEST_MASK.count_ones() as usize, KEY_DIGEST_DIGITS);
     }
 }

@@ -664,7 +664,8 @@ mod test {
                     debug_assert_eq!(
                         map.get(&key),
                         Some(curr_val - NUM_FIX_V),
-                        "Value checking before swap"
+                        "Value checking before swap at epoch {}",
+                        map.table.now_epoch()
                     );
                     let epoch = map.table.now_epoch();
                     let read_val = map.get(&key);
@@ -684,7 +685,8 @@ mod test {
                     debug_assert_eq!(
                         map.get(&key),
                         Some(next_val - NUM_FIX_V),
-                        "Value checking after swap"
+                        "Value checking after swap at epoch {}", 
+                        map.table.now_epoch()
                     );
                 }
             }));

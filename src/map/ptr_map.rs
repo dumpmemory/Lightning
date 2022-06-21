@@ -526,7 +526,7 @@ mod ptr_map {
             let v = i * 2;
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
-                None => panic!("{}", i),
+                None => panic!("Cannot find key {} at epoch {}", k, map.table.now_epoch()),
             }
         }
     }
@@ -718,8 +718,8 @@ mod ptr_map {
                 let v = val_from(v_num);
                 let get_res = map.get(&k);
                 assert_eq!(
-                    &v,
-                    &*get_res.unwrap(),
+                    Some(&v),
+                    get_res.as_ref().map(|v| &**v),
                     "Final val mismatch. k {:?}, i {}, j {}, epoch {}",
                     k,
                     i,
