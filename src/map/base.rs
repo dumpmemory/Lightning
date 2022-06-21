@@ -1546,6 +1546,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         while old_address < boundary {
             // iterate the old chunk to extract entries that is NOT empty
+            let fkey = Self::get_fast_key(old_address);
             let fvalue = Self::get_fast_value(old_address);
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
             // Reasoning value states
@@ -1553,35 +1554,36 @@ impl<
                 "Migrating entry have key {}",
                 Self::get_fast_key(old_address)
             );
-            match fvalue.val {
-                EMPTY_VALUE | TOMBSTONE_VALUE => {
-                    // Probably does not need this anymore
-                    // Need to make sure that during migration, empty value always leads to new chunk
-                    if !Self::cas_sentinel(old_address, fvalue.val) {
-                        warn!("Filling empty with sentinel for old table should succeed but not, retry");
+            if fkey != DISABLED_KEY {
+                match fvalue.val {
+                    EMPTY_VALUE | TOMBSTONE_VALUE => {
+                        // Probably does not need this anymore
+                        // Need to make sure that during migration, empty value always leads to new chunk
+                        if !Self::cas_sentinel(old_address, fvalue.val) {
+                            warn!("Filling empty with sentinel for old table should succeed but not, retry");
+                            backoff.spin();
+                            continue;
+                        }
+                    }
+                    LOCKED_VALUE => {
                         backoff.spin();
                         continue;
                     }
-                }
-                LOCKED_VALUE => {
-                    backoff.spin();
-                    continue;
-                }
-                SWAPPING_VALUE => {
-                    let fkey = Self::get_fast_key(old_address);
-                    if fkey != DISABLED_KEY {
+                    SWAPPING_VALUE => {
                         backoff.spin();
                         continue;
                     }
-                }
-                SENTINEL_VALUE => {
-                    // Sentinel, skip
-                    // Sentinel in old chunk implies its new value have already in the new chunk
-                    // It can also be other thread have moved this key-value pair to the new chunk
-                }
-                _ => {
-                    let fkey = Self::get_fast_key(old_address);
-                    if !fvalue.is_primed() {
+                    SENTINEL_VALUE => {
+                        // Sentinel, skip
+                        // Sentinel in old chunk implies its new value have already in the new chunk
+                        // It can also be other thread have moved this key-value pair to the new chunk
+                    }
+                    _ => {
+                        // The values. First check its key is the same
+                        if Self::get_fast_key(old_address) != fkey {
+                            backoff.spin();
+                            continue;
+                        }
                         if !Self::migrate_entry(
                             fkey,
                             idx,
@@ -1736,6 +1738,7 @@ impl<
                     {
                         // Nothing else we can do, just take the distant slot
                         Self::store_value(addr, curr_orig);
+                        Self::store_key(addr, fkey);
                     }
                     Self::store_sentinel(old_address);
                     *effective_copy += 1;
@@ -2112,7 +2115,9 @@ impl<V> Debug for ModResult<V> {
 
 #[inline(always)]
 fn syn_val_digest(digest: FVal, val: FVal) -> FVal {
-    val & VAL_BIT_MASK | digest
+    let res = val & VAL_BIT_MASK | digest;
+    debug!("Synthesis value from digest {:064b}, value {:064b} to {:064b}", digest, val, res);
+    res
 }
 
 #[inline(always)]
