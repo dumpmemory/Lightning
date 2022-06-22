@@ -450,6 +450,12 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
 
+            // Comment this for better performance.
+            // if new_chunk.is_some() {
+            //     backoff.spin();
+            //     continue;
+            // }
+
             // First try UPDATE new_chunk if it exists
             // This is the fast path
             let update_chunk_ptr = if new_chunk_ptr.is_null() {
@@ -516,7 +522,7 @@ impl<
                             if let Some(mut new_fval) = func(fval_actual) {
                                 // Do two things after:
                                 // 1. try insert the new value into the new chunk with lock value
-                                // 2. Put the sentinel into the old chunk. 
+                                // 2. Put the sentinel into the old chunk.
                                 // 3. Store the new value into the locked value
                                 match self.modify_entry(
                                     new_chunk_de,
@@ -528,9 +534,9 @@ impl<
                                     guard,
                                     new_chunk_ref,
                                 ) {
-                                    ModResult::Replaced(_, _, idx) | ModResult::Done(_, _, idx)  => {
+                                    ModResult::Replaced(_, _, idx) | ModResult::Done(_, _, idx) => {
                                         result = Some((fval_actual, idx, new_chunk_ptr));
-                                    },
+                                    }
                                     _ => {
                                         // Cannot put new value into new chunk, retry
                                         backoff.spin();
@@ -543,22 +549,33 @@ impl<
                                     // Cannot CAS with the address, try CAS by searching
                                     // Because the lock have already gone through to the new chunk, need the guarantee
                                     loop {
-                                        match self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, false, &guard, None) {
-                                            ModResult::Replaced(fv, _, idx) | ModResult::Done(fv, _, idx) => {
+                                        match self.modify_entry(
+                                            chunk,
+                                            hash,
+                                            key,
+                                            fkey,
+                                            ModOp::Sentinel,
+                                            false,
+                                            &guard,
+                                            None,
+                                        ) {
+                                            ModResult::Replaced(fv, _, idx)
+                                            | ModResult::Done(fv, _, idx) => {
                                                 if fv > NUM_FIX_V {
                                                     // Got another new value, should recompute the function result
                                                     fval_actual = FastValue::new(fv).act_val::<V>();
                                                     if let Some(nfv) = func(fv) {
                                                         new_fval = nfv;
-                                                        result = Some((fval_actual, idx, chunk_ptr));
+                                                        result =
+                                                            Some((fval_actual, idx, chunk_ptr));
                                                         break;
                                                     } else {
                                                         // Aborted, revert the slot to old value implies migration
                                                         Self::store_value(lock_addr, fv);
-                                                        return SwapResult::Aborted
+                                                        return SwapResult::Aborted;
                                                     }
                                                 }
-                                            },
+                                            }
                                             _ => {
                                                 backoff.spin();
                                                 continue;
@@ -692,7 +709,9 @@ impl<
                             continue 'READ_VAL;
                         }
                         if Self::get_fast_key(addr) != k {
-                            // Recursion check for hopsotch
+                            // For hopsotch
+                            // Here hash collision is impossible becasue hopsotch only swap with
+                            // slots have different hash key
                             backoff.spin();
                             continue;
                         }
@@ -860,19 +879,15 @@ impl<
                                     if act_val == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if act_val >= NUM_FIX_V {
-                                        if let Some(sv) = swap(act_val) {
-                                            if Self::cas_value(addr, v.val, sv).1 {
-                                                // swap success
-                                                return ModResult::Replaced(act_val, None, idx);
-                                            } else {
-                                                return ModResult::Fail;
-                                            }
+                                    if let Some(sv) = swap(act_val) {
+                                        if Self::cas_value(addr, v.val, sv).1 {
+                                            // swap success
+                                            return ModResult::Replaced(act_val, None, idx);
                                         } else {
-                                            return ModResult::Aborted;
+                                            return ModResult::Fail;
                                         }
                                     } else {
-                                        return ModResult::Fail;
+                                        return ModResult::Aborted;
                                     }
                                 }
                             }
@@ -928,7 +943,7 @@ impl<
                                     Self::store_raw_value(addr, fval);
                                 } else {
                                     Self::store_key(addr, store_fkey);
-                                    if let Some(new_idx) = Self::adjust_hops(
+                                    match Self::adjust_hops(
                                         hop_adjustment,
                                         chunk,
                                         fkey,
@@ -938,10 +953,15 @@ impl<
                                         idx,
                                         count,
                                     ) {
-                                        idx = new_idx;
-                                    } else {
-                                        Self::store_value(addr, EMPTY_VALUE);
-                                        return ModResult::TableFull;
+                                        Ok(new_idx) => {
+                                            idx = new_idx;
+                                        }
+                                        Err(new_idx) => {
+                                            let new_addr = chunk.entry_addr(new_idx);
+                                            Self::store_key(new_addr, DISABLED_KEY);
+                                            Self::store_value(new_addr, SENTINEL_VALUE);
+                                            return ModResult::TableFull;
+                                        }
                                     }
                                 }
                                 return ModResult::Done(0, None, idx);
@@ -969,7 +989,7 @@ impl<
                         match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
                             (_, true) => {
                                 Self::store_key(addr, store_fkey);
-                                if let Some(new_idx) = Self::adjust_hops(
+                                match Self::adjust_hops(
                                     hop_adjustment,
                                     chunk,
                                     fkey,
@@ -979,10 +999,15 @@ impl<
                                     idx,
                                     count,
                                 ) {
-                                    idx = new_idx;
-                                } else {
-                                    Self::store_value(addr, EMPTY_VALUE);
-                                    return ModResult::TableFull;
+                                    Ok(new_idx) => {
+                                        idx = new_idx;
+                                    }
+                                    Err(new_idx) => {
+                                        let new_addr = chunk.entry_addr(new_idx);
+                                        Self::store_key(new_addr, DISABLED_KEY);
+                                        Self::store_value(new_addr, SENTINEL_VALUE);
+                                        return ModResult::TableFull;
+                                    }
                                 }
                                 return ModResult::Done(0, None, idx);
                             }
@@ -1226,17 +1251,17 @@ impl<
         home_idx: usize,
         mut dest_idx: usize,
         hops: usize,
-    ) -> Option<usize> {
+    ) -> Result<usize, usize> {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
         if !ENABLE_HOPSOTCH {
-            return Some(dest_idx);
+            return Ok(dest_idx);
         }
         if !needs_adjust {
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
             }
-            return Some(dest_idx);
+            return Ok(dest_idx);
         } else {
             let cap_mask = chunk.cap_mask();
             let cap = chunk.capacity;
@@ -1254,8 +1279,7 @@ impl<
                 let hop_bits = chunk.get_hop_bits(home_idx);
                 if hop_bits == ALL_HOPS_TAKEN {
                     // No slots in the neighbour is available
-                    Self::store_key(chunk.entry_addr(curr_idx), DISABLED_KEY);
-                    return None;
+                    return Err(curr_idx);
                 }
                 debug_assert!(probe_start < probe_end);
                 // Find a swappable slot
@@ -1283,8 +1307,7 @@ impl<
                         let candidate_addr = chunk.entry_addr(candidate_idx);
                         let candidate_fval = Self::get_fast_value(candidate_addr);
                         if candidate_fval.val == SENTINEL_VALUE {
-                            Self::store_key(chunk.entry_addr(curr_idx), DISABLED_KEY);
-                            return None;
+                            return Err(curr_idx);
                         }
                         if candidate_fval.val < NUM_FIX_V {
                             // Do not temper with non value slot, try next one
@@ -1331,7 +1354,8 @@ impl<
                         // Do this BEFORE replacing SWAP_VALUE to block other adjustments
 
                         // Discard swapping value on current address by replace it with new value
-                        let primed_candidate_val = syn_val_digest(candidate_key_digest, candidate_fval.val);
+                        let primed_candidate_val =
+                            syn_val_digest(candidate_key_digest, candidate_fval.val);
                         Self::store_value(curr_addr, primed_candidate_val);
 
                         //Here we had candidate copied. Need to work on the candidate slot
@@ -1341,7 +1365,7 @@ impl<
                             Self::store_value(candidate_addr, fval);
                             // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, hop_distance);
-                            return Some(candidate_idx);
+                            return Ok(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
                             dest_idx = candidate_idx;
@@ -1350,8 +1374,7 @@ impl<
                     }
                     break;
                 }
-                Self::store_key(chunk.entry_addr(curr_idx), DISABLED_KEY);
-                return None;
+                return Err(curr_idx);
             }
         }
     }
@@ -1724,7 +1747,7 @@ impl<
                     new_attachment.set_value(value, 0);
                     fence(Acquire);
                     Self::store_key(addr, store_fkey);
-                    if Self::adjust_hops(
+                    match Self::adjust_hops(
                         hop_adjustment,
                         new_chunk_ins,
                         fkey,
@@ -1733,12 +1756,14 @@ impl<
                         home_idx,
                         idx,
                         count,
-                    )
-                    .is_none()
-                    {
-                        // Nothing else we can do, just take the distant slot
-                        Self::store_value(addr, curr_orig);
-                        Self::store_key(addr, fkey);
+                    ) {
+                        Err(idx) => {
+                            // Nothing else we can do, just take the distant slot
+                            let addr = new_chunk_ins.entry_addr(idx);
+                            Self::store_value(addr, curr_orig);
+                            Self::store_key(addr, fkey);
+                        }
+                        _ => {}
                     }
                     Self::store_sentinel(old_address);
                     *effective_copy += 1;
@@ -2116,7 +2141,10 @@ impl<V> Debug for ModResult<V> {
 #[inline(always)]
 fn syn_val_digest(digest: FVal, val: FVal) -> FVal {
     let res = val & VAL_BIT_MASK | digest;
-    debug!("Synthesis value from digest {:064b}, value {:064b} to {:064b}", digest, val, res);
+    debug!(
+        "Synthesis value from digest {:064b}, value {:064b} to {:064b}",
+        digest, val, res
+    );
     res
 }
 

@@ -493,7 +493,11 @@ mod test {
                 if let Some(mut guard) = map.lock(1) {
                     *guard += 1;
                 } else {
-                    panic!("Cannot find key at epoch {}, get {:?}", map.table.now_epoch(), map.get(&1))
+                    panic!(
+                        "Cannot find key at epoch {}, get {:?}",
+                        map.table.now_epoch(),
+                        map.get(&1)
+                    )
                 }
             }));
         }
@@ -581,9 +585,7 @@ mod test {
             threads.push(thread::spawn(move || {
                 let guard = crossbeam_epoch::pin();
                 for _ in 0..num_rounds {
-                    map.table.swap(offsetted_key, &(), |n| {
-                        Some(n + 1)
-                    }, &guard);
+                    map.table.swap(offsetted_key, &(), |n| Some(n + 1), &guard);
                 }
             }));
         }
