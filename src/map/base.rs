@@ -511,7 +511,7 @@ impl<
                 });
                 match old_chunk_val {
                     Some(Some((fval, addr, _))) => {
-                        if fval.is_valued() && !fval.is_primed() {
+                        if fval.is_valued() {
                             let mut fval_actual = fval.act_val::<V>();
                             if let Some(mut new_fval) = func(fval_actual) {
                                 // Do two things after:
