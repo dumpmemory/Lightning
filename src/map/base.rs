@@ -1271,6 +1271,7 @@ impl<
                 let scaled_curr_idx = dest_idx | cap;
                 let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
                 let curr_idx = scaled_curr_idx & cap_mask;
+                assert_eq!(curr_idx, dest_idx);
                 let (probe_start, probe_end) = if starting < curr_idx {
                     (starting, curr_idx)
                 } else {
@@ -1279,7 +1280,7 @@ impl<
                 let hop_bits = chunk.get_hop_bits(home_idx);
                 if hop_bits == ALL_HOPS_TAKEN {
                     // No slots in the neighbour is available
-                    return Err(curr_idx);
+                    return Err(dest_idx);
                 }
                 debug_assert!(probe_start < probe_end);
                 // Find a swappable slot
@@ -1305,12 +1306,22 @@ impl<
                         }
                         // Found a candidate slot
                         let candidate_addr = chunk.entry_addr(candidate_idx);
+                        let candidate_fkey = Self::get_fast_key(candidate_addr);
                         let candidate_fval = Self::get_fast_value(candidate_addr);
                         if candidate_fval.val == SENTINEL_VALUE {
-                            return Err(curr_idx);
+                            return Err(dest_idx);
                         }
                         if candidate_fval.val < NUM_FIX_V {
                             // Do not temper with non value slot, try next one
+                            j += 1;
+                            continue;
+                        }
+                        let candidate_key_digest = key_digest(candidate_fkey);
+                        if target_key_digest == candidate_key_digest || Self::get_fast_key(candidate_addr) != fkey {
+                            // Don't swap with key that have the same digest
+                            // such that write swap can always detect slot shifting by hopsotch
+                            // This should be rare but we need to handle it
+                            // Also check the key didn't changed after we fetched the value
                             j += 1;
                             continue;
                         }
@@ -1319,16 +1330,7 @@ impl<
                             // The slot value have been changed, retry
                             continue;
                         }
-                        let candidate_fkey = Self::get_fast_key(candidate_addr);
-                        let candidate_key_digest = key_digest(candidate_fkey);
-                        if target_key_digest == candidate_key_digest {
-                            // Don't swap with key that have the same digest
-                            // Such that write swap can always detect slot shifting by hopsotch
-                            // This should be rate but we need to handle it
-                            Self::store_value(candidate_addr, candidate_fval.val); // Put it back and move to next candidate
-                            j += 1;
-                            continue;
-                        }
+
                         // Starting to copy it co current idx
                         let curr_addr = chunk.entry_addr(curr_idx);
                         // Start from key object in the attachment
@@ -1374,7 +1376,7 @@ impl<
                     }
                     break;
                 }
-                return Err(curr_idx);
+                return Err(dest_idx);
             }
         }
     }
