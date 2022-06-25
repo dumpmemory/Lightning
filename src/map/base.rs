@@ -1193,13 +1193,6 @@ impl<
     }
 
     #[inline(always)]
-    fn cas_key(entry_addr: usize, original: FKey, value: FKey) -> (FKey, bool) {
-        unsafe {
-            intrinsics::atomic_cxchg_acqrel_failrelaxed(entry_addr as *mut FKey, original, value)
-        }
-    }
-
-    #[inline(always)]
     fn store_value(entry_addr: usize, value: FVal) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
@@ -1317,11 +1310,12 @@ impl<
                             continue;
                         }
                         let candidate_key_digest = key_digest(candidate_fkey);
-                        if target_key_digest == candidate_key_digest || Self::get_fast_key(candidate_addr) != fkey {
-                            // Don't swap with key that have the same digest
+                        if candidate_key_digest == 0 || candidate_key_digest == target_key_digest {
+                            // Don't swap with key that have the selected digest
                             // such that write swap can always detect slot shifting by hopsotch
                             // This should be rare but we need to handle it
-                            // Also check the key didn't changed after we fetched the value
+                            // Also don't need to check the key changed or not after we fetched the value 
+                            // because digest would prevent the CAS below
                             j += 1;
                             continue;
                         }
