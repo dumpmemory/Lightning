@@ -284,7 +284,8 @@ mod test {
             assert_eq!(table.insert(i, i), None);
         }
         for i in 50..60 {
-            assert_eq!(table.get(&i), Some(i));
+            let res = table.get(&i);
+            assert_eq!(res, Some(i), "at epoch {}", table.table.now_epoch());
         }
         for i in 50..60 {
             assert_eq!(table.remove(&i), Some(i));
@@ -332,7 +333,7 @@ mod test {
         }
         for i in 100..900 {
             for j in 5..60 {
-                assert_eq!(map.get(&(i * 100 + j)), Some(i * j))
+                assert_eq!(map.get(&(i * 100 + j)), Some(i * j), "at epoch {}", map.table.now_epoch())
             }
         }
         for i in 5..9 {

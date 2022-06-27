@@ -688,12 +688,12 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
-        let cap = chunk.capacity;
         let cap_mask = chunk.cap_mask();
-        let mut idx = hash & cap_mask;
-        let mut counter = 0;
+        let home_idx = hash & cap_mask;
+        let mut idx_iter = chunk.iter_slot(home_idx);
+        let mut idx = idx_iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
-        while counter < cap {
+        loop {
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
@@ -725,12 +725,13 @@ impl<
                 let fval = Self::get_fast_value(addr);
                 Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
             });
-            idx += 1; // reprobe
-            idx &= cap_mask;
-            addr = chunk.entry_addr(idx);
-            counter += 1;
+            if let Some(next_idx) = idx_iter.next() {
+                idx = next_idx;
+                addr = chunk.entry_addr(idx);
+            } else {
+                break;
+            }
         }
-
         // not found
         return None;
     }
@@ -1247,6 +1248,16 @@ impl<
     ) -> Result<usize, usize> {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
+
+
+        // if hops < NUM_HOPS {
+        //     chunk.set_hop_bit(home_idx, hops);
+        // }
+        // let candidate_addr = chunk.entry_addr(dest_idx);
+        // Self::store_value(candidate_addr, fval);
+        // return Ok(dest_idx);
+
+
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
@@ -1325,6 +1336,10 @@ impl<
                             continue;
                         }
 
+                        // Update the hop bits
+                        let candidate_hop_distance = hop_distance(idx, curr_idx, cap);
+                        chunk.set_hop_bit(idx, candidate_hop_distance);
+
                         // Starting to copy it co current idx
                         let curr_addr = chunk.entry_addr(curr_idx);
                         // Start from key object in the attachment
@@ -1340,27 +1355,21 @@ impl<
                         key.map(|key| candidate_attachment.set_key(key.clone()));
                         Self::store_key(candidate_addr, fkey);
 
-                        // Update the hop bits
-                        let hop_distance = if curr_idx > idx {
-                            curr_idx - idx
-                        } else {
-                            curr_idx + (cap - idx)
-                        };
-                        chunk.swap_hop_bit(idx, j, hop_distance);
-                        // Do this BEFORE replacing SWAP_VALUE to block other adjustments
-
                         // Discard swapping value on current address by replace it with new value
                         let primed_candidate_val =
                             syn_val_digest(candidate_key_digest, candidate_fval.val);
                         Self::store_value(curr_addr, primed_candidate_val);
 
+                        chunk.unset_hop_bit(idx, j);
+                        
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
-                        if hop_distance < NUM_HOPS {
+                        let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
+                        if target_hop_distance < NUM_HOPS {
                             // In range, fill the candidate slot with our key and values
                             Self::store_value(candidate_addr, fval);
                             // chunk.incr_hop_ver(home_idx);
-                            chunk.set_hop_bit(home_idx, hop_distance);
+                            chunk.set_hop_bit(home_idx, target_hop_distance);
                             return Ok(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
@@ -1964,7 +1973,18 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
         let set_bit = 1 << pos;
         unsafe {
+            debug_assert!(intrinsics::atomic_load_acq(ptr) & set_bit == 0, "bit already set for idx {}, pos {}", idx, pos);
             intrinsics::atomic_or_relaxed(ptr, set_bit);
+        }
+    }
+
+    #[inline(always)]
+    fn unset_hop_bit(&self, idx: usize, pos: usize) {
+        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+        let unset_bit = 1 << pos;
+        unsafe {
+            debug_assert!(intrinsics::atomic_load_acq(ptr) & unset_bit > 0, "bit not set for idx {}, pos {}", idx, pos);
+            intrinsics::atomic_and_relaxed(ptr, !unset_bit);
         }
     }
 
@@ -1984,19 +2004,22 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         }
     }
 
-    // #[inline(always)]
-    // fn incr_hop_ver(&self, idx: usize) {
-    //     let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx + HOP_BYTES) as *mut HopBits;
-    //     unsafe {
-    //         intrinsics::atomic_xadd_acqrel(ptr, 1);
-    //     }
-    // }
-
-    // #[inline(always)]
-    // fn get_hop_ver(&self, idx: usize) -> u32 {
-    //     let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx + HOP_BYTES) as *mut HopBits;
-    //     unsafe { intrinsics::atomic_load_acq(ptr) }
-    // }
+    #[inline(always)]
+    fn iter_slot<'a>(
+        &self,
+        home_idx: usize,
+    ) -> SlotIter {
+        let hop_bits = self.get_hop_bits(home_idx);
+        let pos = 0;
+        debug!("Create iter with hop bits {:b} home at {}", hop_bits, home_idx);
+        SlotIter {
+            num_probed: 0,
+            cap_mask: self.cap_mask(),
+            home_idx,
+            hop_bits,
+            pos,
+        }
+    }
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
@@ -2163,5 +2186,56 @@ mod test {
         println!("KEY Digest mask is {:064b}", KEY_DIGEST_MASK);
         println!("VAL Digest mask is {:064b}", VAL_KEY_DIGEST_MASK);
         assert_eq!(VAL_KEY_DIGEST_MASK.count_ones() as usize, KEY_DIGEST_DIGITS);
+    }
+}
+
+struct SlotIter {
+    home_idx: usize,
+    pos: usize,
+    hop_bits: HopBits,
+    cap_mask: usize,
+    num_probed: usize,
+}
+
+impl Iterator for SlotIter {
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let probed = self.num_probed;
+        if probed > self.cap_mask {
+            return None;
+        };
+        self.num_probed += 1;
+        let pos = self.pos;
+        let bits = self.hop_bits;
+        if bits == 0 {
+            self.pos += 1;
+            let rt = (self.home_idx + pos) & self.cap_mask;
+            debug!("Stride 1 slot was pos {}, probed {}, rt {}", pos, probed, rt);
+            Some(rt)
+        } else {
+            // Find the bumps from the bits
+            let tailing = self.hop_bits.trailing_zeros() as usize;
+            let shifts = tailing + 1;
+            let target_bit = 1 << tailing;
+            let unset_mask = !target_bit;
+            self.pos = tailing;
+            self.hop_bits &= unset_mask;
+            let rt = (self.home_idx + self.pos) & self.cap_mask;
+            debug!(
+                "Next slot tailing {}, shifts {}, was pos {}, now pos {}, was bits {:b}, now bits {:b}, probed {}, rt {}", 
+                tailing, shifts, pos, self.pos, bits, self.hop_bits, probed, rt
+            );
+            Some(rt)
+        }
+    }
+}
+
+fn hop_distance(home_idx: usize, curr_idx: usize, cap: usize) -> usize {
+    if curr_idx > home_idx {
+        curr_idx - home_idx
+    } else {
+        curr_idx + (cap - home_idx)
     }
 }
