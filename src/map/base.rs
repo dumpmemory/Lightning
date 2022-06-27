@@ -2215,7 +2215,7 @@ impl Iterator for SlotIter {
         if bits == 0 {
             self.pos += 1;
             let rt = (self.home_idx + pos) & self.cap_mask;
-            debug!("Stride 1 slot was pos {}, probed {}, rt {}", pos, probed, rt);
+            trace!("Stride 1 slot was pos {}, probed {}, rt {}", pos, probed, rt);
             Some(rt)
         } else {
             // Find the bumps from the bits
@@ -2226,7 +2226,7 @@ impl Iterator for SlotIter {
             self.pos = tailing;
             self.hop_bits &= unset_mask;
             let rt = (self.home_idx + self.pos) & self.cap_mask;
-            debug!(
+            trace!(
                 "Next slot tailing {}, shifts {}, was pos {}, now pos {}, was bits {:b}, now bits {:b}, probed {}, rt {}", 
                 tailing, shifts, pos, self.pos, bits, self.hop_bits, probed, rt
             );
