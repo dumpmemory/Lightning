@@ -411,7 +411,7 @@ mod test {
         for i in 5..2048 {
             match map.get(&i) {
                 Some(r) => r.validate(i),
-                None => panic!("{}", i),
+                None => panic!("Got none for {}", i),
             }
         }
     }
@@ -447,7 +447,7 @@ mod test {
             for j in 5..60 {
                 match map.get(&(i * 10 + j)) {
                     Some(r) => r.validate(10),
-                    None => panic!("{}", i),
+                    None => panic!("Got none for {}", i),
                 }
             }
         }

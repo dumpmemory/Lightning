@@ -400,8 +400,8 @@ mod test {
                               map.table.map_is_copying(),
                               k
                           );
-                          assert_eq!(map.get(&key), None, "Remove recursion");
-                          assert!(map.lock(key).is_none(), "Remove recursion with lock");
+                          assert_eq!(map.get(&key), None, "Remove recursion, epoch {}", map.table.now_epoch());
+                          assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
                           map.insert(key, value);
                       }
                       if j % 3 == 0 {

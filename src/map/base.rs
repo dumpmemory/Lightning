@@ -690,8 +690,8 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut idx_iter = chunk.iter_slot(home_idx);
-        let mut idx = idx_iter.next().unwrap();
+        let mut iter = chunk.iter_slot(home_idx);
+        let mut idx = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         loop {
             let k = Self::get_fast_key(addr);
@@ -725,13 +725,14 @@ impl<
                 let fval = Self::get_fast_value(addr);
                 Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
             });
-            if let Some(next_idx) = idx_iter.next() {
-                idx = next_idx;
+            if let Some(new_idx) = iter.next() {
+                idx = new_idx;
                 addr = chunk.entry_addr(idx);
             } else {
                 break;
             }
         }
+
         // not found
         return None;
     }
@@ -1257,10 +1258,10 @@ impl<
         // Self::store_value(candidate_addr, fval);
         // return Ok(dest_idx);
 
-
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
+        
         if !needs_adjust {
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
@@ -1338,6 +1339,7 @@ impl<
 
                         // Update the hop bits
                         let candidate_hop_distance = hop_distance(idx, curr_idx, cap);
+
                         chunk.set_hop_bit(idx, candidate_hop_distance);
 
                         // Starting to copy it co current idx
@@ -1370,6 +1372,7 @@ impl<
                             Self::store_value(candidate_addr, fval);
                             // chunk.incr_hop_ver(home_idx);
                             chunk.set_hop_bit(home_idx, target_hop_distance);
+                            fence(AcqRel);
                             return Ok(candidate_idx);
                         } else {
                             // Not in range, need to swap it closer
