@@ -691,7 +691,7 @@ impl<
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
         let mut iter = chunk.iter_slot(home_idx);
-        let mut idx = iter.next().unwrap();
+        let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         loop {
             let k = Self::get_fast_key(addr);
@@ -725,7 +725,7 @@ impl<
                 let fval = Self::get_fast_value(addr);
                 Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
             });
-            if let Some(new_idx) = iter.next() {
+            if let Some((new_idx, _)) = iter.next() {
                 idx = new_idx;
                 addr = chunk.entry_addr(idx);
             } else {
@@ -749,14 +749,13 @@ impl<
         _guard: &'a Guard,
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> ModResult<V> {
-        let cap = chunk.capacity;
-        let mut count = 0;
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
-        let mut idx = hash & cap_mask;
-        let home_idx = idx;
+        let home_idx = hash & cap_mask;
+        let mut iter = chunk.iter_slot(home_idx);
+        let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
-        'MAIN: while count <= cap {
+        'MAIN:loop {
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
@@ -896,9 +895,10 @@ impl<
                         } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
-                            Self::wait_swapping_reprobe(
-                                addr, &mut count, &mut idx, home_idx, &backoff,
+                            Self::wait_swapping(
+                                addr, &backoff,
                             );
+                            iter = chunk.iter_slot(home_idx);
                             continue;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -971,9 +971,10 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe_no_key(
-                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                Self::wait_swapping(
+                                    addr, &backoff,
                                 );
+                                iter = chunk.iter_slot(home_idx);
                                 continue;
                             }
                             (_, false) => {
@@ -1016,9 +1017,10 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping_reprobe_no_key(
-                                    addr, &mut count, &mut idx, home_idx, &backoff,
+                                Self::wait_swapping(
+                                    addr, &backoff,
                                 );
+                                iter = chunk.iter_slot(home_idx);
                                 continue;
                             }
                             (_, false) => {
@@ -1055,7 +1057,10 @@ impl<
                     }
                 }
                 if raw == SWAPPING_VALUE {
-                    Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                    Self::wait_swapping(
+                        addr, &backoff,
+                    );
+                    iter = chunk.iter_slot(home_idx);
                     continue;
                 }
                 //  else if let Some(new_chunk) = new_chunk {
@@ -1063,9 +1068,12 @@ impl<
                 // }
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
-            idx = (idx + 1) & cap_mask; // reprobe
-            addr = chunk.entry_addr(idx);
-            count += 1;
+            if let Some(new_iter) = iter.next() {
+                (idx, count) = new_iter;
+                addr = chunk.entry_addr(idx);
+            } else {
+                break;
+            }
         }
         match op {
             ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) | ModOp::UpsertFastVal(_) => {
@@ -1097,21 +1105,6 @@ impl<
         backoff: &Backoff,
     ) {
         Self::wait_swapping(addr, backoff);
-        *count = 0;
-        *idx = home_idx;
-    }
-
-    #[inline(always)]
-    fn wait_swapping_reprobe_no_key(
-        addr: usize,
-        count: &mut usize,
-        idx: &mut usize,
-        home_idx: usize,
-        backoff: &Backoff,
-    ) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
-            backoff.spin();
-        }
         *count = 0;
         *idx = home_idx;
     }
@@ -1976,7 +1969,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
         let set_bit = 1 << pos;
         unsafe {
-            debug_assert!(intrinsics::atomic_load_acq(ptr) & set_bit == 0, "bit already set for idx {}, pos {}", idx, pos);
+            // debug_assert!(intrinsics::atomic_load_acq(ptr) & set_bit == 0, "bit already set for idx {}, pos {}", idx, pos);
             intrinsics::atomic_or_relaxed(ptr, set_bit);
         }
     }
@@ -1986,7 +1979,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
         let unset_bit = 1 << pos;
         unsafe {
-            debug_assert!(intrinsics::atomic_load_acq(ptr) & unset_bit > 0, "bit not set for idx {}, pos {}", idx, pos);
+            // debug_assert!(intrinsics::atomic_load_acq(ptr) & unset_bit > 0, "bit not set for idx {}, pos {}", idx, pos);
             intrinsics::atomic_and_relaxed(ptr, !unset_bit);
         }
     }
@@ -2201,7 +2194,7 @@ struct SlotIter {
 }
 
 impl Iterator for SlotIter {
-    type Item = usize;
+    type Item = (usize, usize);
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
@@ -2215,22 +2208,22 @@ impl Iterator for SlotIter {
         if bits == 0 {
             self.pos += 1;
             let rt = (self.home_idx + pos) & self.cap_mask;
-            trace!("Stride 1 slot was pos {}, probed {}, rt {}", pos, probed, rt);
-            Some(rt)
+            debug!("Stride 1 slot was pos {}, probed {}, rt {}", pos, probed, rt);
+            Some((rt, pos))
         } else {
             // Find the bumps from the bits
             let tailing = self.hop_bits.trailing_zeros() as usize;
             let shifts = tailing + 1;
             let target_bit = 1 << tailing;
             let unset_mask = !target_bit;
-            self.pos = tailing;
+            self.pos = tailing + 1;
             self.hop_bits &= unset_mask;
-            let rt = (self.home_idx + self.pos) & self.cap_mask;
-            trace!(
+            let rt = (self.home_idx + tailing) & self.cap_mask;
+            debug!(
                 "Next slot tailing {}, shifts {}, was pos {}, now pos {}, was bits {:b}, now bits {:b}, probed {}, rt {}", 
                 tailing, shifts, pos, self.pos, bits, self.hop_bits, probed, rt
             );
-            Some(rt)
+            Some((rt, tailing))
         }
     }
 }
