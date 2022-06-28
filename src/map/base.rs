@@ -8,7 +8,7 @@ pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
 pub const ENABLE_HOPSOTCH: bool = true;
-pub const ENABLE_SKIPPING: bool = false;
+pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
@@ -1335,12 +1335,12 @@ impl<
                         key.map(|key| candidate_attachment.set_key(key.clone()));
                         Self::store_key(candidate_addr, fkey);
 
+                        chunk.unset_hop_bit(idx, j);
+                        
                         // Discard swapping value on current address by replace it with new value
                         let primed_candidate_val =
                             syn_val_digest(candidate_key_digest, candidate_fval.val);
                         Self::store_value(curr_addr, primed_candidate_val);
-
-                        chunk.unset_hop_bit(idx, j);
 
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
@@ -1857,6 +1857,9 @@ impl FastValue {
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
+
+    const FAT_VAL: bool = mem::size_of::<V>() != 0;
+
     fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 8);
@@ -1988,7 +1991,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
-        let hop_bits = if ENABLE_SKIPPING {
+        let hop_bits = if !Self::FAT_VAL && ENABLE_SKIPPING {
             self.get_hop_bits(home_idx)
         } else {
             0
