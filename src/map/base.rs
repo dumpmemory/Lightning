@@ -691,7 +691,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut iter = chunk.iter_slot(home_idx);
+        let mut iter = chunk.iter_slot_skipable(home_idx, false);
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         loop {
@@ -753,7 +753,8 @@ impl<
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
-        let mut iter = chunk.iter_slot(home_idx);
+        let reiter = || { chunk.iter_slot_skipable(home_idx, false) };
+        let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
@@ -897,7 +898,7 @@ impl<
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
                             Self::wait_swapping(addr, &backoff);
-                            iter = chunk.iter_slot(home_idx);
+                            iter = reiter();
                             continue;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -971,7 +972,7 @@ impl<
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_swapping(addr, &backoff);
-                                iter = chunk.iter_slot(home_idx);
+                                iter = reiter();
                                 continue;
                             }
                             (_, false) => {
@@ -1015,7 +1016,7 @@ impl<
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_swapping(addr, &backoff);
-                                iter = chunk.iter_slot(home_idx);
+                                iter = reiter();
                                 continue;
                             }
                             (_, false) => {
@@ -1053,7 +1054,7 @@ impl<
                 }
                 if raw == SWAPPING_VALUE {
                     Self::wait_swapping(addr, &backoff);
-                    iter = chunk.iter_slot(home_idx);
+                    iter = reiter();
                     continue;
                 }
                 //  else if let Some(new_chunk) = new_chunk {
@@ -1697,7 +1698,7 @@ impl<
 
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut iter = new_chunk_ins.iter_slot(home_idx);
+        let mut iter = new_chunk_ins.iter_slot_skipable(home_idx, false);
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
             let addr = new_chunk_ins.entry_addr(idx);
@@ -1990,8 +1991,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline(always)]
-    fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
-        let hop_bits = if !Self::FAT_VAL && ENABLE_SKIPPING {
+    fn iter_slot_skipable<'a>(&self, home_idx: usize, skip: bool) -> SlotIter {
+        let hop_bits = if !Self::FAT_VAL && ENABLE_SKIPPING && skip {
             self.get_hop_bits(home_idx)
         } else {
             0
@@ -2004,6 +2005,11 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             hop_bits,
             pos,
         }
+    }
+
+    #[inline(always)]
+    fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
+        self.iter_slot_skipable(home_idx, false)
     }
 }
 
