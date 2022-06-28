@@ -1243,14 +1243,6 @@ impl<
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
 
-
-        // if hops < NUM_HOPS {
-        //     chunk.set_hop_bit(home_idx, hops);
-        // }
-        // let candidate_addr = chunk.entry_addr(dest_idx);
-        // Self::store_value(candidate_addr, fval);
-        // return Ok(dest_idx);
-
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
@@ -1710,12 +1702,11 @@ impl<
             fkey
         };
 
-        let cap = new_chunk_ins.capacity;
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut idx = home_idx;
-        let mut count = 0;
-        while count < cap {
+        let mut iter = new_chunk_ins.iter_slot(home_idx);
+        let (mut idx, mut count) = iter.next().unwrap();
+       loop {
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k == fkey {
@@ -1782,9 +1773,11 @@ impl<
                 Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
                 continue;
             }
-            idx += 1; // reprobe
-            idx &= cap_mask;
-            count += 1;
+            if let Some(next) = iter.next() {
+                (idx, count) = next;
+            } else {
+                break;
+            }
         }
         return false;
     }
@@ -2208,21 +2201,13 @@ impl Iterator for SlotIter {
         if bits == 0 {
             self.pos += 1;
             let rt = (self.home_idx + pos) & self.cap_mask;
-            debug!("Stride 1 slot was pos {}, probed {}, rt {}", pos, probed, rt);
             Some((rt, pos))
         } else {
             // Find the bumps from the bits
             let tailing = self.hop_bits.trailing_zeros() as usize;
-            let shifts = tailing + 1;
-            let target_bit = 1 << tailing;
-            let unset_mask = !target_bit;
             self.pos = tailing + 1;
-            self.hop_bits &= unset_mask;
+            self.hop_bits &= !(1 << tailing);
             let rt = (self.home_idx + tailing) & self.cap_mask;
-            debug!(
-                "Next slot tailing {}, shifts {}, was pos {}, now pos {}, was bits {:b}, now bits {:b}, probed {}, rt {}", 
-                tailing, shifts, pos, self.pos, bits, self.hop_bits, probed, rt
-            );
             Some((rt, tailing))
         }
     }
