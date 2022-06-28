@@ -8,6 +8,7 @@ pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
 pub const ENABLE_HOPSOTCH: bool = true;
+pub const ENABLE_SKIPPING: bool = false;
 
 pub const EMPTY_KEY: FKey = 0;
 pub const DISABLED_KEY: FKey = 2;
@@ -755,7 +756,7 @@ impl<
         let mut iter = chunk.iter_slot(home_idx);
         let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
-        'MAIN:loop {
+        'MAIN: loop {
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
@@ -895,9 +896,7 @@ impl<
                         } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
                         } else if raw == SWAPPING_VALUE {
-                            Self::wait_swapping(
-                                addr, &backoff,
-                            );
+                            Self::wait_swapping(addr, &backoff);
                             iter = chunk.iter_slot(home_idx);
                             continue;
                         } else {
@@ -971,9 +970,7 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping(
-                                    addr, &backoff,
-                                );
+                                Self::wait_swapping(addr, &backoff);
                                 iter = chunk.iter_slot(home_idx);
                                 continue;
                             }
@@ -1017,9 +1014,7 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping(
-                                    addr, &backoff,
-                                );
+                                Self::wait_swapping(addr, &backoff);
                                 iter = chunk.iter_slot(home_idx);
                                 continue;
                             }
@@ -1057,9 +1052,7 @@ impl<
                     }
                 }
                 if raw == SWAPPING_VALUE {
-                    Self::wait_swapping(
-                        addr, &backoff,
-                    );
+                    Self::wait_swapping(addr, &backoff);
                     iter = chunk.iter_slot(home_idx);
                     continue;
                 }
@@ -1246,7 +1239,7 @@ impl<
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
-        
+
         if !needs_adjust {
             if hops < NUM_HOPS {
                 chunk.set_hop_bit(home_idx, hops);
@@ -1311,7 +1304,7 @@ impl<
                             // Don't swap with key that have the selected digest
                             // such that write swap can always detect slot shifting by hopsotch
                             // This should be rare but we need to handle it
-                            // Also don't need to check the key changed or not after we fetched the value 
+                            // Also don't need to check the key changed or not after we fetched the value
                             // because digest would prevent the CAS below
                             j += 1;
                             continue;
@@ -1348,7 +1341,7 @@ impl<
                         Self::store_value(curr_addr, primed_candidate_val);
 
                         chunk.unset_hop_bit(idx, j);
-                        
+
                         //Here we had candidate copied. Need to work on the candidate slot
                         // First check if it is already in range of home neighbourhood
                         let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
@@ -1706,7 +1699,7 @@ impl<
         let home_idx = hash & cap_mask;
         let mut iter = new_chunk_ins.iter_slot(home_idx);
         let (mut idx, mut count) = iter.next().unwrap();
-       loop {
+        loop {
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k == fkey {
@@ -1994,13 +1987,13 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline(always)]
-    fn iter_slot<'a>(
-        &self,
-        home_idx: usize,
-    ) -> SlotIter {
-        let hop_bits = self.get_hop_bits(home_idx);
+    fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
+        let hop_bits = if ENABLE_SKIPPING {
+            self.get_hop_bits(home_idx)
+        } else {
+            0
+        };
         let pos = 0;
-        debug!("Create iter with hop bits {:b} home at {}", hop_bits, home_idx);
         SlotIter {
             num_probed: 0,
             cap_mask: self.cap_mask(),

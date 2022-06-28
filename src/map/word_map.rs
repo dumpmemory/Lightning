@@ -333,7 +333,12 @@ mod test {
         }
         for i in 100..900 {
             for j in 5..60 {
-                assert_eq!(map.get(&(i * 100 + j)), Some(i * j), "at epoch {}", map.table.now_epoch())
+                assert_eq!(
+                    map.get(&(i * 100 + j)),
+                    Some(i * j),
+                    "at epoch {}",
+                    map.table.now_epoch()
+                )
             }
         }
         for i in 5..9 {

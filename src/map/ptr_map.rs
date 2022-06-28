@@ -112,25 +112,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let val = ptr_part | ver_part;
         val
     }
-
-    #[inline(never)]
-    fn retry_get(&self, fv: &mut usize, addr: usize, backoff: &Backoff) -> Option<V> {
-        backoff.spin();
-        loop {
-            let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
-            if new_fval.val > NUM_FIX_V {
-                let now_val = self.deref_val::<V>(*fv);
-                if now_val.is_some() {
-                    return now_val;
-                } else {
-                    *fv = new_fval.val;
-                    backoff.spin();
-                    continue;
-                }
-            }
-            return None;
-        }
-    }
 }
 
 #[inline(always)]
@@ -161,17 +142,14 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         loop {
-            if let Some((mut fv, _, addr)) = self
+            if let Some((fv, _, _addr)) = self
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
                 if let Some(val) = self.deref_val(fv & WORD_MUTEX_DATA_BIT_MASK) {
                     return Some(val);
                 }
-                let retry_val = self.retry_get(&mut fv, addr, &backoff);
-                if retry_val.is_some() {
-                    return retry_val;
-                }
+
                 backoff.spin();
                 // None would be value changed
             } else {
