@@ -1302,6 +1302,7 @@ impl<
                         // First claim this candidate
                         if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
                             // The slot value have been changed, retry
+                            iter.redo();
                             continue;
                         }
 
@@ -2208,5 +2209,15 @@ fn hop_distance(home_idx: usize, curr_idx: usize, cap: usize) -> usize {
         curr_idx - home_idx
     } else {
         curr_idx + (cap - home_idx)
+    }
+}
+
+impl SlotIter {
+    fn redo(&mut self) {
+        if self.terminal {
+            self.pos -= 1;
+        } else {
+            self.hop_bits |= 1 << self.pos;
+        }
     }
 }
