@@ -1686,7 +1686,7 @@ impl<
 
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut iter = new_chunk_ins.iter_slot_skipable(home_idx, true);
+        let mut iter = new_chunk_ins.iter_slot_skipable(home_idx, false);
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
             let addr = new_chunk_ins.entry_addr(idx);
@@ -1996,11 +1996,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             pos,
             terminal: false
         }
-    }
-
-    #[inline(always)]
-    fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
-        self.iter_slot_skipable(home_idx, true)
     }
 }
 
