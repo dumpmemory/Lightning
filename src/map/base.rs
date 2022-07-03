@@ -966,7 +966,7 @@ impl<
                                         }
                                         Err(new_idx) => {
                                             let new_addr = chunk.entry_addr(new_idx);
-                                            Self::store_value(new_addr, SENTINEL_VALUE);
+                                            Self::store_value(new_addr, TOMBSTONE_VALUE);
                                             Self::store_key(new_addr, DISABLED_KEY);
                                             return ModResult::TableFull;
                                         }
@@ -1015,7 +1015,7 @@ impl<
                                     }
                                     Err(new_idx) => {
                                         let new_addr = chunk.entry_addr(new_idx);
-                                        Self::store_value(new_addr, SENTINEL_VALUE);
+                                        Self::store_value(new_addr, TOMBSTONE_VALUE);
                                         Self::store_key(new_addr, DISABLED_KEY);
                                         return ModResult::TableFull;
                                     }
