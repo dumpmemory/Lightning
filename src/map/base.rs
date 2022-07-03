@@ -692,7 +692,8 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut iter = chunk.iter_slot_skipable(home_idx, true);
+        let reiter = || chunk.iter_slot_skipable(home_idx, true);
+        let mut iter = reiter();
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         loop {
@@ -706,7 +707,8 @@ impl<
                             Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         } else if val_res.val == BACKWARD_SWAPPING_VALUE {
-                            return None; // No bother going back
+                            // No bother, its inserting and swapping
+                            return None;
                         }
                         if val_res.is_locked() {
                             backoff.spin();
