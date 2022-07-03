@@ -756,7 +756,7 @@ impl<
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
-        let reiter = || { chunk.iter_slot_skipable(home_idx, false) };
+        let reiter = || chunk.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
@@ -1108,7 +1108,8 @@ impl<
     #[inline(always)]
     fn wait_entry_reprobe(
         addr: usize,
-        orig_key: FKey, orig_val: FVal,
+        orig_key: FKey,
+        orig_val: FVal,
         count: &mut usize,
         idx: &mut usize,
         home_idx: usize,
@@ -1316,7 +1317,13 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        if !Self::cas_value(candidate_addr, candidate_fval.val, FORWARD_SWAPPING_VALUE).1 {
+                        if !Self::cas_value(
+                            candidate_addr,
+                            candidate_fval.val,
+                            FORWARD_SWAPPING_VALUE,
+                        )
+                        .1
+                        {
                             // The slot value have been changed, retry
                             iter.redo();
                             continue;
@@ -1342,7 +1349,7 @@ impl<
                         Self::store_key(candidate_addr, fkey);
 
                         chunk.unset_hop_bit(idx, candidate_distance);
-                        
+
                         // Discard swapping value on current address by replace it with new value
                         let primed_candidate_val =
                             syn_val_digest(candidate_key_digest, candidate_fval.val);
@@ -1874,7 +1881,6 @@ impl FastValue {
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
-
     const FAT_VAL: bool = mem::size_of::<V>() != 0;
 
     fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
@@ -1975,7 +1981,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
         let set_bit = 1 << pos;
         unsafe {
-            debug_assert!(intrinsics::atomic_load_acq(ptr) & set_bit == 0, "bit already set for idx {}, pos {}", idx, pos);
+            debug_assert!(
+                intrinsics::atomic_load_acq(ptr) & set_bit == 0,
+                "bit already set for idx {}, pos {}",
+                idx,
+                pos
+            );
             intrinsics::atomic_or_relaxed(ptr, set_bit);
         }
     }
@@ -1986,8 +1997,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let unset_bit = 1 << pos;
         unsafe {
             debug_assert!(
-                intrinsics::atomic_load_acq(ptr) & unset_bit > 0, 
-                "bit not set for idx {}, pos {}, read {:b}", idx, pos, intrinsics::atomic_load_acq(ptr));
+                intrinsics::atomic_load_acq(ptr) & unset_bit > 0,
+                "bit not set for idx {}, pos {}, read {:b}",
+                idx,
+                pos,
+                intrinsics::atomic_load_acq(ptr)
+            );
             intrinsics::atomic_and_relaxed(ptr, !unset_bit);
         }
     }
@@ -2022,7 +2037,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             home_idx,
             hop_bits,
             pos,
-            terminal: false
+            terminal: false,
         }
     }
 }
