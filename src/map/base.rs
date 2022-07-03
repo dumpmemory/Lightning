@@ -18,9 +18,10 @@ pub const SENTINEL_VALUE: FVal = 0b010;
 
 // Last bit set indicates locking
 pub const LOCKED_VALUE: FVal = 0b001;
-pub const SWAPPING_VALUE: FVal = 0b011;
+pub const BACKWARD_SWAPPING_VALUE: FVal = 0b011;
+pub const FORWARD_SWAPPING_VALUE: FVal = 0b101;
 
-pub const TOMBSTONE_VALUE: FVal = 0b100;
+pub const TOMBSTONE_VALUE: FVal = 0b110;
 
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
@@ -701,9 +702,11 @@ impl<
                 if attachment.probe(key) {
                     'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
-                        if val_res.val == SWAPPING_VALUE {
-                            Self::wait_swapping(addr, backoff);
+                        if val_res.val == FORWARD_SWAPPING_VALUE {
+                            Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
+                        } else if val_res.val == BACKWARD_SWAPPING_VALUE {
+                            return None; // No bother going back
                         }
                         if val_res.is_locked() {
                             backoff.spin();
@@ -896,9 +899,12 @@ impl<
                             }
                         } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
-                        } else if raw == SWAPPING_VALUE {
-                            Self::wait_swapping(addr, &backoff);
+                        } else if raw == BACKWARD_SWAPPING_VALUE {
+                            Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                             iter = reiter();
+                            continue;
+                        } else if raw == FORWARD_SWAPPING_VALUE {
+                            Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                             continue;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -928,7 +934,7 @@ impl<
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
                             // Use empty key to block probing progression for hops
-                            (fkey, SWAPPING_VALUE)
+                            (fkey, BACKWARD_SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -969,9 +975,13 @@ impl<
                                 return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (SWAPPING_VALUE, false) => {
+                            (FORWARD_SWAPPING_VALUE, false) => {
+                                Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                continue;
+                            }
+                            (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping(addr, &backoff);
+                                Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                                 iter = reiter();
                                 continue;
                             }
@@ -983,7 +993,7 @@ impl<
                     }
                     ModOp::UpsertFastVal(fval) => {
                         let (store_fkey, cas_fval) = if hop_adjustment {
-                            (fkey, SWAPPING_VALUE)
+                            (fkey, BACKWARD_SWAPPING_VALUE)
                         } else {
                             (fkey, fval)
                         };
@@ -1013,9 +1023,13 @@ impl<
                                 return ModResult::Done(0, None, idx);
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (SWAPPING_VALUE, false) => {
+                            (FORWARD_SWAPPING_VALUE, false) => {
+                                Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                continue;
+                            }
+                            (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_swapping(addr, &backoff);
+                                Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                                 iter = reiter();
                                 continue;
                             }
@@ -1042,20 +1056,21 @@ impl<
             {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
-                if raw == SENTINEL_VALUE {
-                    match &op {
+                match raw {
+                    SENTINEL_VALUE => match &op {
                         ModOp::Insert(_, _)
                         | ModOp::AttemptInsert(_, _)
                         | ModOp::UpsertFastVal(_) => {
                             return ModResult::Sentinel;
                         }
                         _ => {}
+                    },
+                    BACKWARD_SWAPPING_VALUE => {
+                        Self::wait_entry(addr, k, raw, &backoff);
+                        iter = reiter();
+                        continue;
                     }
-                }
-                if raw == SWAPPING_VALUE {
-                    Self::wait_swapping(addr, &backoff);
-                    iter = reiter();
-                    continue;
+                    _ => {}
                 }
                 //  else if let Some(new_chunk) = new_chunk {
                 //     Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
@@ -1091,21 +1106,22 @@ impl<
     }
 
     #[inline(always)]
-    fn wait_swapping_reprobe(
+    fn wait_entry_reprobe(
         addr: usize,
+        orig_key: FKey, orig_val: FVal,
         count: &mut usize,
         idx: &mut usize,
         home_idx: usize,
         backoff: &Backoff,
     ) {
-        Self::wait_swapping(addr, backoff);
+        Self::wait_entry(addr, orig_key, orig_val, backoff);
         *count = 0;
         *idx = home_idx;
     }
 
     #[inline(always)]
-    fn wait_swapping(addr: usize, backoff: &Backoff) {
-        while Self::get_fast_value(addr).val == SWAPPING_VALUE {
+    fn wait_entry(addr: usize, orig_key: FKey, orig_val: FVal, backoff: &Backoff) {
+        while Self::get_fast_value(addr).val == orig_val && Self::get_fast_key(addr) == orig_key {
             backoff.spin();
         }
     }
@@ -1300,7 +1316,7 @@ impl<
                             continue;
                         }
                         // First claim this candidate
-                        if !Self::cas_value(candidate_addr, candidate_fval.val, SWAPPING_VALUE).1 {
+                        if !Self::cas_value(candidate_addr, candidate_fval.val, FORWARD_SWAPPING_VALUE).1 {
                             // The slot value have been changed, retry
                             iter.redo();
                             continue;
@@ -1568,7 +1584,7 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                    SWAPPING_VALUE => {
+                    FORWARD_SWAPPING_VALUE | BACKWARD_SWAPPING_VALUE => {
                         backoff.spin();
                         continue;
                     }
@@ -1709,7 +1725,7 @@ impl<
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
-                    (fkey, SWAPPING_VALUE)
+                    (fkey, BACKWARD_SWAPPING_VALUE)
                 } else {
                     (fkey, curr_orig)
                 };
@@ -1751,9 +1767,14 @@ impl<
                 }
             }
             let v = Self::get_fast_value(addr);
-            if v.val == SWAPPING_VALUE {
+            let raw = v.val;
+            if v.val == BACKWARD_SWAPPING_VALUE {
                 let backoff = crossbeam_utils::Backoff::new();
-                Self::wait_swapping_reprobe(addr, &mut count, &mut idx, home_idx, &backoff);
+                Self::wait_entry_reprobe(addr, k, raw, &mut count, &mut idx, home_idx, &backoff);
+                continue;
+            } else if v.val == FORWARD_SWAPPING_VALUE {
+                let backoff = crossbeam_utils::Backoff::new();
+                Self::wait_entry(addr, k, raw, &backoff);
                 continue;
             }
             if let Some(next) = iter.next() {
@@ -1831,6 +1852,12 @@ impl FastValue {
     fn is_primed(self) -> bool {
         let v = self.val;
         v & VAL_BIT_MASK != v
+    }
+
+    #[inline(always)]
+    fn is_swapping(self) -> bool {
+        let v = self.val;
+        v == FORWARD_SWAPPING_VALUE || v == BACKWARD_SWAPPING_VALUE
     }
 
     #[inline(always)]
