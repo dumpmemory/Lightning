@@ -1259,128 +1259,125 @@ impl<
     ) -> Result<usize, usize> {
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
-
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
 
         if !needs_adjust {
-            if hops < NUM_HOPS {
-                chunk.set_hop_bit(home_idx, hops);
-            }
             return Ok(dest_idx);
-        } else {
-            let cap_mask = chunk.cap_mask();
-            let cap = chunk.capacity;
-            let target_key_digest = key_digest(fkey);
-            'SWAPPING: loop {
-                // Need to adjust hops
-                let scaled_curr_idx = dest_idx | cap;
-                let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
-                let curr_idx = scaled_curr_idx & cap_mask;
-                assert_eq!(curr_idx, dest_idx);
-                let (probe_start, probe_end) = if starting < curr_idx {
-                    (starting, curr_idx)
-                } else {
-                    (starting, cap + curr_idx)
-                };
-                let hop_bits = chunk.get_hop_bits(home_idx);
-                if hop_bits == ALL_HOPS_TAKEN {
-                    // No slots in the neighbour is available
-                    return Err(dest_idx);
-                }
-                debug_assert!(probe_start < probe_end);
-                // Find a swappable slot
-                for i in probe_start..probe_end {
-                    let idx = i & cap_mask;
-                    let mut iter = chunk.iter_slot_skipable(idx, true);
-                    while let Some((candidate_idx, candidate_distance)) = iter.next() {
-                        if iter.terminal || iter.pos >= NUM_HOPS {
-                            break;
-                        }
-                        // Range checking
-                        if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, cap) {
-                            continue;
-                        }
-                        // Found a candidate slot
-                        let candidate_addr = chunk.entry_addr(candidate_idx);
-                        let candidate_fkey = Self::get_fast_key(candidate_addr);
-                        let candidate_fval = Self::get_fast_value(candidate_addr);
-                        if candidate_fval.val == SENTINEL_VALUE {
-                            return Err(dest_idx);
-                        }
-                        if candidate_fval.val < NUM_FIX_V || candidate_fkey < NUM_FIX_K {
-                            // Do not temper with non value slot, try next one
-                            continue;
-                        }
-                        let candidate_key_digest = key_digest(candidate_fkey);
-                        if candidate_key_digest == 0 || candidate_key_digest == target_key_digest {
-                            // Don't swap with key that have the selected digest
-                            // such that write swap can always detect slot shifting by hopsotch
-                            // This should be rare but we need to handle it
-                            // Also don't need to check the key changed or not after we fetched the value
-                            // because digest would prevent the CAS below
-                            continue;
-                        }
-                        // First claim this candidate
-                        if !Self::cas_value(
-                            candidate_addr,
-                            candidate_fval.val,
-                            FORWARD_SWAPPING_VALUE,
-                        )
-                        .1
-                        {
-                            // The slot value have been changed, retry
-                            iter.redo();
-                            continue;
-                        }
+        }
+        
+        if hops < NUM_HOPS {
+            chunk.set_hop_bit(home_idx, hops);
+            return Ok(dest_idx);
+        }
 
-                        // Update the hop bits
-                        let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
-                        chunk.set_hop_bit(idx, curr_candidate_distance);
-
-                        // Starting to copy it co current idx
-                        let curr_addr = chunk.entry_addr(curr_idx);
-                        // Start from key object in the attachment
-                        let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
-                        let candidate_key = candidate_attachment.get_key();
-                        let curr_attachment = chunk.attachment.prefetch(curr_idx);
-                        // And the key object
-                        curr_attachment.set_key(candidate_key);
-                        // Then set the fkey, at this point, the entry is available to other thread
-                        Self::store_key(curr_addr, candidate_fkey);
-
-                        // Enable probing on the candidate with inserting key
-                        key.map(|key| candidate_attachment.set_key(key.clone()));
-                        Self::store_key(candidate_addr, fkey);
-
-                        chunk.unset_hop_bit(idx, candidate_distance);
-
-                        // Discard swapping value on current address by replace it with new value
-                        let primed_candidate_val =
-                            syn_val_digest(candidate_key_digest, candidate_fval.val);
-                        Self::store_value(curr_addr, primed_candidate_val);
-
-                        //Here we had candidate copied. Need to work on the candidate slot
-                        // First check if it is already in range of home neighbourhood
-                        let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
-                        if target_hop_distance < NUM_HOPS {
-                            // In range, fill the candidate slot with our key and values
-                            Self::store_value(candidate_addr, fval);
-                            // chunk.incr_hop_ver(home_idx);
-                            chunk.set_hop_bit(home_idx, target_hop_distance);
-                            fence(AcqRel);
-                            return Ok(candidate_idx);
-                        } else {
-                            // Not in range, need to swap it closer
-                            dest_idx = candidate_idx;
-                            continue 'SWAPPING;
-                        }
-                    }
-                    break;
-                }
+        let cap_mask = chunk.cap_mask();
+        let cap = chunk.capacity;
+        let target_key_digest = key_digest(fkey);
+        'SWAPPING: loop {
+            // Need to adjust hops
+            let scaled_curr_idx = dest_idx | cap;
+            let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
+            let curr_idx = scaled_curr_idx & cap_mask;
+            assert_eq!(curr_idx, dest_idx);
+            let (probe_start, probe_end) = if starting < curr_idx {
+                (starting, curr_idx)
+            } else {
+                (starting, cap + curr_idx)
+            };
+            let hop_bits = chunk.get_hop_bits(home_idx);
+            if hop_bits == ALL_HOPS_TAKEN {
+                // No slots in the neighbour is available
                 return Err(dest_idx);
             }
+            debug_assert!(probe_start < probe_end);
+            // Find a swappable slot
+            for i in probe_start..probe_end {
+                let idx = i & cap_mask;
+                let mut iter = chunk.iter_slot_skipable(idx, true);
+                while let Some((candidate_idx, candidate_distance)) = iter.next() {
+                    if iter.terminal || iter.pos >= NUM_HOPS {
+                        break;
+                    }
+                    // Range checking
+                    if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, cap) {
+                        continue;
+                    }
+                    // Found a candidate slot
+                    let candidate_addr = chunk.entry_addr(candidate_idx);
+                    let candidate_fkey = Self::get_fast_key(candidate_addr);
+                    let candidate_fval = Self::get_fast_value(candidate_addr);
+                    if candidate_fval.val == SENTINEL_VALUE {
+                        return Err(dest_idx);
+                    }
+                    if candidate_fval.val < NUM_FIX_V || candidate_fkey < NUM_FIX_K {
+                        // Do not temper with non value slot, try next one
+                        continue;
+                    }
+                    let candidate_key_digest = key_digest(candidate_fkey);
+                    if candidate_key_digest == 0 || candidate_key_digest == target_key_digest {
+                        // Don't swap with key that have the selected digest
+                        // such that write swap can always detect slot shifting by hopsotch
+                        // This should be rare but we need to handle it
+                        // Also don't need to check the key changed or not after we fetched the value
+                        // because digest would prevent the CAS below
+                        continue;
+                    }
+                    // First claim this candidate
+                    if !Self::cas_value(candidate_addr, candidate_fval.val, FORWARD_SWAPPING_VALUE)
+                        .1
+                    {
+                        // The slot value have been changed, retry
+                        iter.redo();
+                        continue;
+                    }
+
+                    // Update the hop bits
+                    let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
+                    chunk.set_hop_bit(idx, curr_candidate_distance);
+
+                    // Starting to copy it co current idx
+                    let curr_addr = chunk.entry_addr(curr_idx);
+                    // Start from key object in the attachment
+                    let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
+                    let candidate_key = candidate_attachment.get_key();
+                    let curr_attachment = chunk.attachment.prefetch(curr_idx);
+                    // And the key object
+                    curr_attachment.set_key(candidate_key);
+                    // Then set the fkey, at this point, the entry is available to other thread
+                    Self::store_key(curr_addr, candidate_fkey);
+
+                    // Enable probing on the candidate with inserting key
+                    key.map(|key| candidate_attachment.set_key(key.clone()));
+                    Self::store_key(candidate_addr, fkey);
+
+                    chunk.unset_hop_bit(idx, candidate_distance);
+
+                    // Discard swapping value on current address by replace it with new value
+                    let primed_candidate_val =
+                        syn_val_digest(candidate_key_digest, candidate_fval.val);
+                    Self::store_value(curr_addr, primed_candidate_val);
+
+                    //Here we had candidate copied. Need to work on the candidate slot
+                    // First check if it is already in range of home neighbourhood
+                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
+                    if target_hop_distance < NUM_HOPS {
+                        // In range, fill the candidate slot with our key and values
+                        Self::store_value(candidate_addr, fval);
+                        // chunk.incr_hop_ver(home_idx);
+                        chunk.set_hop_bit(home_idx, target_hop_distance);
+                        fence(AcqRel);
+                        return Ok(candidate_idx);
+                    } else {
+                        // Not in range, need to swap it closer
+                        dest_idx = candidate_idx;
+                        continue 'SWAPPING;
+                    }
+                }
+                break;
+            }
+            return Err(dest_idx);
         }
     }
 
@@ -2271,7 +2268,10 @@ impl SlotIter {
     }
 
     #[inline(always)]
-    fn refresh_following<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>(&mut self, chunk: &Chunk<K, V, A, ALLOC>) {
+    fn refresh_following<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>(
+        &mut self,
+        chunk: &Chunk<K, V, A, ALLOC>,
+    ) {
         if self.hop_bits == 0 {
             return;
         }
