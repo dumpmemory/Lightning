@@ -705,6 +705,7 @@ impl<
                         let val_res = Self::get_fast_value(addr);
                         if val_res.val == FORWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
+                            iter.refresh_following(chunk);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         } else if val_res.val == BACKWARD_SWAPPING_VALUE {
                             // No bother, its inserting and swapping
@@ -907,6 +908,7 @@ impl<
                             continue;
                         } else if raw == FORWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
+                            iter.refresh_following(chunk);
                             continue;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -979,6 +981,7 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (FORWARD_SWAPPING_VALUE, false) => {
                                 Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                iter.refresh_following(chunk);
                                 continue;
                             }
                             (BACKWARD_SWAPPING_VALUE, false) => {
@@ -1027,6 +1030,7 @@ impl<
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (FORWARD_SWAPPING_VALUE, false) => {
                                 Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                iter.refresh_following(chunk);
                                 continue;
                             }
                             (BACKWARD_SWAPPING_VALUE, false) => {
@@ -1709,10 +1713,10 @@ impl<
         } else {
             fkey
         };
-
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
-        let mut iter = new_chunk_ins.iter_slot_skipable(home_idx, false);
+        let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
+        let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
             let addr = new_chunk_ins.entry_addr(idx);
@@ -1780,10 +1784,12 @@ impl<
             if v.val == BACKWARD_SWAPPING_VALUE {
                 let backoff = crossbeam_utils::Backoff::new();
                 Self::wait_entry_reprobe(addr, k, raw, &mut count, &mut idx, home_idx, &backoff);
+                iter = reiter();
                 continue;
             } else if v.val == FORWARD_SWAPPING_VALUE {
                 let backoff = crossbeam_utils::Backoff::new();
                 Self::wait_entry(addr, k, raw, &backoff);
+                iter.refresh_following(new_chunk_ins);
                 continue;
             }
             if let Some(next) = iter.next() {
@@ -2263,5 +2269,11 @@ impl SlotIter {
         } else {
             self.hop_bits |= 1 << self.pos;
         }
+    }
+
+    fn refresh_following<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>(&mut self, chunk: &Chunk<K, V, A, ALLOC>) {
+        let checked = self.hop_bits.trailing_zeros();
+        let new_bits = chunk.get_hop_bits(self.home_idx);
+        self.hop_bits = new_bits >> checked << checked;
     }
 }
