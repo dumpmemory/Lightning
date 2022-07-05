@@ -2263,6 +2263,7 @@ fn hop_distance(home_idx: usize, curr_idx: usize, cap: usize) -> usize {
 }
 
 impl SlotIter {
+    #[inline(always)]
     fn redo(&mut self) {
         if self.terminal {
             self.pos -= 1;
@@ -2271,8 +2272,12 @@ impl SlotIter {
         }
     }
 
+    #[inline(always)]
     fn refresh_following<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>(&mut self, chunk: &Chunk<K, V, A, ALLOC>) {
         let checked = self.hop_bits.trailing_zeros();
+        if checked == NUM_HOPS as u32 {
+            return;
+        }
         let new_bits = chunk.get_hop_bits(self.home_idx);
         self.hop_bits = new_bits >> checked << checked;
     }
