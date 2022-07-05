@@ -1456,13 +1456,12 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        let old_occupation = old_chunk_ins.occupation.load(Relaxed);
+        let old_occupation = old_cap;
         trace!(
-            "--- Resizing {:?}. New size is {}, was {}, occ {}",
+            "--- Resizing {:?}. New size is {}, was {}",
             old_chunk_ptr,
             new_cap,
             old_cap,
-            old_occupation
         );
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
@@ -1795,10 +1794,9 @@ impl<
             if let Some(next) = iter.next() {
                 (idx, count) = next;
             } else {
-                break;
+                panic!("Cannot find any slot for migration");
             }
         }
-        return false;
     }
 
     pub fn map_is_copying(&self) -> bool {
@@ -2274,10 +2272,10 @@ impl SlotIter {
 
     #[inline(always)]
     fn refresh_following<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>(&mut self, chunk: &Chunk<K, V, A, ALLOC>) {
-        let checked = self.hop_bits.trailing_zeros();
-        if checked == NUM_HOPS as u32 {
+        if self.hop_bits == 0 {
             return;
         }
+        let checked = self.hop_bits.trailing_zeros();
         let new_bits = chunk.get_hop_bits(self.home_idx);
         self.hop_bits = new_bits >> checked << checked;
     }
