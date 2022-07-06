@@ -1129,7 +1129,9 @@ impl<
     #[inline(always)]
     fn wait_entry(addr: usize, orig_key: FKey, orig_val: FVal, backoff: &Backoff) {
         loop {
-            if Self::get_fast_value(addr).val != orig_val && Self::get_fast_key(addr) != orig_key {
+            if Self::get_fast_value(addr).val != orig_val
+                && (orig_val == BACKWARD_SWAPPING_VALUE || Self::get_fast_key(addr) != orig_key)
+            {
                 break;
             }
             backoff.spin();
@@ -1265,7 +1267,7 @@ impl<
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
-        
+
         if hops < NUM_HOPS {
             chunk.set_hop_bit(home_idx, hops);
             return Ok(dest_idx);
