@@ -905,11 +905,11 @@ impl<
                         } else if raw == BACKWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                             iter = reiter();
-                            continue;
+                            continue 'MAIN;
                         } else if raw == FORWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                             iter.refresh_following(chunk);
-                            continue;
+                            continue 'MAIN;
                         } else {
                             // Other tags (except tombstone and locks)
                             if cfg!(debug_assertions) {
@@ -1265,13 +1265,13 @@ impl<
         if !ENABLE_HOPSOTCH {
             return Ok(dest_idx);
         }
-
-        if !needs_adjust {
-            return Ok(dest_idx);
-        }
         
         if hops < NUM_HOPS {
             chunk.set_hop_bit(home_idx, hops);
+            return Ok(dest_idx);
+        }
+
+        if !needs_adjust {
             return Ok(dest_idx);
         }
 
@@ -1347,8 +1347,8 @@ impl<
                     let candidate_key = candidate_attachment.get_key();
                     let curr_attachment = chunk.attachment.prefetch(curr_idx);
                     // And the key object
+                    // Then swap the key
                     curr_attachment.set_key(candidate_key);
-                    // Then set the fkey, at this point, the entry is available to other thread
                     Self::store_key(curr_addr, candidate_fkey);
 
                     // Enable probing on the candidate with inserting key
