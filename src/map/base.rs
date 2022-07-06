@@ -992,7 +992,7 @@ impl<
                             }
                             (_, false) => {
                                 backoff.spin();
-                                continue 'MAIN;
+                                continue;
                             }
                         }
                     }
@@ -1041,7 +1041,7 @@ impl<
                             }
                             (_, false) => {
                                 backoff.spin();
-                                continue 'MAIN;
+                                continue;
                             }
                         }
                     }
@@ -1052,7 +1052,7 @@ impl<
                             return ModResult::Done(0, None, idx);
                         } else {
                             backoff.spin();
-                            continue 'MAIN;
+                            continue;
                         }
                     }
                     ModOp::Tombstone => return ModResult::NotFound,
