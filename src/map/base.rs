@@ -692,7 +692,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, true);
+        let reiter = || chunk.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
@@ -2272,7 +2272,7 @@ impl SlotIter {
         &mut self,
         chunk: &Chunk<K, V, A, ALLOC>,
     ) {
-        if self.hop_bits == 0 {
+        if self.hop_bits == 0 || self.hop_bits == !(!0 << 1 >> 1) {
             return;
         }
         let checked = self.hop_bits.trailing_zeros();
