@@ -1128,7 +1128,10 @@ impl<
 
     #[inline(always)]
     fn wait_entry(addr: usize, orig_key: FKey, orig_val: FVal, backoff: &Backoff) {
-        while Self::get_fast_value(addr).val == orig_val && Self::get_fast_key(addr) == orig_key {
+        loop {
+            if Self::get_fast_value(addr).val != orig_val && Self::get_fast_key(addr) != orig_key {
+                break;
+            }
             backoff.spin();
         }
     }
