@@ -92,6 +92,7 @@ pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>
 
 pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
+    cap_mask: usize,
     base: usize,
     occu_limit: usize,
     occupation: AtomicUsize,
@@ -690,7 +691,7 @@ impl<
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         let home_idx = hash & cap_mask;
         let reiter = || chunk.iter_slot_skipable(home_idx, true);
         let mut iter = reiter();
@@ -756,7 +757,7 @@ impl<
         _guard: &'a Guard,
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> ModResult<V> {
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
         let reiter = || chunk.iter_slot_skipable(home_idx, true);
@@ -1138,7 +1139,7 @@ impl<
         let cap = chunk.capacity;
         let mut counter = 0;
         let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed));
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         while counter < cap {
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
@@ -1272,7 +1273,7 @@ impl<
             return Ok(dest_idx);
         }
 
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         let cap = chunk.capacity;
         let target_key_digest = key_digest(fkey);
         'SWAPPING: loop {
@@ -1712,7 +1713,7 @@ impl<
             fkey
         };
 
-        let cap_mask = new_chunk_ins.cap_mask();
+        let cap_mask = new_chunk_ins.cap_mask;
         let home_idx = hash & cap_mask;
         let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, true);
         let mut iter = reiter();
@@ -1916,6 +1917,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                 Self {
                     base: data_base,
                     capacity,
+                    cap_mask: capacity - 1,
                     occupation: AtomicUsize::new(0),
                     empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
@@ -1971,11 +1973,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     #[inline(always)]
     fn entry_addr(&self, idx: usize) -> usize {
         self.base + idx * ENTRY_SIZE
-    }
-
-    #[inline(always)]
-    fn cap_mask(&self) -> usize {
-        self.capacity - 1
     }
 
     #[inline(always)]
@@ -2041,7 +2038,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let pos = 0;
         SlotIter {
             num_probed: 0,
-            cap_mask: self.cap_mask(),
+            cap_mask: self.cap_mask,
             home_idx,
             hop_bits,
             pos,
