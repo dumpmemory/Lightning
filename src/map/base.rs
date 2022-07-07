@@ -765,11 +765,12 @@ impl<
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
             let k = Self::get_fast_key(addr);
+            let mut v;
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
                 if attachment.probe(&key) {
                     loop {
-                        let v = Self::get_fast_value(addr);
+                        v = Self::get_fast_value(addr);
                         if Self::get_fast_key(addr) != k {
                             // For hopsotch
                             // Here hash collision is impossible becasue hopsotch only swap with
@@ -1062,6 +1063,11 @@ impl<
             {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
+                if Self::get_fast_key(addr) != k {
+                    // Recheck key does not changed
+                    backoff.spin();
+                    continue 'MAIN;
+                }
                 match raw {
                     SENTINEL_VALUE => match &op {
                         ModOp::Insert(_, _)
@@ -1075,7 +1081,10 @@ impl<
                         Self::wait_entry(addr, k, raw, &backoff);
                         iter = reiter();
                         continue 'MAIN;
-                    }
+                    },
+                    FORWARD_SWAPPING_VALUE => {
+                        // Does not need to wait for this, it have temparly duplicate key
+                    },
                     _ => {}
                 }
                 //  else if let Some(new_chunk) = new_chunk {
