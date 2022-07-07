@@ -765,12 +765,11 @@ impl<
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
             let k = Self::get_fast_key(addr);
-            let mut v;
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
                 if attachment.probe(&key) {
                     loop {
-                        v = Self::get_fast_value(addr);
+                        let v = Self::get_fast_value(addr);
                         if Self::get_fast_key(addr) != k {
                             // For hopsotch
                             // Here hash collision is impossible becasue hopsotch only swap with
@@ -1060,7 +1059,7 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
             }
-            {
+            if k >= NUM_FIX_K {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
                 if Self::get_fast_key(addr) != k {
@@ -1078,12 +1077,18 @@ impl<
                         _ => {}
                     },
                     BACKWARD_SWAPPING_VALUE => {
-                        Self::wait_entry(addr, k, raw, &backoff);
-                        iter = reiter();
-                        continue 'MAIN;
+                        if iter.terminal { // Only check terminal probing
+                            Self::wait_entry(addr, k, raw, &backoff);
+                            iter = reiter();
+                            continue 'MAIN;
+                        }
                     },
                     FORWARD_SWAPPING_VALUE => {
-                        // Does not need to wait for this, it have temparly duplicate key
+                        // Shall NOT wait
+                        // There must be a key matching forwarding swapping
+                        // Self::wait_entry(addr, k, raw, &backoff);
+                        // iter.refresh_following(chunk);
+                        // continue 'MAIN;
                     },
                     _ => {}
                 }
@@ -1370,6 +1375,8 @@ impl<
                         return Ok(candidate_idx);
                     } else {
                         // Not in range, need to swap it closer
+                        // MUST change the value to swapping backward to avoid duplication
+                        Self::store_value(candidate_addr, BACKWARD_SWAPPING_VALUE);
                         dest_idx = candidate_idx;
                         continue 'SWAPPING;
                     }
