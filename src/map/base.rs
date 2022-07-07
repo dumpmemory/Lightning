@@ -1112,21 +1112,6 @@ impl<
     }
 
     #[inline(always)]
-    fn wait_entry_reprobe(
-        addr: usize,
-        orig_key: FKey,
-        orig_val: FVal,
-        count: &mut usize,
-        idx: &mut usize,
-        home_idx: usize,
-        backoff: &Backoff,
-    ) {
-        Self::wait_entry(addr, orig_key, orig_val, backoff);
-        *count = 0;
-        *idx = home_idx;
-    }
-
-    #[inline(always)]
     fn wait_entry(addr: usize, orig_key: FKey, orig_val: FVal, backoff: &Backoff) {
         loop {
             if Self::get_fast_value(addr).val != orig_val
@@ -1708,12 +1693,12 @@ impl<
             return false;
         }
 
-        // Make insertion for migration inlined, hopefully the ordering will be right
         let hash = if Self::WORD_KEY {
             hash_key::<_, H>(&fkey)
         } else {
             fkey
         };
+        
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
         let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
@@ -1732,8 +1717,9 @@ impl<
                     old_chunk_ins
                         .attachment
                         .manually_drop(fvalue.act_val::<V>());
-                    Self::cas_sentinel(old_address, curr_orig);
-                    return false;
+                    // New value in the new chunk, just put a sentinel and abort migration on this slot
+                    Self::store_value(old_address, SENTINEL_VALUE);
+                    return true;
                 }
             } else if k == EMPTY_KEY {
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
@@ -1779,19 +1765,20 @@ impl<
                     warn!("Migrate {} have conflict", fkey);
                     continue;
                 }
-            }
-            let v = Self::get_fast_value(addr);
-            let raw = v.val;
-            if v.val == BACKWARD_SWAPPING_VALUE {
-                let backoff = crossbeam_utils::Backoff::new();
-                Self::wait_entry_reprobe(addr, k, raw, &mut count, &mut idx, home_idx, &backoff);
-                iter = reiter();
-                continue;
-            } else if v.val == FORWARD_SWAPPING_VALUE {
-                let backoff = crossbeam_utils::Backoff::new();
-                Self::wait_entry(addr, k, raw, &backoff);
-                iter.refresh_following(new_chunk_ins);
-                continue;
+            } else {
+                let v = Self::get_fast_value(addr);
+                let raw = v.val;
+                if v.val == BACKWARD_SWAPPING_VALUE {
+                    let backoff = crossbeam_utils::Backoff::new();
+                    Self::wait_entry(addr, k, raw, &backoff);
+                    iter = reiter();
+                    continue;
+                } else if v.val == FORWARD_SWAPPING_VALUE {
+                    let backoff = crossbeam_utils::Backoff::new();
+                    Self::wait_entry(addr, k, raw, &backoff);
+                    iter.refresh_following(new_chunk_ins);
+                    continue;
+                }
             }
             if let Some(next) = iter.next() {
                 (idx, count) = next;
