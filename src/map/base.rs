@@ -759,7 +759,7 @@ impl<
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, false);
+        let reiter = || chunk.iter_slot_skipable(home_idx, true);
         let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
@@ -1353,25 +1353,26 @@ impl<
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
-                    // Enable probing on the candidate with inserting key
+                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
+                    let target_in_range = target_hop_distance < NUM_HOPS;
+                    if target_in_range {
+                        chunk.set_hop_bit(home_idx, target_hop_distance);
+                    }
                     key.map(|key| candidate_attachment.set_key(key.clone()));
                     Self::store_key(candidate_addr, fkey);
-
-                    chunk.unset_hop_bit(idx, candidate_distance);
 
                     // Discard swapping value on current address by replace it with new value
                     let primed_candidate_val =
                         syn_val_digest(candidate_key_digest, candidate_fval.val);
                     Self::store_value(curr_addr, primed_candidate_val);
+                    // Unset only after candadate has been moved to target position
+                    chunk.unset_hop_bit(idx, candidate_distance);
 
                     //Here we had candidate copied. Need to work on the candidate slot
-                    // First check if it is already in range of home neighbourhood
-                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
-                    if target_hop_distance < NUM_HOPS {
+                    if target_in_range {
                         // In range, fill the candidate slot with our key and values
                         Self::store_value(candidate_addr, fval);
                         // chunk.incr_hop_ver(home_idx);
-                        chunk.set_hop_bit(home_idx, target_hop_distance);
                         fence(AcqRel);
                         return Ok(candidate_idx);
                     } else {
