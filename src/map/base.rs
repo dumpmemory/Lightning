@@ -1719,7 +1719,7 @@ impl<
 
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
-        let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
+        let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, true);
         let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
