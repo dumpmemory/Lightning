@@ -454,7 +454,7 @@ mod fat_tests {
             let v = val_from(i * 2);
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
-                None => panic!("{}", i),
+                None => panic!("Got none for {}", i),
             }
         }
     }
@@ -474,7 +474,7 @@ mod fat_tests {
             let v = i * 2;
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
-                None => panic!("{}", i),
+                None => panic!("Got none for {}", i),
             }
         }
     }
@@ -719,7 +719,7 @@ mod test {
             for j in 5..60 {
                 match map.get(&(i * 10 + j)) {
                     Some(r) => r.validate(10),
-                    None => panic!("{}", i),
+                    None => panic!("Got none for {}", i),
                 }
             }
         }

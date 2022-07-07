@@ -284,7 +284,8 @@ mod test {
             assert_eq!(table.insert(i, i), None);
         }
         for i in 50..60 {
-            assert_eq!(table.get(&i), Some(i));
+            let res = table.get(&i);
+            assert_eq!(res, Some(i), "at epoch {}", table.table.now_epoch());
         }
         for i in 50..60 {
             assert_eq!(table.remove(&i), Some(i));
@@ -332,7 +333,12 @@ mod test {
         }
         for i in 100..900 {
             for j in 5..60 {
-                assert_eq!(map.get(&(i * 100 + j)), Some(i * j))
+                assert_eq!(
+                    map.get(&(i * 100 + j)),
+                    Some(i * j),
+                    "at epoch {}",
+                    map.table.now_epoch()
+                )
             }
         }
         for i in 5..9 {
@@ -399,8 +405,8 @@ mod test {
                               map.table.map_is_copying(),
                               k
                           );
-                          assert_eq!(map.get(&key), None, "Remove recursion");
-                          assert!(map.lock(key).is_none(), "Remove recursion with lock");
+                          assert_eq!(map.get(&key), None, "Remove recursion, epoch {}", map.table.now_epoch());
+                          assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
                           map.insert(key, value);
                       }
                       if j % 3 == 0 {
