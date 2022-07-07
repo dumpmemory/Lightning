@@ -1077,19 +1077,20 @@ impl<
                         _ => {}
                     },
                     BACKWARD_SWAPPING_VALUE => {
-                        if iter.terminal { // Only check terminal probing
+                        if iter.terminal {
+                            // Only check terminal probing
                             Self::wait_entry(addr, k, raw, &backoff);
                             iter = reiter();
                             continue 'MAIN;
                         }
-                    },
+                    }
                     FORWARD_SWAPPING_VALUE => {
                         // Shall NOT wait
                         // There must be a key matching forwarding swapping
                         // Self::wait_entry(addr, k, raw, &backoff);
                         // iter.refresh_following(chunk);
                         // continue 'MAIN;
-                    },
+                    }
                     _ => {}
                 }
                 //  else if let Some(new_chunk) = new_chunk {
@@ -1714,7 +1715,7 @@ impl<
         } else {
             fkey
         };
-        
+
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
         let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
