@@ -1062,11 +1062,6 @@ impl<
             if k >= NUM_FIX_K {
                 let fval = Self::get_fast_value(addr);
                 let raw = fval.val;
-                if Self::get_fast_key(addr) != k {
-                    // Recheck key does not changed
-                    backoff.spin();
-                    continue 'MAIN;
-                }
                 match raw {
                     SENTINEL_VALUE => match &op {
                         ModOp::Insert(_, _)
