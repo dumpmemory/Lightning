@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -710,7 +710,7 @@ impl<
                     if val_res.val == FORWARD_SWAPPING_VALUE {
                         Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
                         iter.refresh_following(chunk);
-                        continue
+                        continue;
                     } else if val_res.val == BACKWARD_SWAPPING_VALUE {
                         // No bother, its inserting and swapping
                         return None;
@@ -801,8 +801,7 @@ impl<
                             }
                             ModOp::Sentinel => {
                                 if Self::cas_sentinel(addr, v.val) {
-                                    let prev_val =
-                                        read_attachment.then(|| attachment.get_value());
+                                    let prev_val = read_attachment.then(|| attachment.get_value());
                                     attachment.erase(raw);
                                     if raw == 0 {
                                         return ModResult::Replaced(0, prev_val, idx);
@@ -847,15 +846,11 @@ impl<
                             }
                             ModOp::AttemptInsert(fval, oval) => {
                                 if act_val == TOMBSTONE_VALUE {
-                                    let primed_fval =
-                                        Self::if_fat_val_then_val(LOCKED_VALUE, fval);
-                                    let prev_val =
-                                        read_attachment.then(|| attachment.get_value());
+                                    let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, fval);
+                                    let prev_val = read_attachment.then(|| attachment.get_value());
                                     let val_to_store = Self::value_to_store(raw, fval);
                                     if Self::cas_value(addr, v.val, primed_fval).1 {
-                                        oval.map(|oval| {
-                                            attachment.set_value((*oval).clone(), raw)
-                                        });
+                                        oval.map(|oval| attachment.set_value((*oval).clone(), raw));
                                         if Self::FAT_VAL {
                                             Self::store_raw_value(addr, val_to_store);
                                         }
@@ -1124,9 +1119,7 @@ impl<
     #[inline(always)]
     fn wait_entry(addr: usize, orig_key: FKey, orig_val: FVal, backoff: &Backoff) {
         loop {
-            if Self::get_fast_value(addr).val != orig_val
-                && (orig_val == BACKWARD_SWAPPING_VALUE || Self::get_fast_key(addr) != orig_key)
-            {
+            if Self::get_fast_value(addr).val != orig_val {
                 break;
             }
             backoff.spin();
@@ -1480,13 +1473,21 @@ impl<
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
-        Self::migrate_with_thread(
-            meta_addr,
-            old_chunk_addr,
-            new_chunk_addr,
-            old_chunk_lock,
-            old_occupation,
-        );
+        thread::Builder::new()
+            .name(format!(
+                "map-migration-{}-{}",
+                old_chunk_addr, new_chunk_addr
+            ))
+            .spawn(move || {
+                Self::migrate_with_thread(
+                    meta_addr,
+                    old_chunk_addr,
+                    new_chunk_addr,
+                    old_chunk_lock,
+                    old_occupation,
+                );
+            })
+            .unwrap();
         ResizeResult::InProgress
     }
 

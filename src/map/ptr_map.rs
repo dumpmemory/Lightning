@@ -617,7 +617,9 @@ mod ptr_map {
                   for k in 1..repeat_load {
                       let value_num = value_prefix + k;
                       if k != 1 {
-                          assert_eq!(&*map.get(&key).unwrap(), &val_from(value_num - 1));
+                        let expecting = val_from(value_num - 1);
+                        let actual = map.get(&key).map(|a| (&*a).clone());
+                        assert_eq!(actual, Some(expecting));
                       }
                       let value = Arc::new(val_from(value_num));
                       let pre_insert_epoch = map.table.now_epoch();
@@ -671,9 +673,10 @@ mod ptr_map {
                           let pre_insert_epoch = map.table.now_epoch();
                           map.insert(key, Arc::new(new_value));
                           let post_insert_epoch = map.table.now_epoch();
+                          let actual = map.get(&key).map(|a| (&*a).clone());
                           assert_eq!(
-                              &*map.get(&key).unwrap(), 
-                              &new_value, 
+                              actual, 
+                              Some(new_value), 
                               "Checking immediate update, key {:?}, epoch {} to {}",
                               key, pre_insert_epoch, post_insert_epoch
                           );
@@ -778,17 +781,17 @@ mod ptr_map {
                           }
                       }
                       if j % 7 == 0 {
-                        //   assert_eq!(
-                        //       map.remove(&key),
-                        //       Some(value),
-                        //       "Remove result, get {:?}, copying {}, round {}",
-                        //       map.get(&key),
-                        //       map.table.map_is_copying(),
-                        //       k
-                        //   );
-                        //   assert_eq!(map.get(&key), None, "Remove recursion");
-                        //   assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                        //   map.insert(key, value);
+                          assert_eq!(
+                              map.remove(&key),
+                              Some(value),
+                              "Remove result, get {:?}, copying {}, round {}",
+                              map.get(&key),
+                              map.table.map_is_copying(),
+                              k
+                          );
+                          assert_eq!(map.get(&key), None, "Remove recursion");
+                          assert!(map.lock(&key).is_none(), "Remove recursion with lock");
+                          map.insert(key, value);
                       }
                       if j % 3 == 0 {
                           let new_value = val_from(value_num + 7);
