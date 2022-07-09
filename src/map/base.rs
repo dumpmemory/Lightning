@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = true;
+pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -1480,27 +1480,13 @@ impl<
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
-        thread::Builder::new()
-            .name(format!(
-                "map-migration-{}-{}",
-                old_chunk_addr, new_chunk_addr
-            ))
-            .spawn(move || {
-                Self::migrate_with_thread(
-                    meta_addr,
-                    old_chunk_addr,
-                    new_chunk_addr,
-                    old_chunk_lock,
-                    old_occupation,
-                );
-            })
-            .unwrap();
-        // Self::migrate_with_thread(
-        //     meta_addr,
-        //     old_chunk_addr,
-        //     new_chunk_addr,
-        //     old_chunk_lock,
-        // );
+        Self::migrate_with_thread(
+            meta_addr,
+            old_chunk_addr,
+            new_chunk_addr,
+            old_chunk_lock,
+            old_occupation,
+        );
         ResizeResult::InProgress
     }
 
@@ -1690,12 +1676,12 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         // Will not migrate meta keys
-        if fkey < NUM_FIX_K {
+        if fkey < NUM_FIX_K || fvalue.is_primed() {
             return true;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
         // Value should be locked
-        let curr_orig = fvalue.act_val::<V>();
+        let act_val = fvalue.act_val::<V>();
         let primed_orig = fvalue.prime();
 
         // Prime the old address to avoid modification
@@ -1742,7 +1728,7 @@ impl<
                     // Use empty key to block probing progression for hops
                     (fkey, BACKWARD_SWAPPING_VALUE)
                 } else {
-                    (fkey, curr_orig)
+                    (fkey, act_val)
                 };
                 if Self::cas_value(addr, EMPTY_VALUE, cas_fval).1 {
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
@@ -1757,7 +1743,7 @@ impl<
                         hop_adjustment,
                         new_chunk_ins,
                         fkey,
-                        curr_orig,
+                        act_val,
                         Some(&key),
                         home_idx,
                         idx,
@@ -1766,7 +1752,7 @@ impl<
                         Err(idx) => {
                             // Nothing else we can do, just take the distant slot
                             let addr = new_chunk_ins.entry_addr(idx);
-                            Self::store_value(addr, curr_orig);
+                            Self::store_value(addr, act_val);
                             Self::store_key(addr, fkey);
                         }
                         _ => {}
