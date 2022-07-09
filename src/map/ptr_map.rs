@@ -504,7 +504,7 @@ mod ptr_map {
             let v = i * 2;
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
-                None => panic!("Cannot find key {} at epoch {}", k, map.table.now_epoch()),
+                None => panic!("Cannot find key {}, hash {:?} at epoch {}", k, map.table.get_hash(0, &k), map.table.now_epoch()),
             }
         }
     }
@@ -519,13 +519,14 @@ mod ptr_map {
             let v = val_from(i * 10);
             map.insert(k, v);
         }
-        for i in 100..900 {
+        for i in 100..200 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
                     let k = key_from(i * 100 + j);
                     let v = val_from(i * j);
                     map.insert(k, v);
+                    assert_eq!(map.get(&k), Some(v))
                 }
             }));
         }
@@ -533,16 +534,17 @@ mod ptr_map {
             for j in 1..10 {
                 let k = key_from(i * j);
                 map.remove(&k);
+                assert!(map.get(&k).is_none());
             }
         }
         for thread in threads {
             thread.join().unwrap();
         }
-        for i in 100..900 {
+        for i in 100..200 {
             for j in 5..60 {
                 let k = key_from(i * 100 + j);
                 let v = val_from(i * j);
-                assert_eq!(map.get(&k), Some(v))
+                assert_eq!(map.get(&k), Some(v), "at i {} j {} epoch {}", i, j, map.table.now_epoch());
             }
         }
         for i in 5..9 {
@@ -842,13 +844,13 @@ mod ptr_map {
         for tid in 0..8 {}
     }
 
-    const VAL_SIZE: usize = 2048;
-    pub type Key = [u8; 128];
+    const VAL_SIZE: usize = 64;
+    pub type Key = [u8; 32];
     pub type Value = [u8; VAL_SIZE];
     pub type FatHashMap = PtrHashMap<Key, Value, System>;
 
     fn key_from(num: usize) -> Key {
-        let mut r = [0u8; 128];
+        let mut r = [0u8; 32];
         for (i, b) in num.to_be_bytes().iter().enumerate() {
             r[i] = *b
         }

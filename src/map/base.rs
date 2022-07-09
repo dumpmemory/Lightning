@@ -26,8 +26,9 @@ pub const TOMBSTONE_VALUE: FVal = 0b110;
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
-pub const VAL_BIT_MASK: FVal = (!0 << 1 >> 1) & (!VAL_KEY_DIGEST_MASK);
-pub const VAL_PRIME_MASK: FVal = !VAL_BIT_MASK;
+pub const VAL_BIT_MASK: FVal = VAL_PRIME_MASK & (!VAL_KEY_DIGEST_MASK);
+pub const VAL_PRIME_BIT: FVal = !(!0 << 1 >> 1);
+pub const VAL_PRIME_MASK: FVal = !VAL_PRIME_BIT;
 pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 pub const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
@@ -1677,6 +1678,9 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         // Will not migrate meta keys
+        if fvalue.is_primed() {
+            error!("Found primed {} value {:?} during migration", fkey, fvalue);
+        }
         if fkey < NUM_FIX_K || fvalue.is_primed() {
             return true;
         }
@@ -1691,6 +1695,8 @@ impl<
             trace!("Entry {} has changed", fkey);
             return false;
         }
+
+        warn!("Primed {}", fkey);
 
         let hash = if Self::WORD_KEY {
             hash_key::<_, H>(&fkey)
@@ -1823,7 +1829,7 @@ impl<
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug )]
 pub struct FastValue {
     pub val: FVal,
 }
@@ -1858,7 +1864,7 @@ impl FastValue {
     #[inline(always)]
     fn is_primed(self) -> bool {
         let v = self.val;
-        v & VAL_BIT_MASK != v
+        v | VAL_PRIME_BIT == v
     }
 
     #[inline(always)]
@@ -1870,7 +1876,7 @@ impl FastValue {
     #[inline(always)]
     fn prime(self) -> Self {
         Self {
-            val: self.val | VAL_PRIME_MASK,
+            val: self.val | VAL_PRIME_BIT,
         }
     }
 
