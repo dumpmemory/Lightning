@@ -759,7 +759,7 @@ impl<
         let cap_mask = chunk.cap_mask;
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
-        let mut iter = chunk.iter_slot(home_idx);
+        let mut iter = chunk.iter_slot_non_skip(home_idx);
         let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
@@ -901,7 +901,7 @@ impl<
                             }
                         } else if raw == BACKWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                            iter = chunk.iter_slot(home_idx);
+                            iter.reset(chunk);
                             continue 'MAIN;
                         } else if raw == FORWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
@@ -986,7 +986,7 @@ impl<
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                                iter = chunk.iter_slot(home_idx);
+                                iter.reset(chunk);
                                 continue 'MAIN;
                             }
                             (_, false) => {
@@ -1035,7 +1035,7 @@ impl<
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                                iter = chunk.iter_slot(home_idx);
+                                iter.reset(chunk);
                                 continue 'MAIN;
                             }
                             (_, false) => {
@@ -1074,7 +1074,7 @@ impl<
                         if iter.terminal {
                             // Only check terminal probing
                             Self::wait_entry(addr, k, raw, &backoff);
-                            iter = chunk.iter_slot(home_idx);
+                            iter.reset(chunk);
                             continue 'MAIN;
                         }
                     }
@@ -1715,7 +1715,7 @@ impl<
 
         let cap_mask = new_chunk_ins.cap_mask;
         let home_idx = hash & cap_mask;
-        let mut iter = new_chunk_ins.iter_slot(home_idx);
+        let mut iter = new_chunk_ins.iter_slot_non_skip(home_idx);
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
             let addr = new_chunk_ins.entry_addr(idx);
@@ -1784,7 +1784,7 @@ impl<
                 if v.val == BACKWARD_SWAPPING_VALUE {
                     let backoff = crossbeam_utils::Backoff::new();
                     Self::wait_entry(addr, k, raw, &backoff);
-                    iter = new_chunk_ins.iter_slot(home_idx);
+                    iter.reset(new_chunk_ins);
                     continue;
                 } else if v.val == FORWARD_SWAPPING_VALUE {
                     let backoff = crossbeam_utils::Backoff::new();
@@ -2024,6 +2024,21 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             bits_ptr = self.hop_bits_ptr(home_idx);
             hop_bits = self.get_hop_bits(bits_ptr);
         }
+        SlotIter {
+            home_idx,
+            bits_ptr,
+            hop_bits,
+            num_probed: 0,
+            pos: 0,
+            terminal: false,
+            cap_mask: self.cap_mask,
+        }
+    }
+
+    #[inline(always)]
+    fn iter_slot_non_skip<'a>(&self, home_idx: usize) -> SlotIter {
+        let hop_bits = 0;
+        let bits_ptr = null_mut();
         SlotIter {
             home_idx,
             bits_ptr,
