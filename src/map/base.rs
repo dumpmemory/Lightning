@@ -1207,7 +1207,7 @@ impl<
     fn store_value(entry_addr: usize, value: FVal) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) }
+        unsafe { intrinsics::atomic_store_release(addr as *mut FVal, value) }
     }
 
     #[inline(always)]
@@ -1222,19 +1222,19 @@ impl<
     #[inline(always)]
     fn store_raw_value(entry_addr: usize, value: FVal) {
         let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, value) };
+        unsafe { intrinsics::atomic_store_release(addr as *mut FVal, value) };
     }
 
     #[inline(always)]
     fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe { intrinsics::atomic_store_rel(addr as *mut FVal, SENTINEL_VALUE) };
+        unsafe { intrinsics::atomic_store_release(addr as *mut FVal, SENTINEL_VALUE) };
     }
 
     #[inline(always)]
     fn store_key(addr: usize, fkey: FKey) {
-        unsafe { intrinsics::atomic_store_rel(addr as *mut FKey, fkey) }
+        unsafe { intrinsics::atomic_store_release(addr as *mut FKey, fkey) }
     }
 
     #[inline(always)]
@@ -1959,14 +1959,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     #[inline(always)]
     fn get_fast_key(entry_addr: usize) -> FKey {
         debug_assert!(entry_addr > 0);
-        unsafe { intrinsics::atomic_load_acq(entry_addr as *mut FKey) }
+        unsafe { intrinsics::atomic_load_acquire(entry_addr as *mut FKey) }
     }
 
     #[inline(always)]
     fn get_fast_value(entry_addr: usize) -> FastValue {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        let val = unsafe { intrinsics::atomic_load_acq(addr as *mut FVal) };
+        let val = unsafe { intrinsics::atomic_load_acquire(addr as *mut FVal) };
         FastValue::new(val)
     }
 
@@ -1982,7 +1982,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn get_hop_bits(&self, ptr: *mut HopBits) -> HopBits {
-        unsafe { intrinsics::atomic_load_acq(ptr) }
+        unsafe { intrinsics::atomic_load_acquire(ptr) }
     }
 
     #[inline(always)]
@@ -2007,7 +2007,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let unset_mask = !(1 << src_pos);
         loop {
             unsafe {
-                let orig_bits = intrinsics::atomic_load_acq(ptr);
+                let orig_bits = intrinsics::atomic_load_acquire(ptr);
                 let target_bits = orig_bits | set_bit & unset_mask;
                 if intrinsics::atomic_cxchg_relaxed(ptr, orig_bits, target_bits).1 {
                     return;
