@@ -704,7 +704,7 @@ impl<
                     'READ_VAL: loop {
                         let val_res = Self::get_fast_value(addr);
                         if val_res.val == FORWARD_SWAPPING_VALUE {
-                            Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
+                            Self::wait_entry(addr, FORWARD_SWAPPING_VALUE, backoff);
                             iter.refresh_following(chunk);
                             break 'READ_VAL; // Continue probing, slot has been moved forward
                         } else if val_res.val == BACKWARD_SWAPPING_VALUE {
@@ -774,6 +774,7 @@ impl<
                             // Here hash collision is impossible becasue hopsotch only swap with
                             // slots have different hash key
                             backoff.spin();
+                            iter.reset(chunk);
                             continue 'MAIN;
                         }
                         let raw = v.val;
@@ -900,11 +901,11 @@ impl<
                                 }
                             }
                         } else if raw == BACKWARD_SWAPPING_VALUE {
-                            Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
+                            Self::wait_entry(addr, BACKWARD_SWAPPING_VALUE, &backoff);
                             iter.reset(chunk);
                             continue 'MAIN;
                         } else if raw == FORWARD_SWAPPING_VALUE {
-                            Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
+                            Self::wait_entry(addr, BACKWARD_SWAPPING_VALUE, &backoff);
                             iter.refresh_following(chunk);
                             continue 'MAIN;
                         } else if raw == SENTINEL_VALUE || v.is_primed() {
@@ -979,13 +980,13 @@ impl<
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (FORWARD_SWAPPING_VALUE, false) => {
-                                Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                Self::wait_entry(addr, FORWARD_SWAPPING_VALUE, &backoff);
                                 iter.refresh_following(chunk);
                                 continue 'MAIN;
                             }
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
+                                Self::wait_entry(addr, BACKWARD_SWAPPING_VALUE, &backoff);
                                 iter.reset(chunk);
                                 continue 'MAIN;
                             }
@@ -1028,13 +1029,13 @@ impl<
                             }
                             (SENTINEL_VALUE, false) => return ModResult::Sentinel,
                             (FORWARD_SWAPPING_VALUE, false) => {
-                                Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                Self::wait_entry(addr, FORWARD_SWAPPING_VALUE, &backoff);
                                 iter.refresh_following(chunk);
                                 continue 'MAIN;
                             }
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
-                                Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
+                                Self::wait_entry(addr, BACKWARD_SWAPPING_VALUE, &backoff);
                                 iter.reset(chunk);
                                 continue 'MAIN;
                             }
@@ -1071,19 +1072,14 @@ impl<
                         _ => {}
                     },
                     BACKWARD_SWAPPING_VALUE => {
-                        if iter.terminal {
-                            // Only check terminal probing
-                            Self::wait_entry(addr, k, raw, &backoff);
-                            iter.reset(chunk);
-                            continue 'MAIN;
-                        }
+                        Self::wait_entry(addr, raw, &backoff);
+                        iter.reset(chunk);
+                        continue 'MAIN;
                     }
                     FORWARD_SWAPPING_VALUE => {
-                        // Shall NOT wait
-                        // There must be a key matching forwarding swapping
-                        // Self::wait_entry(addr, k, raw, &backoff);
-                        // iter.refresh_following(chunk);
-                        // continue 'MAIN;
+                        Self::wait_entry(addr, raw, &backoff);
+                        iter.reset(chunk);
+                        continue 'MAIN;
                     }
                     _ => {}
                 }
@@ -1121,11 +1117,9 @@ impl<
     }
 
     #[inline(always)]
-    fn wait_entry(addr: usize, orig_key: FKey, orig_val: FVal, backoff: &Backoff) {
+    fn wait_entry(addr: usize, orig_val: FVal, backoff: &Backoff) {
         loop {
-            if Self::get_fast_value(addr).val != orig_val
-                && (orig_val == BACKWARD_SWAPPING_VALUE || Self::get_fast_key(addr) != orig_key)
-            {
+            if Self::get_fast_value(addr).val != orig_val {
                 break;
             }
             backoff.spin();
@@ -1337,6 +1331,7 @@ impl<
                     // Update the hop bits
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
                     chunk.set_hop_bit(candidate_home_bits_ptr, curr_candidate_distance);
+                    chunk.unset_hop_bit(candidate_home_bits_ptr, candidate_distance);
 
                     // Starting to copy it co current idx
                     let curr_addr = chunk.entry_addr(curr_idx);
@@ -1356,13 +1351,12 @@ impl<
                     }
                     key.map(|key| candidate_attachment.set_key(key.clone()));
                     Self::store_key(candidate_addr, fkey);
-
+                    
                     // Discard swapping value on current address by replace it with new value
                     let primed_candidate_val =
                         syn_val_digest(candidate_key_digest, candidate_fval.val);
                     Self::store_value(curr_addr, primed_candidate_val);
                     // Unset only after candadate has been moved to target position
-                    chunk.unset_hop_bit(candidate_home_bits_ptr, candidate_distance);
 
                     //Here we had candidate copied. Need to work on the candidate slot
                     if target_in_range {
