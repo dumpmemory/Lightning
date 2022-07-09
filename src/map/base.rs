@@ -693,8 +693,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask;
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, true);
-        let mut iter = reiter();
+        let mut iter = chunk.iter_slot(home_idx);
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         loop {
@@ -760,8 +759,7 @@ impl<
         let cap_mask = chunk.cap_mask;
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, true);
-        let mut iter = reiter();
+        let mut iter = chunk.iter_slot(home_idx);
         let (mut idx, mut count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
@@ -901,16 +899,16 @@ impl<
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE || v.is_primed() {
-                            return ModResult::Sentinel;
                         } else if raw == BACKWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                            iter = reiter();
+                            iter = chunk.iter_slot(home_idx);
                             continue 'MAIN;
                         } else if raw == FORWARD_SWAPPING_VALUE {
                             Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                             iter.refresh_following(chunk);
                             continue 'MAIN;
+                        } else if raw == SENTINEL_VALUE || v.is_primed() {
+                            return ModResult::Sentinel;
                         } else {
                             // Other tags (except tombstone and locks)
                             if cfg!(debug_assertions) {
@@ -988,7 +986,7 @@ impl<
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                                iter = reiter();
+                                iter = chunk.iter_slot(home_idx);
                                 continue 'MAIN;
                             }
                             (_, false) => {
@@ -1037,7 +1035,7 @@ impl<
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                                iter = reiter();
+                                iter = chunk.iter_slot(home_idx);
                                 continue 'MAIN;
                             }
                             (_, false) => {
@@ -1076,7 +1074,7 @@ impl<
                         if iter.terminal {
                             // Only check terminal probing
                             Self::wait_entry(addr, k, raw, &backoff);
-                            iter = reiter();
+                            iter = chunk.iter_slot(home_idx);
                             continue 'MAIN;
                         }
                     }
@@ -1296,7 +1294,7 @@ impl<
             // Find a swappable slot
             for i in probe_start..probe_end {
                 let idx = i & cap_mask;
-                let mut iter = chunk.iter_slot_skipable(idx, true);
+                let mut iter = chunk.iter_slot(idx);
                 while let Some((candidate_idx, candidate_distance)) = iter.next() {
                     if iter.terminal || iter.pos >= NUM_HOPS {
                         break;
@@ -1715,8 +1713,7 @@ impl<
 
         let cap_mask = new_chunk_ins.cap_mask;
         let home_idx = hash & cap_mask;
-        let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, true);
-        let mut iter = reiter();
+        let mut iter = new_chunk_ins.iter_slot(home_idx);
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
             let addr = new_chunk_ins.entry_addr(idx);
@@ -1785,7 +1782,7 @@ impl<
                 if v.val == BACKWARD_SWAPPING_VALUE {
                     let backoff = crossbeam_utils::Backoff::new();
                     Self::wait_entry(addr, k, raw, &backoff);
-                    iter = reiter();
+                    iter = new_chunk_ins.iter_slot(home_idx);
                     continue;
                 } else if v.val == FORWARD_SWAPPING_VALUE {
                     let backoff = crossbeam_utils::Backoff::new();
@@ -1891,6 +1888,7 @@ impl FastValue {
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
     const FAT_VAL: bool = mem::size_of::<V>() != 0;
+    const PROBE_ENABLE_SKIPPING: bool = ENABLE_SKIPPING && !Self::FAT_VAL;
 
     fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
         let self_size = mem::size_of::<Self>();
@@ -1977,7 +1975,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn get_hop_bits(&self, idx: usize) -> HopBits {
-        let addr = self.hop_base + HOP_TUPLE_BYTES * idx;
+        let addr = self.hop_base + idx * HOP_TUPLE_BYTES;
         unsafe { intrinsics::atomic_load_acq(addr as *mut HopBits) }
     }
 
@@ -2028,21 +2026,18 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         }
     }
 
-    #[inline(always)]
-    fn iter_slot_skipable<'a>(&self, home_idx: usize, skip: bool) -> SlotIter {
-        let hop_bits = if !Self::FAT_VAL && ENABLE_SKIPPING && skip {
-            self.get_hop_bits(home_idx)
-        } else {
-            0
-        };
-        let pos = 0;
+    fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
+        let mut hop_bits = 0;
+        if Self::PROBE_ENABLE_SKIPPING {
+            hop_bits = self.get_hop_bits(home_idx);
+        }
         SlotIter {
-            num_probed: 0,
-            cap_mask: self.cap_mask,
             home_idx,
             hop_bits,
-            pos,
+            num_probed: 0,
+            pos: 0,
             terminal: false,
+            cap_mask: self.cap_mask,
         }
     }
 }
@@ -2217,9 +2212,9 @@ mod test {
 struct SlotIter {
     home_idx: usize,
     pos: usize,
-    hop_bits: HopBits,
     cap_mask: usize,
     num_probed: usize,
+    hop_bits: HopBits,
     terminal: bool,
 }
 
