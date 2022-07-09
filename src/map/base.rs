@@ -692,7 +692,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, true);
+        let reiter = || chunk.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
@@ -700,30 +700,26 @@ impl<
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
-                if attachment.probe(key) {
-                    'READ_VAL: loop {
-                        let val_res = Self::get_fast_value(addr);
-                        if val_res.val == FORWARD_SWAPPING_VALUE {
-                            Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
-                            iter.refresh_following(chunk);
-                            break 'READ_VAL; // Continue probing, slot has been moved forward
-                        } else if val_res.val == BACKWARD_SWAPPING_VALUE {
-                            // No bother, its inserting and swapping
-                            return None;
-                        }
-                        if val_res.is_locked() {
-                            backoff.spin();
-                            continue 'READ_VAL;
-                        }
-                        if Self::get_fast_key(addr) != k {
-                            // For hopsotch
-                            // Here hash collision is impossible becasue hopsotch only swap with
-                            // slots have different hash key
-                            backoff.spin();
-                            continue;
-                        }
-                        return Some((val_res, addr, attachment));
+                let probe = attachment.probe(key);
+                let val_res = Self::get_fast_value(addr);
+                if Self::get_fast_key(addr) != k {
+                    backoff.spin();
+                    continue;
+                }
+                if probe {
+                    if val_res.val == FORWARD_SWAPPING_VALUE {
+                        Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
+                        iter.refresh_following(chunk);
+                        continue
+                    } else if val_res.val == BACKWARD_SWAPPING_VALUE {
+                        // No bother, its inserting and swapping
+                        return None;
                     }
+                    if val_res.is_locked() {
+                        backoff.spin();
+                        continue;
+                    }
+                    return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
                 return None;
