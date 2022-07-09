@@ -2026,6 +2026,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         }
     }
 
+    #[inline(always)]
     fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
         let mut hop_bits = 0;
         if Self::PROBE_ENABLE_SKIPPING {
