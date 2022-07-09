@@ -1,4 +1,4 @@
-use std::{sync::Arc, thread};
+use std::{ptr::null_mut, sync::Arc, thread};
 
 use super::*;
 
@@ -1262,8 +1262,9 @@ impl<
             return Ok(dest_idx);
         }
 
+        let home_bits_ptr = chunk.hop_bits_ptr(home_idx);
         if hops < NUM_HOPS {
-            chunk.set_hop_bit(home_idx, hops);
+            chunk.set_hop_bit(home_bits_ptr, hops);
             return Ok(dest_idx);
         }
 
@@ -1285,7 +1286,7 @@ impl<
             } else {
                 (starting, cap + curr_idx)
             };
-            let hop_bits = chunk.get_hop_bits(home_idx);
+            let hop_bits = chunk.get_hop_bits(home_bits_ptr);
             if hop_bits == ALL_HOPS_TAKEN {
                 // No slots in the neighbour is available
                 return Err(dest_idx);
@@ -1332,9 +1333,10 @@ impl<
                         continue;
                     }
 
+                    let candidate_home_bits_ptr = chunk.hop_bits_ptr(idx);
                     // Update the hop bits
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
-                    chunk.set_hop_bit(idx, curr_candidate_distance);
+                    chunk.set_hop_bit(candidate_home_bits_ptr, curr_candidate_distance);
 
                     // Starting to copy it co current idx
                     let curr_addr = chunk.entry_addr(curr_idx);
@@ -1350,7 +1352,7 @@ impl<
                     let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
                     let target_in_range = target_hop_distance < NUM_HOPS;
                     if target_in_range {
-                        chunk.set_hop_bit(home_idx, target_hop_distance);
+                        chunk.set_hop_bit(home_bits_ptr, target_hop_distance);
                     }
                     key.map(|key| candidate_attachment.set_key(key.clone()));
                     Self::store_key(candidate_addr, fkey);
@@ -1360,7 +1362,7 @@ impl<
                         syn_val_digest(candidate_key_digest, candidate_fval.val);
                     Self::store_value(curr_addr, primed_candidate_val);
                     // Unset only after candadate has been moved to target position
-                    chunk.unset_hop_bit(idx, candidate_distance);
+                    chunk.unset_hop_bit(candidate_home_bits_ptr, candidate_distance);
 
                     //Here we had candidate copied. Need to work on the candidate slot
                     if target_in_range {
@@ -1974,45 +1976,33 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline(always)]
-    fn get_hop_bits(&self, idx: usize) -> HopBits {
-        let addr = self.hop_base + idx * HOP_TUPLE_BYTES;
-        unsafe { intrinsics::atomic_load_acq(addr as *mut HopBits) }
+    fn hop_bits_ptr(&self, idx: usize) -> *mut HopBits {
+        (self.hop_base + idx * HOP_TUPLE_BYTES) as *mut HopBits
     }
 
     #[inline(always)]
-    fn set_hop_bit(&self, idx: usize, pos: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+    fn get_hop_bits(&self, ptr: *mut HopBits) -> HopBits {
+        unsafe { intrinsics::atomic_load_acq(ptr) }
+    }
+
+    #[inline(always)]
+    fn set_hop_bit(&self, ptr: *mut HopBits, pos: usize) {
         let set_bit = 1 << pos;
         unsafe {
-            debug_assert!(
-                intrinsics::atomic_load_acq(ptr) & set_bit == 0,
-                "bit already set for idx {}, pos {}",
-                idx,
-                pos
-            );
-            intrinsics::atomic_or_relaxed(ptr, set_bit);
+            intrinsics::atomic_or_acqrel(ptr, set_bit);
         }
     }
 
     #[inline(always)]
-    fn unset_hop_bit(&self, idx: usize, pos: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+    fn unset_hop_bit(&self, ptr: *mut HopBits, pos: usize) {
         let unset_bit = 1 << pos;
         unsafe {
-            debug_assert!(
-                intrinsics::atomic_load_acq(ptr) & unset_bit > 0,
-                "bit not set for idx {}, pos {}, read {:b}",
-                idx,
-                pos,
-                intrinsics::atomic_load_acq(ptr)
-            );
-            intrinsics::atomic_and_relaxed(ptr, !unset_bit);
+            intrinsics::atomic_and_acqrel(ptr, !unset_bit);
         }
     }
 
     #[inline(always)]
-    fn swap_hop_bit(&self, idx: usize, src_pos: usize, dest_pos: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+    fn swap_hop_bit(&self, ptr: *mut HopBits, src_pos: usize, dest_pos: usize) {
         let set_bit = 1 << dest_pos;
         let unset_mask = !(1 << src_pos);
         loop {
@@ -2029,11 +2019,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     #[inline(always)]
     fn iter_slot<'a>(&self, home_idx: usize) -> SlotIter {
         let mut hop_bits = 0;
+        let mut bits_ptr = null_mut();
         if Self::PROBE_ENABLE_SKIPPING {
-            hop_bits = self.get_hop_bits(home_idx);
+            bits_ptr = self.hop_bits_ptr(home_idx);
+            hop_bits = self.get_hop_bits(bits_ptr);
         }
         SlotIter {
             home_idx,
+            bits_ptr,
             hop_bits,
             num_probed: 0,
             pos: 0,
@@ -2212,6 +2205,7 @@ mod test {
 
 struct SlotIter {
     home_idx: usize,
+    bits_ptr: *mut HopBits,
     pos: usize,
     cap_mask: usize,
     num_probed: usize,
@@ -2274,7 +2268,20 @@ impl SlotIter {
             return;
         }
         let checked = self.hop_bits.trailing_zeros();
-        let new_bits = chunk.get_hop_bits(self.home_idx);
+        let new_bits = chunk.get_hop_bits(self.bits_ptr);
         self.hop_bits = new_bits >> checked << checked;
+    }
+
+    #[inline(always)]
+    fn reset<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>(
+        &mut self,
+        chunk: &Chunk<K, V, A, ALLOC>,
+    ) {
+        if !self.bits_ptr.is_null() {
+            self.hop_bits = chunk.get_hop_bits(self.bits_ptr);
+        }
+        self.num_probed = 0;
+        self.pos = 0;
+        self.terminal = false
     }
 }
