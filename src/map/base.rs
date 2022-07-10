@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = true;
+pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -1829,7 +1829,7 @@ impl<
     }
 }
 
-#[derive(Copy, Clone, Debug )]
+#[derive(Copy, Clone, Debug)]
 pub struct FastValue {
     pub val: FVal,
 }
