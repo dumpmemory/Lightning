@@ -771,13 +771,13 @@ mod ptr_map {
                           let pre_fail_get_epoch = map.table.now_epoch();
                           let left = map.get(&key);
                           let post_fail_get_epoch = map.table.now_epoch();
-                          let right = Some(value.clone());
-                          if left != right {
+                          let right = Some(&value);
+                          if left.as_ref() != right {
                               error!("Discovered mismatch key {:?}, analyzing", &key);
                               for m in 1..1024 {
                                   let mleft = map.get(&key);
-                                  let mright = Some(value.clone());
-                                  if mleft == mright {
+                                  let mright = Some(&value);
+                                  if mleft.as_ref() == mright {
                                       panic!(
                                           "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
                                           m, 
@@ -799,8 +799,8 @@ mod ptr_map {
                       }
                       if j % 7 == 0 {
                           assert_eq!(
-                              map.remove(&key),
-                              Some(value.clone()),
+                              map.remove(&key).as_ref(),
+                              Some(&value),
                               "Remove result, get {:?}, copying {}, round {}",
                               map.get(&key),
                               map.table.map_is_copying(),
@@ -816,8 +816,8 @@ mod ptr_map {
                           map.insert(key.clone(), new_value.clone());
                           let post_insert_epoch = map.table.now_epoch();
                           assert_eq!(
-                              map.get(&key), 
-                              Some(new_value.clone()), 
+                              map.get(&key).as_ref(), 
+                              Some(&new_value), 
                               "Checking immediate update, key {:?}, epoch {} to {}",
                               key, pre_insert_epoch, post_insert_epoch
                           );
@@ -860,15 +860,15 @@ mod ptr_map {
     }
 
     const VAL_SIZE: usize = 256;
-    pub type Key = String;
+    pub type Key = u128;
     pub type Value = String;
     pub type FatHashMap = PtrHashMap<Key, Value, System>;
 
-    fn key_from(num: usize) -> Key {
-        format!("{}", num)
+    fn key_from(num: usize) -> u128 {
+        num as u128
     }
 
-    fn val_from<'a>(prefix: &'a str, key: &String, num: usize) -> Value {
+    fn val_from<'a>(prefix: &'a str, key: &u128, num: usize) -> Value {
         format!("{}-{}-{}", prefix, key, num)
     }
 
