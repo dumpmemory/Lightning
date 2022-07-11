@@ -704,7 +704,7 @@ impl<
                         // No bother, its inserting and swapping
                         return None;
                     }
-                    if val_res.is_locked() || val_res.is_primed() {
+                    if val_res.is_locked() {
                         backoff.spin();
                         continue;
                     }
@@ -754,7 +754,7 @@ impl<
                 let attachment = chunk.attachment.prefetch(idx);
                 let v = Self::get_fast_value(addr);
                 let key_probe = attachment.probe(&key);
-                if Self::get_fast_key(addr) != k || v.is_primed() {
+                if Self::get_fast_key(addr) != k {
                     // For hopsotch
                     // Here hash collision is impossible becasue hopsotch only swap with
                     // slots have different hash key
@@ -1666,9 +1666,6 @@ impl<
         effective_copy: &mut usize,
     ) -> bool {
         // Will not migrate meta keys
-        if fvalue.is_primed() {
-            error!("Found primed {} value {:?} during migration", fkey, fvalue);
-        }
         if fkey < NUM_FIX_K || fvalue.is_primed() {
             return true;
         }

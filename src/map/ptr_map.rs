@@ -190,8 +190,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.insert_with_op(InsertOp::Insert, key, value)
             .map(|((ptr, node_addr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
+                let obj = ptr::read(ptr);
                 guard.buffered_free(node_addr);
-                ptr::read(ptr)
+                obj
             })
     }
 
@@ -781,54 +782,63 @@ mod ptr_map {
                           let right = Some(&value);
                           if left.as_ref() != right {
                               error!("Discovered mismatch key {:?}, analyzing", &key);
-                              for m in 1..1024 {
-                                  let mleft = map.get(&key);
-                                  let mright = Some(&value);
-                                  if mleft.as_ref() == mright {
-                                      panic!(
-                                          "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
-                                          m, 
-                                          &key, 
-                                          map.table.map_is_copying(),
-                                          pre_fail_get_epoch,
-                                          post_fail_get_epoch,
-                                          map.table.now_epoch(),
-                                          pre_insert_epoch, 
-                                          post_insert_epoch,
-                                          right, left
-                                      );
-                                      // panic!("Late value change on {:?}", key);
-                                  }
-                              }
+                              let error_checking = || {
+                                for m in 1..1024 {
+                                    let mleft = map.get(&key);
+                                    let mright = Some(&value);
+                                    if mleft.as_ref() == mright {
+                                        panic!(
+                                            "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
+                                            m, 
+                                            &key, 
+                                            map.table.map_is_copying(),
+                                            pre_fail_get_epoch,
+                                            post_fail_get_epoch,
+                                            map.table.now_epoch(),
+                                            pre_insert_epoch, 
+                                            post_insert_epoch,
+                                            right, left
+                                        );
+                                        // panic!("Late value change on {:?}", key);
+                                    }
+                                }
+                              };
+                              error_checking();
                               panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
                               // panic!("Unrecoverable value change for {:?}", key);
                           }
                       }
                       if j % 7 == 0 {
-                          assert_eq!(
-                              map.remove(&key).as_ref(),
-                              Some(&value),
-                              "Remove result, get {:?}, copying {}, round {}",
-                              map.get(&key),
-                              map.table.map_is_copying(),
-                              k
-                          );
-                          assert_eq!(map.get(&key), None, "Remove recursion");
-                          assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                          map.insert(key, value.clone());
+                          let removing = || {
+                            assert_eq!(
+                                map.remove(&key).as_ref(),
+                                Some(&value),
+                                "Remove result, get {:?}, copying {}, round {}",
+                                map.get(&key),
+                                map.table.map_is_copying(),
+                                k
+                            );
+                            assert_eq!(map.get(&key), None, "Remove recursion");
+                            assert!(map.lock(&key).is_none(), "Remove recursion with lock");
+                            map.insert(key, value.clone());
+                          };
+                          removing();
                       }
                       if j % 3 == 0 {
-                          let new_value = val_from(value_num + 7);
-                          let pre_insert_epoch = map.table.now_epoch();
-                          map.insert(key, new_value.clone());
-                          let post_insert_epoch = map.table.now_epoch();
-                          assert_eq!(
-                              map.get(&key).as_ref(), 
-                              Some(&new_value), 
-                              "Checking immediate update, key {:?}, epoch {} to {}",
-                              key, pre_insert_epoch, post_insert_epoch
-                          );
-                          map.insert(key, value.clone());
+                          let updating = || {
+                            let new_value = val_from(value_num + 7);
+                            let pre_insert_epoch = map.table.now_epoch();
+                            map.insert(key, new_value.clone());
+                            let post_insert_epoch = map.table.now_epoch();
+                            assert_eq!(
+                                map.get(&key).as_ref(), 
+                                Some(&new_value), 
+                                "Checking immediate update, key {:?}, epoch {} to {}",
+                                key, pre_insert_epoch, post_insert_epoch
+                            );
+                            map.insert(key, value.clone());
+                          };
+                          updating();
                       }
                   }
               }
