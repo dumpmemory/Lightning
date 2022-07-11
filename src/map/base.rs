@@ -26,9 +26,9 @@ pub const TOMBSTONE_VALUE: FVal = 0b110;
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
-pub const VAL_BIT_MASK: FVal = VAL_PRIME_MASK & (!VAL_KEY_DIGEST_MASK);
+pub const VAL_BIT_MASK: FVal = VAL_PRIME_VAL_MASK & (!VAL_KEY_DIGEST_MASK);
 pub const VAL_PRIME_BIT: FVal = !(!0 << 1 >> 1);
-pub const VAL_PRIME_MASK: FVal = !VAL_PRIME_BIT;
+pub const VAL_PRIME_VAL_MASK: FVal = !VAL_PRIME_BIT;
 pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
 pub const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
@@ -704,7 +704,7 @@ impl<
                         // No bother, its inserting and swapping
                         return None;
                     }
-                    if val_res.is_locked() {
+                    if val_res.is_locked() || val_res.is_primed() {
                         backoff.spin();
                         continue;
                     }
@@ -754,7 +754,7 @@ impl<
                 let attachment = chunk.attachment.prefetch(idx);
                 let v = Self::get_fast_value(addr);
                 let key_probe = attachment.probe(&key);
-                if Self::get_fast_key(addr) != k {
+                if Self::get_fast_key(addr) != k || v.is_primed() {
                     // For hopsotch
                     // Here hash collision is impossible becasue hopsotch only swap with
                     // slots have different hash key
@@ -2182,25 +2182,8 @@ fn syn_val_digest(digest: FVal, val: FVal) -> FVal {
 }
 
 #[inline(always)]
-fn syn_val_key(key: FVal, val: FVal) -> FVal {
-    val & VAL_BIT_MASK | key_digest(key)
-}
-
-#[inline(always)]
 fn key_digest(key: FKey) -> FKey {
     key & VAL_KEY_DIGEST_MASK
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn const_check() {
-        println!("KEY Digest mask is {:064b}", KEY_DIGEST_MASK);
-        println!("VAL Digest mask is {:064b}", VAL_KEY_DIGEST_MASK);
-        assert_eq!(VAL_KEY_DIGEST_MASK.count_ones() as usize, KEY_DIGEST_DIGITS);
-    }
 }
 
 struct SlotIter {
@@ -2269,5 +2252,49 @@ impl SlotIter {
         let checked = self.hop_bits.trailing_zeros();
         let new_bits = chunk.get_hop_bits(self.home_idx);
         self.hop_bits = new_bits >> checked << checked;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn const_check() {
+        println!("KEY Digest mask is {:064b}", KEY_DIGEST_MASK);
+        println!("VAL Digest mask is {:064b}", VAL_KEY_DIGEST_MASK);
+        assert_eq!(VAL_KEY_DIGEST_MASK.count_ones() as usize, KEY_DIGEST_DIGITS);
+    }
+
+    #[test]
+    fn  val_prime() {
+        let mut val = FastValue::new(123);
+        assert!(!val.is_primed());
+        assert!(!val.is_locked());
+        assert!(!val.is_swapping());
+        assert!(val.is_valued());
+        val = val.prime();
+        assert!(val.is_primed());
+        assert!(!val.is_locked());
+        assert!(!val.is_swapping());
+        assert!(val.is_valued());
+        assert_eq!(val.act_val::<()>(), 123);
+    }
+
+    #[test]
+    fn ptr_prime_masking() {
+        let num = 123;
+        let ptr = &num as *const i32 as usize;
+        let mut val = FastValue::new(ptr);
+        assert!(!val.is_primed());
+        assert!(!val.is_locked());
+        assert!(!val.is_swapping());
+        assert!(val.is_valued());
+        val = val.prime();
+        assert!(val.is_primed());
+        assert!(!val.is_locked());
+        assert!(!val.is_swapping());
+        assert!(val.is_valued());
+        assert_eq!(val.act_val::<()>(), ptr);
     }
 }
