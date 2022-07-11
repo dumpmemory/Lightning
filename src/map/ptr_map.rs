@@ -87,7 +87,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                     "Version does not match for {:?} expected {} got {}, cap {}",
                     node_ptr, val_ver, node_ver, Self::VAL_NODE_LOW_BITS
                 );
-                // return None;
+                return None;
             }
             let v = v_shadow.clone();
             mem::forget(v_shadow);
@@ -672,19 +672,20 @@ mod ptr_map {
                               // panic!("Unrecoverable value change for {:?}", key);
                           }
                       }
-                      if j % 7 == 0 {
-                          assert_eq!(
-                              map.remove(&key),
-                              Some(value.clone()),
-                              "Remove result, get {:?}, copying {}, round {}",
-                              map.get(&key),
-                              map.table.map_is_copying(),
-                              k
-                          );
-                        assert_eq!(map.get(&key), None, "Remove recursion");
-                        assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                        map.insert(key.clone(), value.clone());
-                      }
+                    //   if j % 7 == 0 {
+                    //       let rm_res = map.remove(&key);
+                    //       assert_eq!(
+                    //           rm_res.as_ref().map(|v| &**v),
+                    //           Some(&*value),
+                    //           "Remove result, get {:?}, copying {}, round {}",
+                    //           map.get(&key),
+                    //           map.table.map_is_copying(),
+                    //           k
+                    //       );
+                    //     assert_eq!(map.get(&key), None, "Remove recursion");
+                    //     assert!(map.lock(&key).is_none(), "Remove recursion with lock");
+                    //     map.insert(key.clone(), value.clone());
+                    //   }
                       if j % 3 == 0 {
                           let new_value = val_from("", &key, value_num + 7);
                           let pre_insert_epoch = map.table.now_epoch();

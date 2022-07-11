@@ -401,18 +401,6 @@ impl<
         }
     }
 
-    fn manually_drop_sentinel_res(&self, res: &ModResult<V>, chunk: &Chunk<K, V, A, ALLOC>) {
-        match res {
-            ModResult::Done(fval, _, _) | ModResult::Replaced(fval, _, _) => {
-                if *fval <= TOMBSTONE_VALUE {
-                    return;
-                }
-                chunk.attachment.manually_drop(*fval);
-            }
-            _ => {}
-        }
-    }
-
     pub fn clear(&self) {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
