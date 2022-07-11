@@ -1710,9 +1710,9 @@ impl<
                 if new_attachment.probe(&key) {
                     // New value existed, skip with None result
                     // We also need to drop the fvalue we obtained because it does not fit any where
-                    old_chunk_ins
-                        .attachment
-                        .manually_drop(fvalue.act_val::<V>());
+                    // old_chunk_ins
+                    //     .attachment
+                    //     .manually_drop(fvalue.act_val::<V>());
                     // New value in the new chunk, just put a sentinel and abort migration on this slot
                     Self::store_value(old_address, SENTINEL_VALUE);
                     return true;

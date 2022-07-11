@@ -110,6 +110,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
         let ver_part = ver & Self::VAL_NODE_LOW_BITS;
         let val = ptr_part | ver_part;
+        if cfg!(debug_assertions) {
+            let (n_ptr, n_ver) = decompose_value::<K, V>(val);
+            assert_eq!(ptr_part, n_ptr);
+            assert_eq!(ver_part, n_ver);
+        }
         val
     }
 
