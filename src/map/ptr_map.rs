@@ -1,6 +1,6 @@
-use std::cell::Cell; 
+use std::cell::Cell;
 
-use crate::obj_alloc::{self, AllocGuard, Allocator, Aligned};
+use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
 use super::base::*;
 use super::*;
@@ -14,7 +14,7 @@ pub struct PtrHashMap<
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
-    pub (crate) table: PtrTable<K, V, ALLOC, H>,
+    pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
     shadow: PhantomData<(K, V, H)>,
 }
@@ -83,7 +83,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
-                error!("Version does not match, expect {} got {}", node_ver, val_ver);
+                error!(
+                    "Version does not match, expect {} got {}",
+                    node_ver, val_ver
+                );
                 return None;
             }
             let v = v_shadow.clone();
@@ -989,4 +992,3 @@ mod ptr_map {
         });
     }
 }
-

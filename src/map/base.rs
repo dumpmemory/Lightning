@@ -604,11 +604,65 @@ impl<
 
     #[inline(always)]
     pub fn remove(&self, key: &K, fkey: FKey) -> Option<(FVal, V)> {
-        let tagging_res = self.insert(InsertOp::Tombstone, key, None, fkey, TOMBSTONE_VALUE);
-        if tagging_res.is_some() {
-            self.count.fetch_sub(1, AcqRel);
+        let guard = crossbeam_epoch::pin();
+        let backoff = crossbeam_utils::Backoff::new();
+        let (fkey, hash) = Self::hash(fkey, key);
+
+        'OUTER: loop {
+            let epoch = self.now_epoch();
+            let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
+            let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
+            let chunk = unsafe { chunk_ptr.deref() };
+            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
+            let modify_chunk = new_chunk.unwrap_or(chunk);
+            let old_chunk_val = new_chunk.map(|_| {
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, None)
+            });
+            'INNER: loop {
+                let chunk_val = self.modify_entry(
+                    &*modify_chunk,
+                    hash,
+                    key,
+                    fkey,
+                    ModOp::Tombstone,
+                    true,
+                    &guard,
+                    None,
+                );
+                match chunk_val {
+                    ModResult::Replaced(fval, val, _idx) => {
+                        return Some((fval, val.unwrap()));
+                    }
+                    ModResult::Fail => {
+                        backoff.spin();
+                        continue 'INNER;
+                    }
+                    ModResult::Sentinel => {
+                        backoff.spin();
+                        continue 'OUTER;
+                    }
+                    ModResult::NotFound => {
+                        break 'INNER;
+                    }
+                    _ => panic!(),
+                }
+            }
+            match old_chunk_val {
+                Some(ModResult::Replaced(fval, val, _idx)) => {
+                    return Some((fval, val.unwrap()));
+                }
+                Some(ModResult::Fail) => {
+                    backoff.spin();
+                    continue 'OUTER;
+                }
+                None | Some(ModResult::NotFound) | Some(ModResult::Sentinel) => {
+                    return None;
+                }
+                Some(_) => {
+                    panic!()
+                }
+            }
         }
-        return tagging_res;
     }
 
     #[inline]
@@ -1027,16 +1081,7 @@ impl<
                             }
                         }
                     }
-                    ModOp::Sentinel => {
-                        if Self::cas_sentinel(addr, EMPTY_VALUE) {
-                            // CAS value succeed, shall store key
-                            Self::store_key(addr, fkey);
-                            return ModResult::Done(0, None, idx);
-                        } else {
-                            backoff.spin();
-                            continue;
-                        }
-                    }
+                    ModOp::Sentinel => return ModResult::NotFound,
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };
@@ -2274,7 +2319,7 @@ mod test {
     }
 
     #[test]
-    fn  val_prime() {
+    fn val_prime() {
         let mut val = FastValue::new(123);
         assert!(!val.is_primed());
         assert!(!val.is_locked());

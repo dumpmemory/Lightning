@@ -12350,3 +12350,7 @@ failures:
 test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 69 filtered out; finished in 57.44s
 
 error: test failed, to rerun pass '--lib'
+error: test failed, to rerun pass '--lib'
+
+Caused by:
+  process didn't exit successfully: `/opt/optane/CargoTarget/x86_64-unknown-linux-gnu/debug/deps/lightning-50cfe14c723be791 word_map --test-threads=1` (signal: 15, SIGTERM: termination signal)
