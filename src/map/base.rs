@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -566,6 +566,9 @@ impl<
                                                         return SwapResult::Aborted;
                                                     }
                                                 }
+                                            }
+                                            ModResult::Sentinel => {
+                                                break;
                                             }
                                             _ => {
                                                 backoff.spin();
@@ -1462,21 +1465,28 @@ impl<
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
-        thread::Builder::new()
-            .name(format!(
-                "map-migration-{}-{}",
-                old_chunk_addr, new_chunk_addr
-            ))
-            .spawn(move || {
-                Self::migrate_with_thread(
-                    meta_addr,
-                    old_chunk_addr,
-                    new_chunk_addr,
-                    old_chunk_lock,
-                    old_occupation,
-                );
-            })
-            .unwrap();
+        // thread::Builder::new()
+        //     .name(format!(
+        //         "map-migration-{}-{}",
+        //         old_chunk_addr, new_chunk_addr
+        //     ))
+        //     .spawn(move || {
+        //         Self::migrate_with_thread(
+        //             meta_addr,
+        //             old_chunk_addr,
+        //             new_chunk_addr,
+        //             old_chunk_lock,
+        //             old_occupation,
+        //         );
+        //     })
+        //     .unwrap();
+        Self::migrate_with_thread(
+            meta_addr,
+            old_chunk_addr,
+            new_chunk_addr,
+            old_chunk_lock,
+            old_occupation,
+        );
         ResizeResult::InProgress
     }
 

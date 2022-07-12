@@ -81,9 +81,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let val_ptr = node_ref.value.as_ptr();
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
-            let ver_ptr = node_ref.ver.as_mut_ptr();
-            let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
+            let node_ver = node_ref.ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
+                error!("Version does not match, expect {} got {}", node_ver, val_ver);
                 return None;
             }
             let v = v_shadow.clone();
@@ -544,7 +544,7 @@ mod ptr_map {
         let mut threads = vec![];
         for i in 5..99 {
             let k = key_from(i);
-            let v = val_from(i * 10);
+            let v = val_from(k, i * 10);
             map.insert(k, v);
         }
         for i in 100..900 {
@@ -552,7 +552,7 @@ mod ptr_map {
             threads.push(thread::spawn(move || {
                 for j in 5..60 {
                     let k = key_from(i * 100 + j);
-                    let v = val_from(i * j);
+                    let v = val_from(k, i * j);
                     map.insert(k, v);
                 }
             }));
@@ -569,7 +569,7 @@ mod ptr_map {
         for i in 100..900 {
             for j in 5..60 {
                 let k = key_from(i * 100 + j);
-                let v = val_from(i * j);
+                let v = val_from(k, i * j);
                 assert_eq!(map.get(&k), Some(v))
             }
         }
@@ -588,7 +588,7 @@ mod ptr_map {
         let mut threads = vec![];
         for i in 5..99 {
             let k = key_from(i);
-            let v = Arc::new(val_from(i * 10));
+            let v = Arc::new(val_from(k, i * 10));
             map.insert(k, v);
         }
         let insert_term = 16;
@@ -598,7 +598,7 @@ mod ptr_map {
                 for j in 5..256 {
                     let key = key_from(i * 10000 + j);
                     for k in 0..=insert_term {
-                        let v = Arc::new(val_from(i * j + k));
+                        let v = Arc::new(val_from(key, i * j + k));
                         map.insert(key, v);
                     }
                 }
@@ -616,7 +616,7 @@ mod ptr_map {
         for i in 100..200 {
             for j in 5..256 {
                 let k = key_from(i * 10000 + j);
-                let v = Arc::new(val_from(i * j + insert_term));
+                let v = Arc::new(val_from(k, i * j + insert_term));
                 assert_eq!(map.get(&k), Some(v))
             }
         }
@@ -645,9 +645,9 @@ mod ptr_map {
                   for k in 1..repeat_load {
                       let value_num = value_prefix + k;
                       if k != 1 {
-                          assert_eq!(&*map.get(&key).unwrap(), &val_from(value_num - 1));
+                          assert_eq!(&*map.get(&key).unwrap(), &val_from(key, value_num - 1));
                       }
-                      let value = Arc::new(val_from(value_num));
+                      let value = Arc::new(val_from(key, value_num));
                       let pre_insert_epoch = map.table.now_epoch();
                       map.insert(key, value.clone());
                       let post_insert_epoch = map.table.now_epoch();
@@ -695,7 +695,7 @@ mod ptr_map {
                         map.insert(key, value.clone());
                       }
                       if j % 3 == 0 {
-                          let new_value = val_from(value_num + 7);
+                          let new_value = val_from(key, value_num + 7);
                           let pre_insert_epoch = map.table.now_epoch();
                           map.insert(key, Arc::new(new_value.clone()));
                           let post_insert_epoch = map.table.now_epoch();
@@ -721,7 +721,7 @@ mod ptr_map {
                 let k_num = i * 10000000 + j;
                 let v_num = i * j * 100 + repeat_load - 1;
                 let k = key_from(k_num);
-                let v = val_from(v_num);
+                let v = val_from(k, v_num);
                 let get_res = map.get(&k);
                 assert_eq!(
                     &v,
@@ -769,9 +769,9 @@ mod ptr_map {
                   for k in 1..repeat_load {
                       let value_num = value_prefix + k;
                       if k != 1 {
-                          assert_eq!(map.get(&key), Some(val_from(value_num - 1)));
+                          assert_eq!(map.get(&key), Some(val_from(key, value_num - 1)));
                       }
-                      let value = val_from(value_num);
+                      let value = val_from(key, value_num);
                       let pre_insert_epoch = map.table.now_epoch();
                       map.insert(key, value.clone());
                       let post_insert_epoch = map.table.now_epoch();
@@ -826,7 +826,7 @@ mod ptr_map {
                       }
                       if j % 3 == 0 {
                           let updating = || {
-                            let new_value = val_from(value_num + 7);
+                            let new_value = val_from(key, value_num + 7);
                             let pre_insert_epoch = map.table.now_epoch();
                             map.insert(key, new_value.clone());
                             let post_insert_epoch = map.table.now_epoch();
@@ -854,7 +854,7 @@ mod ptr_map {
                 let k_num = i * 10000000 + j;
                 let v_num = i * j * 100 + repeat_load - 1;
                 let k = key_from(k_num);
-                let v = val_from(v_num);
+                let v = val_from(k, v_num);
                 let get_res = map.get(&k);
                 assert_eq!(
                     Some(v),
@@ -871,15 +871,20 @@ mod ptr_map {
 
     const VAL_SIZE: usize = 256;
     pub type Key = u128;
-    pub type Value = String;
+    pub type Value = [char; 64];
     pub type FatHashMap = PtrHashMap<Key, Value, System>;
 
     fn key_from(num: usize) -> Key {
         num as u128
     }
 
-    fn val_from(num: usize) -> Value {
-        format!("{}", num)
+    fn val_from(key: Key, num: usize) -> Value {
+        let str = format!("{:>32}{:>32}", key, num);
+        let mut res = ['0'; 64];
+        for (i, c) in str.chars().enumerate() {
+            res[i] = c;
+        }
+        res
     }
 
     #[test]
