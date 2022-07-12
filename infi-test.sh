@@ -5,6 +5,8 @@ export RUST_BACKTRACE=1
 export RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address
 while :
 do
+	current_date_time="`date "+%Y-%m-%d %H:%M:%S"`";
+	echo $current_date_time;
 	cargo test word_map --target x86_64-unknown-linux-gnu -- --test-threads=1
 	#lldb --batch  -o run -f /opt/optane/CargoTarget/release/lightning-bench -- --file amd runtime --stride 4 -c -l 26
 done

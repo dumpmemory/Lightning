@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = true;
+pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -357,6 +357,7 @@ impl<
                                     return Some((fv, val.unwrap()));
                                 }
                             }
+                            ModResult::NotFound => {}
                             _ => {}
                         }
                         backoff.spin();
@@ -567,7 +568,7 @@ impl<
                                                     }
                                                 }
                                             }
-                                            ModResult::Sentinel => {
+                                            ModResult::Sentinel | ModResult::NotFound => {
                                                 break;
                                             }
                                             _ => {
@@ -1081,7 +1082,17 @@ impl<
                             }
                         }
                     }
-                    ModOp::Sentinel => return ModResult::NotFound,
+                    ModOp::Sentinel => {
+                        // if Self::cas_sentinel(addr, EMPTY_VALUE) {
+                        //     // CAS value succeed, shall store key
+                        //     Self::store_key(addr, fkey);
+                        //     return ModResult::Done(0, None, idx);
+                        // } else {
+                        //     backoff.spin();
+                        //     continue;
+                        // }
+                        return ModResult::NotFound
+                    }
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                 };

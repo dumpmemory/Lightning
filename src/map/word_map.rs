@@ -405,7 +405,7 @@ mod test {
                               map.table.map_is_copying(),
                               k
                           );
-                          assert_eq!(map.get(&key), None, "Remove recursion, epoch {}", map.table.now_epoch());
+                          assert_eq!(map.get(&key), None, "Remove recursion, epoch {}, value prefix {}", map.table.now_epoch(), value_prefix);
                           assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
                           map.insert(key, value);
                       }
@@ -730,7 +730,7 @@ mod test {
         let repeats: usize = 4096;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
-        for i in 1..64 {
+        for i in 1..16 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 0..repeats {
