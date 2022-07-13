@@ -652,11 +652,11 @@ impl<
                 Some(ModResult::Replaced(fval, val, _idx)) => {
                     return Some((fval, val.unwrap()));
                 }
-                Some(ModResult::Fail) => {
+                Some(ModResult::Fail) | Some(ModResult::Sentinel) => {
                     backoff.spin();
                     continue 'OUTER;
                 }
-                None | Some(ModResult::NotFound) | Some(ModResult::Sentinel) => {
+                None | Some(ModResult::NotFound) => {
                     return None;
                 }
                 Some(_) => {
@@ -822,6 +822,9 @@ impl<
                 if key_probe {
                     let raw = v.val;
                     let act_val = v.act_val::<V>();
+                    if v.is_primed() {
+                        return ModResult::Sentinel;
+                    }
                     if raw >= TOMBSTONE_VALUE {
                         match op {
                             ModOp::Insert(fval, ov) => {
@@ -938,7 +941,7 @@ impl<
                                 }
                             }
                         }
-                    } else if raw == SENTINEL_VALUE || v.is_primed() {
+                    } else if raw == SENTINEL_VALUE {
                         return ModResult::Sentinel;
                     } else if raw == BACKWARD_SWAPPING_VALUE {
                         Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);

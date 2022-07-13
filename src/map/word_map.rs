@@ -407,7 +407,8 @@ mod test {
                           );
                           assert_eq!(map.get(&key), None, "Remove recursion, epoch {}, value prefix {}", map.table.now_epoch(), value_prefix);
                           assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
-                          map.insert(key, value);
+                          assert!(map.insert(key, value).is_none());
+                          assert_eq!(map.get(&key), Some(value));
                       }
                       if j % 3 == 0 {
                           let new_value = value + 7;
