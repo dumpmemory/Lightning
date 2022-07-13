@@ -56,9 +56,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 
     #[inline(always)]
     fn remove(&self, key: &FKey) -> Option<FVal> {
-        self.table
-            .remove(&(), key + NUM_FIX_K)
-            .map(|(v, _)| v - NUM_FIX_V)
+        self.table.remove(&(), key + NUM_FIX_K).map(|(v, _)| {
+            debug_assert!(v >= NUM_FIX_V, "Got illegal value {}", v);
+            v - NUM_FIX_V
+        })
     }
     fn entries(&self) -> Vec<(FKey, FVal)> {
         self.table
@@ -691,12 +692,19 @@ mod test {
                         },
                         &guard,
                     );
-                    debug_assert_eq!(
-                        map.get(&key),
-                        Some(next_val - NUM_FIX_V),
-                        "Value checking after swap at epoch {}", 
-                        map.table.now_epoch()
-                    );
+                    let got_value = map.get(&key);
+                    let expecting_value = Some(next_val - NUM_FIX_V);
+                    if got_value != expecting_value {
+                        let error_epoch = map.table.now_epoch();
+                        error!("Value checking after swap at epoch {:?}. Expecting {:?} found {:?}. Probing for final value", error_epoch, expecting_value, got_value);
+                        (0..256).for_each(|i| {
+                            let got_value = map.get(&key);
+                            if got_value == expecting_value {
+                                panic!("Value checking failed. Expecting {:?} got {:?} recovered from epoch {} at {} turn {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i);
+                            }
+                        });
+                        panic!("Value checking failed. Expecting {:?} got {:?} DID NOT recovered from epoch {} at {} turn {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i);
+                    }
                 }
             }));
         }

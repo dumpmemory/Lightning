@@ -853,8 +853,8 @@ impl<
                                 if Self::cas_sentinel(addr, v.val) {
                                     let prev_val = read_attachment.then(|| attachment.get_value());
                                     attachment.erase(raw);
-                                    if raw == 0 {
-                                        return ModResult::Replaced(0, prev_val, idx);
+                                    if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
+                                        return ModResult::NotFound;
                                     } else {
                                         return ModResult::Replaced(act_val, prev_val, idx);
                                     }
@@ -1094,7 +1094,7 @@ impl<
                         //     backoff.spin();
                         //     continue;
                         // }
-                        return ModResult::NotFound
+                        return ModResult::NotFound;
                     }
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
