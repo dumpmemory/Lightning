@@ -734,36 +734,38 @@ mod test {
     }
 
     #[test]
-    fn checking_inserion_with_migrations() {
+    fn checking_inserion_with_migrations() {    
         let _ = env_logger::try_init();
-        let repeats: usize = 4096;
-        let map = Arc::new(WordMap::<System>::with_capacity(8));
-        let mut threads = vec![];
-        for i in 1..16 {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(
-                        map.insert(key, key),
-                        Some(key),
-                        "reinserting at key {}, get {:?}, epoch {}",
-                        key - NUM_FIX_K,
-                        map.get(&key),
-                        map.table.now_epoch()
-                    );
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
-                }
-            }));
+        for _ in 0..512 {
+            let repeats: usize = 4096;
+            let map = Arc::new(WordMap::<System>::with_capacity(8));
+            let mut threads = vec![];
+            for i in 1..16 {
+                let map = map.clone();
+                threads.push(thread::spawn(move || {
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                    }
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        assert_eq!(
+                            map.insert(key, key),
+                            Some(key),
+                            "reinserting at key {}, get {:?}, epoch {}",
+                            key - NUM_FIX_K,
+                            map.get(&key),
+                            map.table.now_epoch()
+                        );
+                    }
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                    }
+                }));
+            }
+            threads.into_iter().for_each(|t| t.join().unwrap());
         }
-        threads.into_iter().for_each(|t| t.join().unwrap());
     }
 
     #[bench]

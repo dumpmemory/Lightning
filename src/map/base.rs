@@ -11,7 +11,6 @@ pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
-pub const DISABLED_KEY: FKey = 2;
 
 pub const EMPTY_VALUE: FVal = 0b000;
 pub const SENTINEL_VALUE: FVal = 0b010;
@@ -636,18 +635,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
         let chunk = unsafe { chunk_ptr.deref() };
-        let cap = chunk.capacity;
-        let mut res = String::new();
-        for i in 0..cap {
-            let addr = chunk.entry_addr(i);
-            let k = Self::get_fast_key(addr);
-            if k != EMPTY_VALUE {
-                res.push('1');
-            } else {
-                res.push('0');
-            }
-        }
-        info!("Chunk dump: {}", res);
+        chunk.dump_dist();
     }
 
     #[inline]
@@ -942,8 +930,8 @@ impl<
                                         }
                                         Err(new_idx) => {
                                             let new_addr = chunk.entry_addr(new_idx);
-                                            Self::store_value(new_addr, TOMBSTONE_VALUE);
-                                            Self::store_key(new_addr, DISABLED_KEY);
+                                            Self::store_key(new_addr, EMPTY_KEY);
+                                            Self::store_value(new_addr, EMPTY_VALUE);
                                             return ModResult::TableFull;
                                         }
                                     }
@@ -992,8 +980,8 @@ impl<
                                     }
                                     Err(new_idx) => {
                                         let new_addr = chunk.entry_addr(new_idx);
-                                        Self::store_value(new_addr, TOMBSTONE_VALUE);
-                                        Self::store_key(new_addr, DISABLED_KEY);
+                                        Self::store_key(new_addr, EMPTY_KEY);
+                                        Self::store_value(new_addr, EMPTY_VALUE);
                                         return ModResult::TableFull;
                                     }
                                 }
@@ -1557,48 +1545,46 @@ impl<
                 "Migrating entry have key {}",
                 Self::get_fast_key(old_address)
             );
-            if fkey != DISABLED_KEY {
-                match fvalue.val {
-                    EMPTY_VALUE | TOMBSTONE_VALUE => {
-                        // Probably does not need this anymore
-                        // Need to make sure that during migration, empty value always leads to new chunk
-                        if !Self::cas_sentinel(old_address, fvalue.val) {
-                            warn!("Filling empty with sentinel for old table should succeed but not, retry");
-                            backoff.spin();
-                            continue;
-                        }
-                    }
-                    LOCKED_VALUE => {
+            match fvalue.val {
+                EMPTY_VALUE | TOMBSTONE_VALUE => {
+                    // Probably does not need this anymore
+                    // Need to make sure that during migration, empty value always leads to new chunk
+                    if !Self::cas_sentinel(old_address, fvalue.val) {
+                        warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
                     }
-                    FORWARD_SWAPPING_VALUE | BACKWARD_SWAPPING_VALUE => {
+                }
+                LOCKED_VALUE => {
+                    backoff.spin();
+                    continue;
+                }
+                FORWARD_SWAPPING_VALUE | BACKWARD_SWAPPING_VALUE => {
+                    backoff.spin();
+                    continue;
+                }
+                SENTINEL_VALUE => {
+                    // Sentinel, skip
+                    // Sentinel in old chunk implies its new value have already in the new chunk
+                    // It can also be other thread have moved this key-value pair to the new chunk
+                }
+                _ => {
+                    // The values. First check its key is the same
+                    if Self::get_fast_key(old_address) != fkey {
                         backoff.spin();
                         continue;
                     }
-                    SENTINEL_VALUE => {
-                        // Sentinel, skip
-                        // Sentinel in old chunk implies its new value have already in the new chunk
-                        // It can also be other thread have moved this key-value pair to the new chunk
-                    }
-                    _ => {
-                        // The values. First check its key is the same
-                        if Self::get_fast_key(old_address) != fkey {
-                            backoff.spin();
-                            continue;
-                        }
-                        if !Self::migrate_entry(
-                            fkey,
-                            idx,
-                            fvalue,
-                            old_chunk_ins,
-                            new_chunk_ins,
-                            old_address,
-                            &mut effective_copy,
-                        ) {
-                            backoff.spin();
-                            continue;
-                        }
+                    if !Self::migrate_entry(
+                        fkey,
+                        idx,
+                        fvalue,
+                        old_chunk_ins,
+                        new_chunk_ins,
+                        old_address,
+                        &mut effective_copy,
+                    ) {
+                        backoff.spin();
+                        continue;
                     }
                 }
             }
@@ -1780,6 +1766,8 @@ impl<
             if let Some(next) = iter.next() {
                 (idx, count) = next;
             } else {
+                new_chunk_ins.dump_dist();
+                new_chunk_ins.dump_kv();
                 panic!("Cannot find any slot for migration");
             }
         }
@@ -2032,7 +2020,35 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             terminal: false,
         }
     }
+
+    fn dump_dist(&self) {
+        let cap = self.capacity;
+        let mut res = String::new();
+        for i in 0..cap {
+            let addr = self.entry_addr(i);
+            let k = Self::get_fast_key(addr);
+            if k != EMPTY_VALUE {
+                res.push('1');
+            } else {
+                res.push('0');
+            }
+        }
+        error!("Chunk dump: {}", res);
+    }
+
+    fn dump_kv(&self) {
+        let cap = self.capacity;
+        let mut res = vec![];
+        for i in 0..cap {
+            let addr = self.entry_addr(i);
+            let k = Self::get_fast_key(addr);
+            let v = Self::get_fast_value(addr);
+            res.push(format!("{}:{}", k, v.val));
+        }
+        error!("Chunk dump: {:?}", res);  
+    }
 }
+
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
     for Table<K, V, A, ALLOC, H>
