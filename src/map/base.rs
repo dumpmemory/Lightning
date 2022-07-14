@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -519,7 +519,11 @@ impl<
                         Some((fv, addr, _)) => {
                             // This is a tranision state and we just don't bother for its complexity
                             // Simply retry and wait until the entry is moved to new chunk
-                            Self::wait_entry(addr, fkey, fv.val, &backoff);
+                            if fv.is_valued() {
+                                Self::wait_entry(addr, fkey, fv.val, &backoff);
+                            } else {
+                                backoff.spin();
+                            }
                             continue;
                         }
                         None => {
