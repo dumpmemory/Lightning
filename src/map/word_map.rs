@@ -394,7 +394,7 @@ mod test {
                                       );
                                   }
                               }
-                              panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
+                              panic!("Unable to recover for {}, round {}, copying {}, expecting {:?}, got {:?}", key, l , map.table.map_is_copying(), right, left);
                           }
                       }
                       if j % 5 == 0 {

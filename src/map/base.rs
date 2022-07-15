@@ -659,7 +659,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, false);
+        let reiter = || chunk.iter_slot_skipable(home_idx, true);
         let mut iter = reiter();
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
@@ -1299,6 +1299,12 @@ impl<
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
                     chunk.set_hop_bit(idx, curr_candidate_distance);
 
+                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
+                    let candidate_in_range = target_hop_distance < NUM_HOPS;
+                    if candidate_in_range {
+                        chunk.set_hop_bit(home_idx, target_hop_distance);
+                    }
+                    
                     // Starting to copy it co current idx
                     let curr_addr = chunk.entry_addr(curr_idx);
                     // Start from key object in the attachment
@@ -1323,12 +1329,9 @@ impl<
 
                     //Here we had candidate copied. Need to work on the candidate slot
                     // First check if it is already in range of home neighbourhood
-                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
-                    if target_hop_distance < NUM_HOPS {
+                    if candidate_in_range {
                         // In range, fill the candidate slot with our key and values
                         Self::store_value(candidate_addr, fval);
-                        // chunk.incr_hop_ver(home_idx);
-                        chunk.set_hop_bit(home_idx, target_hop_distance);
                         fence(AcqRel);
                         return Ok(candidate_idx);
                     } else {
