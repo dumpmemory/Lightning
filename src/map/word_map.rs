@@ -734,9 +734,9 @@ mod test {
     }
 
     #[test]
-    fn checking_inserion_with_migrations() {    
+    fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..512 {
+        for _ in 0..32 {
             let repeats: usize = 4096;
             let map = Arc::new(WordMap::<System>::with_capacity(8));
             let mut threads = vec![];

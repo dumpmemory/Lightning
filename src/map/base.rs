@@ -930,8 +930,7 @@ impl<
                                         }
                                         Err(new_idx) => {
                                             let new_addr = chunk.entry_addr(new_idx);
-                                            Self::store_key(new_addr, EMPTY_KEY);
-                                            Self::store_value(new_addr, EMPTY_VALUE);
+                                            Self::store_value(new_addr, TOMBSTONE_VALUE);
                                             return ModResult::TableFull;
                                         }
                                     }
@@ -980,8 +979,7 @@ impl<
                                     }
                                     Err(new_idx) => {
                                         let new_addr = chunk.entry_addr(new_idx);
-                                        Self::store_key(new_addr, EMPTY_KEY);
-                                        Self::store_value(new_addr, EMPTY_VALUE);
+                                        Self::store_value(new_addr, TOMBSTONE_VALUE);
                                         return ModResult::TableFull;
                                     }
                                 }
@@ -1408,6 +1406,12 @@ impl<
             }
             cap
         };
+        // Preoccupie half of the new capacity for migration
+        let mut old_occupation = new_cap >> 1;
+        if old_occupation <= 256 {
+            // The map is small, block all insertions until the migration is completed
+            old_occupation = new_cap;
+        }
         // Swap in old chunk as placeholder for the lock
         let old_chunk_lock = old_chunk_ptr.with_tag(1);
         if let Err(_) =
@@ -1419,7 +1423,6 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        let old_occupation = old_cap;
         trace!(
             "--- Resizing {:?}. New size is {}, was {}",
             old_chunk_ptr,
