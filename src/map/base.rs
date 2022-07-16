@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = true;
+pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -441,14 +441,6 @@ impl<
             let chunk = unsafe { chunk_ptr.deref() };
             let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
 
-            // Comment this for better performance.
-            // if new_chunk.is_some() {
-            //     backoff.spin();
-            //     continue;
-            // }
-
-            // First try UPDATE new_chunk if it exists
-            // This is the fast path
             let update_chunk_ptr = new_chunk.map(|_| new_chunk_ptr).unwrap_or(chunk_ptr);
             let update_chunk = new_chunk.unwrap_or(chunk);
             let mut result = None;
@@ -487,7 +479,7 @@ impl<
                     let new_chunk_ref = new_chunk.map(|c| &**c);
                     loop {
                         // Just try to CAS a sentinel in the old chunk and we are done
-                        match self.modify_entry(
+                        let sentinel_res = self.modify_entry(
                             chunk,
                             hash,
                             key,
@@ -496,13 +488,16 @@ impl<
                             false,
                             &guard,
                             new_chunk_ref,
-                        ) {
+                        );
+                        match sentinel_res {
                             ModResult::Fail => {
                                 continue;
                             }
-                            _ => {}
+                            ModResult::NotFound | ModResult::Replaced(_, _, _) | ModResult::Sentinel => {
+                                return SwapResult::Succeed(fval, idx, mod_chunk_ptr);
+                            }
+                            _ => unreachable!("{:?}", sentinel_res),
                         }
-                        return SwapResult::Succeed(fval, idx, mod_chunk_ptr);
                     }
                 }
                 (Some((fval, idx, mod_chunk_ptr)), false) => {
@@ -1037,14 +1032,6 @@ impl<
                         }
                     }
                     ModOp::Sentinel => {
-                        // if Self::cas_sentinel(addr, EMPTY_VALUE) {
-                        //     // CAS value succeed, shall store key
-                        //     Self::store_key(addr, fkey);
-                        //     return ModResult::Done(0, None, idx);
-                        // } else {
-                        //     backoff.spin();
-                        //     continue;
-                        // }
                         return ModResult::NotFound;
                     }
                     ModOp::Tombstone => return ModResult::NotFound,
@@ -1801,6 +1788,11 @@ impl<
         } else {
             els
         }
+    }
+
+    pub fn capacity(&self) -> usize {
+        let guard = crossbeam_epoch::pin();
+        unsafe { self.meta.chunk.load(Acquire, &guard).deref().capacity }
     }
 }
 

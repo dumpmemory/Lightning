@@ -698,12 +698,12 @@ mod test {
                         let error_epoch = map.table.now_epoch();
                         error!("Value checking after swap at epoch {:?}. Expecting {:?} found {:?}. Probing for final value", error_epoch, expecting_value, got_value);
                         (0..256).for_each(|i| {
-                            let got_value = map.get(&key);
-                            if got_value == expecting_value {
-                                panic!("Value checking failed. Expecting {:?} got {:?} recovered from epoch {} at {} turn {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i);
+                            let new_got_value = map.get(&key);
+                            if new_got_value == expecting_value {
+                                panic!("Value checking failed. Expecting {:?} got {:?} recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i, map.table.capacity());
                             }
                         });
-                        panic!("Value checking failed. Expecting {:?} got {:?} DID NOT recovered from epoch {} at {} turn {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i);
+                        panic!("Value checking failed. Expecting {:?} got {:?} DID NOT recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i, map.table.capacity());
                     }
                 }
             }));
