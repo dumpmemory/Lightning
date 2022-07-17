@@ -493,7 +493,9 @@ impl<
                             ModResult::Fail => {
                                 continue;
                             }
-                            ModResult::NotFound | ModResult::Replaced(_, _, _) | ModResult::Sentinel => {
+                            ModResult::NotFound
+                            | ModResult::Replaced(_, _, _)
+                            | ModResult::Sentinel => {
                                 return SwapResult::Succeed(fval, idx, mod_chunk_ptr);
                             }
                             _ => unreachable!("{:?}", sentinel_res),

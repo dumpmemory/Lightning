@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::mem::forget;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
@@ -29,8 +30,13 @@ struct MapConsts<K, V> {
     _marker: PhantomData<(K, V)>,
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-    PtrHashMap<K, V, ALLOC, H>
+impl<K, V, ALLOC, H> PtrHashMap<K, V, ALLOC, H>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
+    Self: Sized
 {
     const VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS;
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
@@ -73,21 +79,18 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn deref_val<T: Clone>(&self, val: usize) -> Option<T> {
+    fn deref_val(&self, key: &K, val: usize) -> Option<V> {
         unsafe {
             let (addr, val_ver) = decompose_value::<K, V>(val);
-            let node_ptr = addr as *mut PtrValueNode<T>;
+            let node_ptr = addr as *mut PtrValueNode<V>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
-                error!(
-                    "Version does not match, expect {} got {}",
-                    node_ver, val_ver
-                );
-                return None;
+                <Self as DebugPtrMap<K, V>>::print_ver_mismatch(key, &v_shadow, node_ver, val_ver);
+                // return None;
             }
             let v = v_shadow.clone();
             mem::forget(v_shadow);
@@ -122,12 +125,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(never)]
-    fn retry_get(&self, fv: &mut usize, addr: usize, backoff: &Backoff) -> Option<V> {
+    fn retry_get(&self, key: &K, fv: &mut usize, addr: usize, backoff: &Backoff) -> Option<V> {
         backoff.spin();
         loop {
             let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
             if new_fval.val > NUM_FIX_V {
-                let now_val = self.deref_val::<V>(*fv);
+                let now_val = self.deref_val(key, *fv);
                 if now_val.is_some() {
                     return now_val;
                 } else {
@@ -141,6 +144,42 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 }
 
+impl<K, V, ALLOC, H> DebugPtrMap<K, V> for PtrHashMap<K, V, ALLOC, H>
+    where
+        K: Clone + Hash + Eq,
+        V: Clone,
+        ALLOC: GlobalAlloc + Default,
+        H: Hasher + Default,
+        Self: Sized,
+{
+    fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize) {
+        error!(
+            "Version does not match for expect {} got {}",
+            node_ver, val_ver
+        );
+    }
+}
+
+// impl<K, V, ALLOC, H> DebugPtrMap<K, V> for PtrHashMap<K, V, ALLOC, H>
+// where
+//     K: Clone + Hash + Eq + Debug,
+//     V: Clone + Debug,
+//     ALLOC: GlobalAlloc + Default,
+//     H: Hasher + Default,
+//     Self: Sized,
+// {
+//     fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize) {
+//         error!(
+//             "Version does not match for expect {} got {}, key {:?}, val {:?}",
+//             node_ver, val_ver, key, val
+//         );
+//     }
+// }
+
+trait DebugPtrMap<K, V> {
+    fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize);
+}
+
 #[inline(always)]
 fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usize) {
     (
@@ -149,8 +188,12 @@ fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usiz
     )
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
-    for PtrHashMap<K, V, ALLOC, H>
+impl<K, V, ALLOC, H> Map<K, V> for PtrHashMap<K, V, ALLOC, H>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
 {
     fn with_capacity(cap: usize) -> Self {
         let mut alloc = Box::new(obj_alloc::Allocator::new());
@@ -173,10 +216,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if let Some(val) = self.deref_val(fv) {
+                if let Some(val) = self.deref_val(key, fv) {
                     return Some(val);
                 }
-                let retry_val = self.retry_get(&mut fv, addr, &backoff);
+                let retry_val = self.retry_get(key, &mut fv, addr, &backoff);
                 if retry_val.is_some() {
                     return retry_val;
                 }
@@ -195,7 +238,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 debug_assert!(!ptr.is_null());
                 let obj = ptr::read(ptr);
                 guard.buffered_free(node_addr);
-                obj
+                let res = obj.clone();
+                forget(obj);
+                res
             })
     }
 
@@ -212,7 +257,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             unsafe {
                 let value = ptr::read(val_ptr);
                 self.allocator.buffered_free(node_addr as _);
-                value
+                let res = value.clone();
+                mem::forget(value);
+                res
             }
         })
     }
@@ -224,7 +271,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .into_iter()
             .filter_map(|(_, fv, k, _)| {
                 // TODO: reload?
-                self.deref_val(fv).map(|v| (k, v))
+                self.deref_val(&k, fv).map(|v| (k, v))
             })
             .collect()
     }
@@ -321,11 +368,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         unsafe {
             let (addr, _val_ver) = decompose_value::<K, V>(fvalue & WORD_MUTEX_DATA_BIT_MASK);
             let node_ptr = addr as *mut PtrValueNode<V>;
-            let node_ref = &*node_ptr;
-            let val_ptr = node_ref.value.as_ptr();
             debug_assert!(!node_ptr.is_null(), "fval is {}", fvalue);
-            debug_assert!(!val_ptr.is_null());
-            mem::drop(ptr::read(val_ptr));
             (&*self.alloc).buffered_free(node_ptr);
         }
     }
@@ -378,8 +421,12 @@ pub struct PtrMutexGuard<
     value: V,
 }
 
-impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
-    PtrMutexGuard<'a, K, V, ALLOC, H>
+impl<'a, K, V, ALLOC, H> PtrMutexGuard<'a, K, V, ALLOC, H>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
 {
     fn new(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -403,7 +450,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             );
             match swap_res {
                 SwapResult::Succeed(val, _idx, _chunk) => {
-                    value = if let Some(v) = map.deref_val(val & WORD_MUTEX_DATA_BIT_MASK) {
+                    value = if let Some(v) = map.deref_val(key, val & WORD_MUTEX_DATA_BIT_MASK) {
                         v
                     } else {
                         continue;
@@ -447,9 +494,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
         let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
         let r = unsafe { ptr::read(val_ptr) };
+        let res = r.clone();
         guard.buffered_free(node_addr as _);
         mem::forget(self);
-        return r;
+        mem::forget(r);
+        return res;
     }
 }
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
@@ -469,8 +518,12 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         &mut self.value
     }
 }
-impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-    for PtrMutexGuard<'a, K, V, ALLOC, H>
+impl<'a, K, V, ALLOC, H> Drop for PtrMutexGuard<'a, K, V, ALLOC, H>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
 {
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
@@ -483,8 +536,12 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-    for PtrHashMap<K, V, ALLOC, H>
+impl<'a, K, V, ALLOC, H> Drop for PtrHashMap<K, V, ALLOC, H>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
 {
     fn drop(&mut self) {
         for (_fk, fv, _k, _v) in self.table.entries() {
