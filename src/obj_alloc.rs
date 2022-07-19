@@ -92,7 +92,11 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         if let Some(pair) = self.free_buffer.pop() {
             return pair;
         }
-        let ptr = unsafe { libc::malloc(Self::BUMP_SIZE) } as usize;
+        let ptr = unsafe {
+            let heap = libc::malloc(Self::BUMP_SIZE);
+            libc::memset(heap, 0, Self::BUMP_SIZE);
+            heap as usize
+        };
         self.all_buffers.push(ptr);
         (ptr, ptr + Self::BUMP_SIZE)
     }
