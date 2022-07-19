@@ -99,12 +99,14 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         let value = 0;
         let offset_key = key + NUM_FIX_K;
         let offset_value = 0 + NUM_FIX_V;
+        let locked_val = offset_value | VAL_MUTEX_BIT;
+        debug_assert_ne!(offset_value, locked_val); 
         match table.insert(
             InsertOp::TryInsert,
             &(),
             Some(&()),
             offset_key,
-            offset_value | VAL_MUTEX_BIT,
+            locked_val,
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
@@ -195,6 +197,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
     fn drop(&mut self) {
         let offset_key = self.key + NUM_FIX_V;
         let offset_val = self.value + NUM_FIX_V;
+        debug_assert_ne!(offset_val, offset_val | VAL_MUTEX_BIT);
         trace!(
             "Release lock for key {} with value {}",
             self.key,
@@ -205,7 +208,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
             &(),
             None,
             offset_key,
-            offset_val & WORD_MUTEX_DATA_BIT_MASK,
+            offset_val,
         );
     }
 }

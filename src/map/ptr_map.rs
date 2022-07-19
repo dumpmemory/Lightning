@@ -506,6 +506,7 @@ where
     fn create(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K, value: V) -> Option<Self> {
         let guard = map.allocator.pin();
         let fvalue = map.ref_val(value.clone(), &guard);
+        debug_assert_ne!(fvalue, fvalue | VAL_MUTEX_BIT);
         match map.table.insert(
             InsertOp::TryInsert,
             key,
@@ -562,10 +563,11 @@ where
         let guard = self.map.allocator.pin();
         let val = self.value.clone();
         let key = self.key.clone();
-        let fval = self.map.ref_val(val, &guard) & WORD_MUTEX_DATA_BIT_MASK;
+        let ref_val = self.map.ref_val(val, &guard);
+        debug_assert_ne!(ref_val, ref_val | VAL_MUTEX_BIT);
         self.map
             .table
-            .insert(InsertOp::Insert, &key, Some(&()), 0, fval);
+            .insert(InsertOp::Insert, &key, Some(&()), 0, ref_val);
     }
 }
 
