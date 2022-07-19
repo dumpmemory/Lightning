@@ -567,7 +567,7 @@ where
         debug_assert_ne!(ref_val, ref_val | VAL_MUTEX_BIT);
         self.map
             .table
-            .insert(InsertOp::Insert, &key, Some(&()), 0, ref_val);
+            .insert(InsertOp::UpsertFast, &key, None, 0, ref_val);
     }
 }
 
