@@ -75,7 +75,8 @@ where
             let retire_ver = node_ref.retire_ver.load(Relaxed);
             let mut current_ver = self.epoch.load(Relaxed);
             loop {
-                if retire_ver >= current_ver {
+                debug_assert!(retire_ver <= current_ver);
+                if retire_ver == current_ver {
                     // Bump global apoch
                     let new_ver = current_ver + 1;
                     if let Err(actual_ver) = self.epoch.compare_exchange(current_ver, new_ver, Relaxed, Relaxed) {
@@ -111,9 +112,10 @@ where
             let val_ptr = node_ref.value.as_ptr();
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
-            let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
-            if node_ver != val_ver {
-                Self::print_ver_mismatch(key, &v_shadow, node_ver, val_ver);
+            let node_ver = node_ref.birth_ver.load(Relaxed);
+            let node_ver_short = node_ver & Self::VAL_NODE_LOW_BITS;
+            if node_ver_short != val_ver {
+                Self::print_ver_mismatch(key, &v_shadow, node_ver_short, val_ver);
                 return None;
             }
             let v = v_shadow.clone();
