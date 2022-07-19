@@ -49,7 +49,7 @@ where
         key: K,
         value: V,
     ) -> Option<(
-        (*mut V, usize),
+        (*mut V, *mut PtrValueNode<V>),
         AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
     )> {
         let guard = self.allocator.pin();
@@ -72,10 +72,10 @@ where
         unsafe {
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
-            let node_ver = node_ref.retire_ver.load(Relaxed);
+            let retire_ver = node_ref.retire_ver.load(Relaxed);
             let mut current_ver = self.epoch.load(Relaxed);
             loop {
-                if node_ver >= current_ver {
+                if retire_ver >= current_ver {
                     // Bump global apoch
                     let new_ver = current_ver + 1;
                     if let Err(actual_ver) = self.epoch.compare_exchange(current_ver, new_ver, Relaxed, Relaxed) {
@@ -88,11 +88,11 @@ where
                 }
                 break;
             }
-            debug_assert!(node_ver < current_ver, "Version node {} vs. current {}", node_ver, current_ver);
+            debug_assert!(retire_ver < current_ver, "Version node {} vs. current {}", retire_ver, current_ver);
             node_ref.birth_ver.store(current_ver, Relaxed);
             node_ref.retire_ver.store(0, Release);
             let obj_ptr = node_ref.value.as_ptr();
-            if node_ver > 0 {
+            if retire_ver > 0 {
                 // Free existing object
                 ptr::read(obj_ptr);
             }
@@ -126,7 +126,7 @@ where
     }
 
     #[inline(always)]
-    fn ptr_of_val(&self, val: usize) -> (*mut V, usize) {
+    fn ptr_of_val(&self, val: usize) -> (*mut V, *mut PtrValueNode<V>) {
         unsafe {
             let (addr, _val_ver) = decompose_value::<K, V>(val);
             let node_ptr = addr as *mut PtrValueNode<V>;
@@ -134,7 +134,7 @@ where
             let val_ptr = node_ref.value.as_ptr();
             debug_assert!(!node_ptr.is_null());
             debug_assert!(!val_ptr.is_null());
-            (val_ptr, addr)
+            (val_ptr, node_ptr)
         }
     }
 
@@ -167,6 +167,16 @@ where
                 }
             }
             return None;
+        }
+    }
+
+    #[inline(always)]
+    fn retire(&self, node_ptr: *mut PtrValueNode<V>, guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
+        unsafe {
+            let epoch = self.epoch.load(Relaxed);
+            let node = node_ptr.as_ref().unwrap();
+            node.retire_ver.store(epoch, Relaxed);
+            guard.buffered_free(node_ptr);
         }
     }
 }
@@ -245,10 +255,10 @@ where
     #[inline(always)]
     fn insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
-            .map(|((ptr, node_addr), guard)| unsafe {
+            .map(|((ptr, node_ptr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
                 let obj = ptr::read(ptr);
-                guard.buffered_free(node_addr);
+                self.retire(node_ptr, &guard);
                 let res = obj.clone();
                 forget(obj);
                 res
@@ -264,10 +274,11 @@ where
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
         self.table.remove(key, 0).map(|(fv, _)| {
-            let (val_ptr, node_addr) = self.ptr_of_val(fv);
+            let (val_ptr, node_ptr) = self.ptr_of_val(fv);
             unsafe {
+                let guard = self.allocator.pin();
                 let value = ptr::read(val_ptr);
-                self.allocator.buffered_free(node_addr as _);
+                self.retire(node_ptr, &guard);
                 let res = value.clone();
                 mem::forget(value);
                 res
@@ -301,6 +312,7 @@ where
     fn clear(&self) {
         self.table.clear();
     }
+    
 }
 
 unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Send
@@ -379,8 +391,10 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         unsafe {
             let (addr, _val_ver) = decompose_value::<K, V>(fvalue & WORD_MUTEX_DATA_BIT_MASK);
             let node_ptr = addr as *mut PtrValueNode<V>;
+            let allocator = &*self.alloc;
+            let guard = allocator.pin();
             debug_assert!(!node_ptr.is_null(), "fval is {}", fvalue);
-            (&*self.alloc).buffered_free(node_ptr);
+            //.buffered_free(node_ptr);
         }
     }
 }
@@ -468,7 +482,11 @@ where
                     };
                     break;
                 }
-                SwapResult::Failed | SwapResult::Aborted => {
+                SwapResult::Aborted => {
+                    backoff.spin();
+                    continue;
+                }
+                SwapResult::Failed => {
                     backoff.spin();
                     continue;
                 }
@@ -503,10 +521,10 @@ where
     pub fn remove(self) -> V {
         let guard = self.map.allocator.pin();
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
-        let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
+        let (val_ptr, node_ptr) = self.map.ptr_of_val(fval);
         let r = unsafe { ptr::read(val_ptr) };
         let res = r.clone();
-        guard.buffered_free(node_addr as _);
+        self.map.retire(node_ptr, &guard);
         mem::forget(self);
         mem::forget(r);
         return res;
@@ -963,7 +981,7 @@ mod ptr_map {
         let _ = env_logger::try_init();
         let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(16));
         let mut threads = vec![];
-        let num_threads = 16;
+        let num_threads = 4;
         let test_load = 4096;
         let update_load = 128;
         for thread_id in 0..num_threads {

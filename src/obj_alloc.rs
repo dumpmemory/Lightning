@@ -45,15 +45,15 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     #[inline(always)]
-    pub fn free(&self, addr: *mut T) {
+    pub fn free(&self, ptr: *mut T) {
         let tl_alloc = self.tl_alloc();
-        tl_alloc.free(addr as usize)
+        tl_alloc.free(ptr)
     }
 
     #[inline(always)]
-    pub fn buffered_free(&self, addr: *mut T) {
+    pub fn buffered_free(&self, ptr: *mut T) {
         let tl_alloc = self.tl_alloc();
-        tl_alloc.buffered_free(addr as usize)
+        tl_alloc.buffered_free(ptr)
     }
 
     #[inline(always)]
@@ -186,16 +186,16 @@ impl<T, const B: usize> TLAlloc<T, B> {
     }
 
     #[inline(always)]
-    pub fn free(&mut self, addr: usize) {
-        if let Some(overflow_buffer) = self.free_list.push(addr) {
+    pub fn free(&mut self, ptr: *const T) {
+        if let Some(overflow_buffer) = self.free_list.push(ptr as usize) {
             (&*self.shared).attach_objs(&overflow_buffer);
         }
     }
 
     #[inline(always)]
-    pub fn buffered_free(&mut self, addr: usize) {
+    pub fn buffered_free(&mut self, ptr: *const T) {
         unsafe {
-            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(addr) {
+            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(ptr as usize) {
                 // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
                 if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
                     &mut self.buffered_free,
@@ -349,7 +349,7 @@ impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
         alloc.guard_count -= 1;
         if alloc.guard_count == 0 {
             while let Some(ptr) = alloc.defer_free.pop() {
-                alloc.free(ptr);
+                alloc.free(ptr as *const T);
             }
         }
     }
@@ -369,15 +369,15 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
     }
 
     #[inline(always)]
-    pub fn free(&self, addr: usize) {
+    pub fn free(&self, ptr: *const T) {
         let alloc = unsafe { &mut *self.alloc };
-        alloc.free(addr)
+        alloc.free(ptr)
     }
 
     #[inline(always)]
-    pub fn buffered_free(&self, addr: usize) {
+    pub fn buffered_free(&self, ptr: *const T) {
         let alloc = unsafe { &mut *self.alloc };
-        alloc.buffered_free(addr)
+        alloc.buffered_free(ptr)
     }
 }
 
