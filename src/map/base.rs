@@ -25,11 +25,12 @@ pub const TOMBSTONE_VALUE: FVal = 0b110;
 pub const NUM_FIX_K: FKey = 0b1000; // = 8
 pub const NUM_FIX_V: FVal = 0b1000; // = 8
 
+pub const HEADING_BIT: FVal = !(!0 << 1 >> 1);
 pub const VAL_BIT_MASK: FVal = VAL_PRIME_VAL_MASK & (!VAL_KEY_DIGEST_MASK);
-pub const VAL_PRIME_BIT: FVal = !(!0 << 1 >> 1);
+pub const VAL_PRIME_BIT: FVal = HEADING_BIT;
 pub const VAL_PRIME_VAL_MASK: FVal = !VAL_PRIME_BIT;
-pub const MUTEX_BIT_MASK: FVal = !WORD_MUTEX_DATA_BIT_MASK & VAL_BIT_MASK;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
+pub const VAL_MUTEX_BIT: FVal = HEADING_BIT >> 1; // The second heading bit
 pub const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
 
 // For key digest

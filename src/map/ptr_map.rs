@@ -115,8 +115,8 @@ where
             let node_ver = node_ref.birth_ver.load(Relaxed);
             let node_ver_short = node_ver & Self::VAL_NODE_LOW_BITS;
             if node_ver_short != val_ver {
-                Self::print_ver_mismatch(key, &v_shadow, node_ver_short, val_ver);
-                return None;
+                // Self::print_ver_mismatch(key, &v_shadow, node_ver_short, val_ver);
+                // return None;
             }
             let v = v_shadow.clone();
             mem::forget(v_shadow);
@@ -149,6 +149,8 @@ where
             let (n_ptr, n_ver) = decompose_value::<K, V>(val);
             assert_eq!(ptr_part, n_ptr);
             assert_eq!(ver_part, n_ver);
+            assert_ne!(val, val | VAL_MUTEX_BIT);
+            assert_eq!(val, val & WORD_MUTEX_DATA_BIT_MASK);
         }
         val
     }
@@ -464,7 +466,7 @@ where
                 0,
                 key,
                 move |fast_value| {
-                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    let locked_val = fast_value | VAL_MUTEX_BIT;
                     if fast_value == locked_val {
                         // Locked, unchanged
                         None
@@ -509,7 +511,7 @@ where
             key,
             Some(&()),
             0,
-            fvalue | MUTEX_BIT_MASK,
+            fvalue | VAL_MUTEX_BIT,
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,

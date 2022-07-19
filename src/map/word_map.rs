@@ -104,7 +104,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             &(),
             Some(&()),
             offset_key,
-            offset_value | MUTEX_BIT_MASK,
+            offset_value | VAL_MUTEX_BIT,
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
@@ -127,7 +127,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
-                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    let locked_val = fast_value | VAL_MUTEX_BIT;
                     if fast_value == locked_val {
                         // Locked, unchanged
                         trace!("The key {} have locked, unchanged and try again", key);
