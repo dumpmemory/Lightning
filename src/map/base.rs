@@ -1659,7 +1659,7 @@ impl<
             return false;
         }
 
-        warn!("Primed {}", fkey);
+        trace!("Primed {}", fkey);
 
         let hash = if Self::WORD_KEY {
             hash_key::<_, H>(&fkey)

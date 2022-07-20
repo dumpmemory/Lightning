@@ -592,7 +592,7 @@ where
 mod ptr_map {
     use test::Bencher;
 
-    use crate::map::*;
+    use crate::map::{*, base::{NUM_FIX_K, InsertOp}};
     use std::{alloc::System, sync::Arc, thread};
 
     #[test]
@@ -1083,4 +1083,78 @@ mod ptr_map {
             i += 1;
         });
     }
+
+    #[test]
+    fn checking_inserion_with_migrations() {
+        let _ = env_logger::try_init();
+        for _ in 0..32 {
+            let repeats: usize = 4096;
+            let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+            let mut threads = vec![];
+            for i in 1..16 {
+                let map = map.clone();
+                threads.push(thread::spawn(move || {
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                    }
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        assert_eq!(
+                            map.insert(key, key),
+                            Some(key),
+                            "reinserting at key {}, get {:?}, epoch {}",
+                            key - NUM_FIX_K,
+                            map.get(&key),
+                            map.table.now_epoch()
+                        );
+                    }
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                    }
+                }));
+            }
+            threads.into_iter().for_each(|t| t.join().unwrap());
+        }
+    }
+
+    #[test]
+    fn checking_inserion_with_migrations_bypass_alloc() {
+        let _ = env_logger::try_init();
+        for _ in 0..32 {
+            let repeats: usize = 4096;
+            let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+            let mut threads = vec![];
+            for i in 1..16 {
+                let map = map.clone();
+                threads.push(thread::spawn(move || {
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        let insert_res = map.table.insert(InsertOp::Insert, &key, None, key, key);
+                        assert_eq!(insert_res, None, "inserting at key {}", key);
+                    }
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        let insert_res = map.table.insert(InsertOp::Insert, &key, None, key, key);
+                        assert_eq!(
+                            insert_res,
+                            Some((key, ())),
+                            "reinserting at key {}, get {:?}, epoch {}",
+                            key - NUM_FIX_K,
+                            map.get(&key),
+                            map.table.now_epoch()
+                        );
+                    }
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        let get_res = map.table.get(&key, key, false);
+                        assert_eq!(get_res, Some((key, None)), "reading at key {}", key);
+                    }
+                }));
+            }
+            threads.into_iter().for_each(|t| t.join().unwrap());
+        }
+    }
+
 }
