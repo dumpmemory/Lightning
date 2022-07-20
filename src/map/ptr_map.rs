@@ -562,12 +562,12 @@ where
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
         let val = self.value.clone();
-        let key = self.key.clone();
+        let key = &self.key;
         let ref_val = self.map.ref_val(val, &guard);
         debug_assert_ne!(ref_val, ref_val | VAL_MUTEX_BIT);
         self.map
             .table
-            .insert(InsertOp::UpsertFast, &key, None, 0, ref_val);
+            .insert(InsertOp::Insert, key, Some(&()), 0, ref_val);
     }
 }
 
@@ -987,7 +987,7 @@ mod ptr_map {
         let _ = env_logger::try_init();
         let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(16));
         let mut threads = vec![];
-        let num_threads = 4;
+        let num_threads = 16;
         let test_load = 4096;
         let update_load = 128;
         for thread_id in 0..num_threads {

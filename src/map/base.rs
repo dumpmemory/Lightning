@@ -783,7 +783,7 @@ impl<
                                         if Self::FAT_VAL {
                                             Self::store_raw_value(addr, val_to_store);
                                         }
-                                        if raw != TOMBSTONE_VALUE {
+                                        if act_val != TOMBSTONE_VALUE {
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         } else {
                                             chunk.empty_entries.fetch_sub(1, Relaxed);

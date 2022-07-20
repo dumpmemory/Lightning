@@ -523,7 +523,7 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(16));
         let mut threads = vec![];
-        let num_threads = 16;
+        let num_threads = num_cpus::get();
         let test_load = 4096;
         let update_load = 128;
         for thread_id in 0..num_threads {
