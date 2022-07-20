@@ -55,7 +55,7 @@ where
         let guard = self.allocator.pin();
         let v_num = self.ref_val(value, &guard);
         self.table
-            .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
+            .insert(op, &key, None, 0 as FKey, v_num as FVal)
             .map(|(fv, _)| (self.ptr_of_val(fv), guard))
     }
 
@@ -429,8 +429,9 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     fn erase(self, _old_fval: FVal) {}
 
     fn probe(self, probe_key: &K) -> bool {
+        fence(Acquire);
         let key = unsafe { &*(self.addr as *mut K) };
-        key == probe_key
+        key.eq(probe_key)
     }
 
     fn prep_write(self) {}
@@ -510,7 +511,7 @@ where
         match map.table.insert(
             InsertOp::TryInsert,
             key,
-            Some(&()),
+            None,
             0,
             fvalue | VAL_MUTEX_BIT,
         ) {
@@ -567,7 +568,7 @@ where
         debug_assert_ne!(ref_val, ref_val | VAL_MUTEX_BIT);
         self.map
             .table
-            .insert(InsertOp::Insert, key, Some(&()), 0, ref_val);
+            .insert(InsertOp::Insert, key, None, 0, ref_val);
     }
 }
 
