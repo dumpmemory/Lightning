@@ -178,6 +178,11 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 }
             }
         }
+        unsafe {
+            if let Some(addr) = self.buffered_free.as_mut().pop_back() {
+                return addr;
+            }
+        }
         let obj_addr = self.buffer_addr;
         self.buffer_addr += Self::OBJ_SIZE;
         debug_assert!(self.buffer_addr <= self.buffer_limit);
