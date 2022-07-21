@@ -162,7 +162,6 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 if let Some(free_buffer) = (&*self.shared).free_objs() {
                     let free_buffer_ref = free_buffer.as_mut();
                     if let Some(ptr) = free_buffer_ref.pop_back() {
-                        debug_assert_eq!(self.free_list.num_buffer, 0);
                         free_buffer_ref.next = AtomicArc::null();
                         self.free_list.head = free_buffer;
                         self.free_list.num_buffer += 1;
@@ -426,5 +425,48 @@ impl<const B: usize> ThreadLocalPage<B> {
         }
         self.pos -= 1;
         Some(self.buffer[self.pos])
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn thread_local_free_alloc() {
+        const BUFFER_SIZE: usize = 4;
+        let shared = Arc::new(SharedAlloc::<usize, BUFFER_SIZE>::new());
+        let mut thread_local = TLAlloc::new(0, 0, &shared);
+        let test_size = BUFFER_SIZE * 1024;
+        for i in 0..test_size {
+            thread_local.free(i as *const usize);
+        }
+        let mut reallocated = HashSet::new();
+        for i in 0..test_size {
+            let alloc_res = thread_local.alloc();
+            assert!(alloc_res < test_size, "Reallocated {} at {}", alloc_res, i);
+            assert!(!reallocated.contains(&alloc_res));
+            reallocated.insert(alloc_res);
+        }
+    }
+
+    #[test]
+    fn thread_local_buffered_free_alloc() {
+        const BUFFER_SIZE: usize = 4;
+        let shared = Arc::new(SharedAlloc::<usize, BUFFER_SIZE>::new());
+        let mut thread_local = TLAlloc::new(0, 0, &shared);
+        let test_size = BUFFER_SIZE * 1024;
+        for i in 0..test_size {
+            thread_local.buffered_free(i as *const usize);
+        }
+        let mut reallocated = HashSet::new();
+        for i in 0..test_size {
+            let alloc_res = thread_local.alloc();
+            assert!(alloc_res < test_size, "Reallocated {} at {}", alloc_res, i);
+            assert!(!reallocated.contains(&alloc_res));
+            reallocated.insert(alloc_res);
+        }
     }
 }
