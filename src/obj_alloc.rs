@@ -439,9 +439,10 @@ mod test {
 
     use super::*;
 
+    const BUFFER_SIZE: usize = 4;
+
     #[test]
-    fn thread_local_free_alloc() {
-        const BUFFER_SIZE: usize = 4;
+    fn recycle_thread_local_free_alloc() {
         let shared = Arc::new(SharedAlloc::<usize, BUFFER_SIZE>::new());
         let mut thread_local = TLAlloc::new(0, 0, &shared);
         let test_size = BUFFER_SIZE * 1024;
@@ -455,11 +456,11 @@ mod test {
             assert!(!reallocated.contains(&alloc_res));
             reallocated.insert(alloc_res);
         }
+        assert!(thread_local.alloc() > test_size);
     }
 
     #[test]
-    fn thread_local_buffered_free_alloc() {
-        const BUFFER_SIZE: usize = 4;
+    fn recycle_thread_local_buffered_free_alloc() {
         let shared = Arc::new(SharedAlloc::<usize, BUFFER_SIZE>::new());
         let mut thread_local = TLAlloc::new(0, 0, &shared);
         let test_size = BUFFER_SIZE * 1024;
@@ -473,5 +474,27 @@ mod test {
             assert!(!reallocated.contains(&alloc_res));
             reallocated.insert(alloc_res);
         }
+        assert!(thread_local.alloc() > test_size);
+    }
+
+    #[test]
+    fn checking_thread_local_alloc() {
+        let shared = Arc::new(SharedAlloc::<usize, BUFFER_SIZE>::new());
+        let mut thread_local = TLAlloc::new(0, 0, &shared);
+        let test_size = BUFFER_SIZE * 1024;
+        let mut allocated = HashSet::new();
+        for _ in 0..test_size {
+            let addr = thread_local.alloc();
+            assert!(!allocated.contains(&addr));
+            allocated.insert(addr);
+        }
+        for addr in &allocated {
+            thread_local.free(*addr as *const usize);
+        }
+        for _ in 0..test_size {
+            let addr = thread_local.alloc();
+            assert!(allocated.contains(&addr));
+        }
+        assert!(!allocated.contains(&thread_local.alloc()));
     }
 }

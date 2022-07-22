@@ -180,7 +180,7 @@ where
             let epoch = self.epoch.load(Relaxed);
             let node = node_ptr.as_ref().unwrap();
             node.retire_ver.store(epoch, Relaxed);
-            guard.free(node_ptr);
+            guard.buffered_free(node_ptr);
         }
     }
 }
@@ -1156,5 +1156,4 @@ mod ptr_map {
             threads.into_iter().for_each(|t| t.join().unwrap());
         }
     }
-
 }
