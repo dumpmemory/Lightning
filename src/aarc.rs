@@ -309,3 +309,5 @@ impl<T> Default for Arc<T> {
         Self::null()
     }
 }
+
+unsafe impl<T> Send for Arc<T> {}

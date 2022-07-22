@@ -433,9 +433,11 @@ impl<const B: usize> ThreadLocalPage<B> {
     }
 }
 
+unsafe impl <T, const B: usize> Send for  Allocator<T, B> {}
+
 #[cfg(test)]
 mod test {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, thread};
 
     use super::*;
 
@@ -518,5 +520,32 @@ mod test {
             assert!(!reallocated.contains(&realloc_addr));
             reallocated.insert(realloc_addr);
         }
+    }
+
+    #[test]
+    fn checking_multithread_alter_alloc() {
+        let allocator = Arc::new(Allocator::<usize, BUFFER_SIZE>::new());
+        let num_threads = num_cpus::get();
+        let mut threads = vec![];
+        for _ in 0..num_threads {
+            let allocator = allocator.clone();
+            threads.push(thread::spawn(move || {
+                let test_size = BUFFER_SIZE * 10240;
+                let mut allocated = HashSet::new();
+                for _ in 0..test_size {
+                    let addr = allocator.alloc();
+                    assert!(!allocated.contains(&addr));
+                    allocated.insert(addr);
+                }
+                let mut reallocated = HashSet::new();
+                for addr in &allocated {
+                    let realloc_addr = allocator.alloc();
+                    allocator.free(*addr as *mut usize);
+                    assert!(!reallocated.contains(&realloc_addr));
+                    reallocated.insert(realloc_addr);
+                }
+            }))
+        }
+        threads.into_iter().for_each(|t| t.join().unwrap());
     }
 }
