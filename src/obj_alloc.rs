@@ -488,13 +488,35 @@ mod test {
             assert!(!allocated.contains(&addr));
             allocated.insert(addr);
         }
-        for addr in &allocated {
+        assert_eq!(test_size, allocated.len());
+        for addr in &allocated.clone() {
             thread_local.free(*addr as *const usize);
         }
         for _ in 0..test_size {
             let addr = thread_local.alloc();
-            assert!(allocated.contains(&addr));
+            assert!(allocated.remove(&addr));
         }
         assert!(!allocated.contains(&thread_local.alloc()));
+        assert!(allocated.is_empty());
+    }
+
+    #[test]
+    fn checking_thread_local_alter_alloc() {
+        let shared = Arc::new(SharedAlloc::<usize, BUFFER_SIZE>::new());
+        let mut thread_local = TLAlloc::new(0, 0, &shared);
+        let test_size = BUFFER_SIZE * 1024;
+        let mut allocated = HashSet::new();
+        for _ in 0..test_size {
+            let addr = thread_local.alloc();
+            assert!(!allocated.contains(&addr));
+            allocated.insert(addr);
+        }
+        let mut reallocated = HashSet::new();
+        for addr in &allocated {
+            let realloc_addr = thread_local.alloc();
+            thread_local.free(*addr as *const usize);
+            assert!(!reallocated.contains(&realloc_addr));
+            reallocated.insert(realloc_addr);
+        }
     }
 }
