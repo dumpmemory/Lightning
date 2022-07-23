@@ -519,7 +519,7 @@ mod test {
 
     #[test]
     fn recycle_thread_local_free_alloc() {
-        let shared_alloc = Allocator::new();
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
         let test_size = BUFFER_SIZE * 1024;
         for i in 0..test_size {
@@ -537,7 +537,7 @@ mod test {
 
     #[test]
     fn recycle_thread_local_buffered_free_alloc() {
-        let shared_alloc = Allocator::new();
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
         let test_size = BUFFER_SIZE * 1024;
         for i in 0..test_size {
@@ -555,7 +555,7 @@ mod test {
 
     #[test]
     fn checking_thread_local_alloc() {
-        let shared_alloc = Allocator::new();
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
         let test_size = BUFFER_SIZE * 1024;
         let mut allocated = HashSet::new();
@@ -578,7 +578,7 @@ mod test {
 
     #[test]
     fn checking_thread_local_alter_alloc() {
-        let shared_alloc = Allocator::new();
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
         let test_size = BUFFER_SIZE * 1024;
         let mut allocated = HashSet::new();
