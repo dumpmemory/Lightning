@@ -1111,7 +1111,7 @@ mod ptr_map {
                     }
                     for j in 0..repeats {
                         let key = i * 100000 + j;
-                        assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                        assert_eq!(map.get(&key), Some(key), "reading at key {}, epoch {}", key, map.table.now_epoch());
                     }
                 }));
             }
