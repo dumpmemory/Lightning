@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell};
 use std::mem::forget;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
