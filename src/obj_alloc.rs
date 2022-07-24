@@ -1,3 +1,4 @@
+use libc::c_void;
 use parking_lot::Mutex;
 
 // A supposed to be fast and lock-free object allocator without size class
@@ -25,6 +26,7 @@ pub struct TLAlloc<T, const B: usize> {
     guard_count: usize,
     defer_free: Vec<usize>,
     #[cfg(debug_assertions)]
+    #[cfg(asan)]
     asan: Arc<ASan>,
     _marker: PhantomData<T>,
 }
@@ -156,6 +158,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
             guard_count: 0,
             defer_free: Vec::with_capacity(64),
             #[cfg(debug_assertions)]
+            #[cfg(asan)]
             asan: alloc.asan.clone(), 
             _marker: PhantomData,
         }
@@ -208,6 +211,10 @@ impl<T, const B: usize> TLAlloc<T, B> {
         #[cfg(debug_assertions)]
         #[cfg(asan)]
         self.asan.alloc(obj_addr);
+        // let obj_addr = unsafe { libc::malloc(Self::OBJ_SIZE) } as usize;
+        // unsafe {
+        //     libc::memset(obj_addr as *mut c_void, 0, Self::OBJ_SIZE);
+        // }
         return obj_addr;
     }
 
@@ -219,6 +226,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
         #[cfg(debug_assertions)]
         #[cfg(asan)]
         self.asan.free(ptr as usize);
+        // unsafe { libc::free(ptr as *mut c_void) }
     }
 
     #[inline(always)]
@@ -641,6 +649,7 @@ mod test {
             let allocator = allocator.clone();
             threads.push(thread::spawn(move || {
                 let test_size = BUFFER_SIZE * 10240;
+                let allocator = allocator.pin();
                 let mut allocated = HashSet::new();
                 for _ in 0..test_size {
                     let addr = allocator.alloc();
