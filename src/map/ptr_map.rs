@@ -115,7 +115,7 @@ where
             let node_ver = node_ref.birth_ver.load(Relaxed);
             let node_ver_short = node_ver & Self::VAL_NODE_LOW_BITS;
             if node_ver_short != val_ver {
-                // Self::print_ver_mismatch(key, &v_shadow, node_ver_short, val_ver);
+                Self::print_ver_mismatch(key, &v_shadow, node_ver_short, val_ver);
                 // return None;
             }
             let v = v_shadow.clone();
@@ -193,7 +193,7 @@ impl<K, V, ALLOC, H> DebugPtrMap<K, V> for PtrHashMap<K, V, ALLOC, H>
         H: Hasher + Default,
 {
     fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize) {
-        error!(
+        panic!(
             "Version does not match for expect {} got {}",
             node_ver, val_ver
         );

@@ -33,3 +33,4 @@ path = "src/lib.rs"
 [features]
 default = []
 exchange_backoff = []
+asan = []

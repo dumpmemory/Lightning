@@ -477,6 +477,8 @@ impl ASan {
             })
         }
     }
+
+    #[cfg(asan)]
     fn alloc(&self, addr: usize) {
         let mut inner = self.inner.lock();
         if !inner.created.contains(&addr) {
@@ -499,6 +501,7 @@ impl ASan {
         panic!("Invalid alloc state: created {}, allocated {}, reclaimed {} address {}", create, allocated, reclaimed, addr);
     }
 
+    #[cfg(asan)]
     fn free(&self, addr: usize) {
         let mut inner = self.inner.lock();
         assert!(inner.created.contains(&addr), "address {}", addr);
@@ -506,6 +509,17 @@ impl ASan {
         assert!(!inner.reclaimed.contains(&addr), "address {}", addr);
         inner.allocated.remove(&addr);
         inner.reclaimed.insert(addr);
+    }
+
+    #[cfg(not(asan))]
+    fn alloc(&self, _addr: usize) {
+
+    }
+
+
+    #[cfg(not(asan))]
+    fn free(&self, _addr: usize) {
+
     }
 }
 
@@ -518,6 +532,7 @@ mod test {
     const BUFFER_SIZE: usize = 4;
 
     #[test]
+    #[cfg(not(asan))]
     fn recycle_thread_local_free_alloc() {
         let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
@@ -536,6 +551,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(asan))]
     fn recycle_thread_local_buffered_free_alloc() {
         let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
