@@ -165,6 +165,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
     pub fn alloc(&mut self) -> usize {
         if let Some(addr) = self.free_list.pop() {
             #[cfg(debug_assertions)]
+            #[cfg(asan)]
             self.asan.alloc(addr);
             return addr;
         }
@@ -178,6 +179,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
                         self.free_list.head = free_buffer;
                         self.free_list.num_buffer += 1;
                         #[cfg(debug_assertions)]
+                        #[cfg(asan)]
                         self.asan.alloc(ptr);
                         return ptr;
                     }
@@ -195,6 +197,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
         unsafe {
             if let Some(addr) = self.buffered_free.as_mut().pop_back() {
                 #[cfg(debug_assertions)]
+                #[cfg(asan)]
                 self.asan.alloc(addr);
                 return addr;
             }
@@ -203,6 +206,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
         self.buffer_addr += Self::OBJ_SIZE;
         debug_assert!(self.buffer_addr <= self.buffer_limit);
         #[cfg(debug_assertions)]
+        #[cfg(asan)]
         self.asan.alloc(obj_addr);
         return obj_addr;
     }
@@ -213,6 +217,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
             (&*self.shared).attach_objs(&overflow_buffer);
         }
         #[cfg(debug_assertions)]
+        #[cfg(asan)]
         self.asan.free(ptr as usize);
     }
 
@@ -234,6 +239,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
             }
         }
         #[cfg(debug_assertions)]
+        #[cfg(asan)]
         self.asan.free(ptr as usize);
     }
 
@@ -457,58 +463,72 @@ impl<const B: usize> ThreadLocalPage<B> {
 
 unsafe impl <T, const B: usize> Send for  Allocator<T, B> {}
 
-struct ASan {
+pub (crate) struct ASan {
     inner: Mutex<ASanInner>,
 }
 
-struct ASanInner {
+pub (crate) struct ASanInner {
     created: HashSet<usize>,
     allocated: HashSet<usize>,
     reclaimed: HashSet<usize>,
 }
 
+impl ASanInner {
+    pub fn new() -> Self {
+        ASanInner {
+            created: HashSet::new(),
+            allocated: HashSet::new(),
+            reclaimed: HashSet::new(),
+        }
+    }
+
+    pub fn alloc(&mut self, addr: usize) {
+        if !self.created.contains(&addr) {
+            // address never allocated
+            assert!(!self.allocated.contains(&addr), "address {}", addr);
+            assert!(!self.reclaimed.contains(&addr), "address {}", addr);
+            self.created.insert(addr);
+            self.allocated.insert(addr);
+            return;
+        } else if self.reclaimed.contains(&addr) {
+            assert!(self.created.contains(&addr), "address {}", addr);
+            assert!(!self.allocated.contains(&addr), "address {}", addr);
+            self.reclaimed.remove(&addr);
+            self.allocated.insert(addr);
+            return;
+        }
+        let create = self.created.contains(&addr);
+        let allocated = self.allocated.contains(&addr);
+        let reclaimed = self.reclaimed.contains(&addr);
+        panic!("Invalid alloc state: created {}, allocated {}, reclaimed {} address {}", create, allocated, reclaimed, addr);
+    }
+
+    pub fn free(&mut self, addr: usize) {
+        assert!(self.created.contains(&addr), "address {}", addr);
+        assert!(self.allocated.contains(&addr), "address {}", addr);
+        assert!(!self.reclaimed.contains(&addr), "address {}", addr);
+        self.allocated.remove(&addr);
+        self.reclaimed.insert(addr);
+    } 
+}
+
 impl ASan {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            inner: Mutex::new(ASanInner {
-                created: HashSet::new(),
-                allocated: HashSet::new(),
-                reclaimed: HashSet::new(),
-            })
+            inner: Mutex::new(ASanInner::new())
         }
     }
 
     #[cfg(asan)]
     fn alloc(&self, addr: usize) {
         let mut inner = self.inner.lock();
-        if !inner.created.contains(&addr) {
-            // address never allocated
-            assert!(!inner.allocated.contains(&addr), "address {}", addr);
-            assert!(!inner.reclaimed.contains(&addr), "address {}", addr);
-            inner.created.insert(addr);
-            inner.allocated.insert(addr);
-            return;
-        } else if inner.reclaimed.contains(&addr) {
-            assert!(inner.created.contains(&addr), "address {}", addr);
-            assert!(!inner.allocated.contains(&addr), "address {}", addr);
-            inner.reclaimed.remove(&addr);
-            inner.allocated.insert(addr);
-            return;
-        }
-        let create = inner.created.contains(&addr);
-        let allocated = inner.allocated.contains(&addr);
-        let reclaimed = inner.reclaimed.contains(&addr);
-        panic!("Invalid alloc state: created {}, allocated {}, reclaimed {} address {}", create, allocated, reclaimed, addr);
+        inner.alloc(addr)
     }
 
     #[cfg(asan)]
     fn free(&self, addr: usize) {
         let mut inner = self.inner.lock();
-        assert!(inner.created.contains(&addr), "address {}", addr);
-        assert!(inner.allocated.contains(&addr), "address {}", addr);
-        assert!(!inner.reclaimed.contains(&addr), "address {}", addr);
-        inner.allocated.remove(&addr);
-        inner.reclaimed.insert(addr);
+        inner.free(addr)
     }
 
     #[cfg(not(asan))]

@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::mem::forget;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
@@ -193,7 +193,7 @@ impl<K, V, ALLOC, H> DebugPtrMap<K, V> for PtrHashMap<K, V, ALLOC, H>
         H: Hasher + Default,
 {
     fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize) {
-        panic!(
+        error!(
             "Version does not match for expect {} got {}",
             node_ver, val_ver
         );
@@ -262,9 +262,9 @@ where
             .map(|((ptr, node_ptr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
                 let obj = ptr::read(ptr);
-                self.retire(node_ptr, &guard);
                 let res = obj.clone();
                 forget(obj);
+                self.retire(node_ptr, &guard);
                 res
             })
     }
@@ -282,9 +282,9 @@ where
             unsafe {
                 let guard = self.allocator.pin();
                 let value = ptr::read(val_ptr);
-                self.retire(node_ptr, &guard);
                 let res = value.clone();
                 mem::forget(value);
+                self.retire(node_ptr, &guard);
                 res
             }
         })
