@@ -298,6 +298,12 @@ impl<
             let lock_old = new_chunk.map(|_| {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard, None)
             });
+            // match &lock_old {
+            //     Some(ModResult::Sentinel)=> {
+            //         continue;
+            //     }
+            //     _ => {}
+            // }
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
             let result;
@@ -317,7 +323,6 @@ impl<
                     result = Some((0, v))
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => {
-                    debug_assert!(fv > 0);
                     result = Some((fv, v))
                 }
                 ModResult::Fail => {
@@ -371,6 +376,7 @@ impl<
             let mut res = None;
             match (result, lock_old) {
                 (Some((0, _v)), Some(ModResult::Sentinel)) => {
+                    error!("Some((0, _v)), Some(ModResult::Sentinel)");
                     res = None;
                 }
                 (Some((fv, v)), Some(ModResult::Sentinel)) => {
@@ -394,8 +400,20 @@ impl<
                     Self::store_value(addr, SENTINEL_VALUE);
                     res = Some((fv, v.unwrap()))
                 }
-                (Some((0, _)), _) | (None, None) => {
+                (Some((0, _)), None) => {
+                    // error!("Some((0, _)), None");
                     res = None;
+                }
+                (Some((0, _)), Some(ModResult::NotFound)) => {
+                    // error!("Some((0, _)), Some(ModResult::NotFound)");
+                    res = None;
+                }
+                (Some((0, _)), _) => {
+                    // error!("Some((0, _)), _"); // Should not reachable
+                    res = None;
+                }
+                (None, None) => {
+                    unreachable!();
                 }
                 (Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr))) => {
                     // Replaced new chunk, should put sentinel in old chunk
@@ -412,6 +430,7 @@ impl<
             match &res {
                 Some((fv, _)) => {
                     if *fv <= NUM_FIX_V {
+                        // error!("*fv <= NUM_FIX_V {}", fv);
                         return None;
                     }
                 }
@@ -750,14 +769,6 @@ impl<
                     continue 'MAIN;
                 }
                 match raw {
-                    SENTINEL_VALUE => match &op {
-                        ModOp::Insert(_, _)
-                        | ModOp::AttemptInsert(_, _)
-                        | ModOp::UpsertFastVal(_) => {
-                            return ModResult::Sentinel;
-                        }
-                        _ => {}
-                    },
                     BACKWARD_SWAPPING_VALUE => {
                         if iter.terminal {
                             // Only check terminal probing
@@ -773,6 +784,16 @@ impl<
                     }
                     _ => {}
                 }
+                if raw == SENTINEL_VALUE || v.is_primed() {
+                    match &op {
+                        ModOp::Insert(_, _)
+                        | ModOp::AttemptInsert(_, _)
+                        | ModOp::UpsertFastVal(_) => {
+                            return ModResult::Sentinel;
+                        }
+                        _ => {}
+                    }
+                }
                 if k == fkey {
                     let attachment = chunk.attachment.prefetch(idx);
                     let key_probe = attachment.probe(&key);
@@ -784,11 +805,7 @@ impl<
                         continue 'MAIN;
                     }
                     if key_probe {
-                        let raw = v.val;
                         let act_val = v.act_val::<V>();
-                        if v.is_primed() {
-                            return ModResult::Sentinel;
-                        }
                         if raw >= TOMBSTONE_VALUE {
                             match op {
                                 ModOp::Insert(fval, ov) => {
@@ -920,16 +937,8 @@ impl<
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE {
+                        } else if raw == SENTINEL_VALUE || v.is_primed() {
                             return ModResult::Sentinel;
-                        } else if raw == BACKWARD_SWAPPING_VALUE {
-                            Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                            iter = reiter();
-                            continue 'MAIN;
-                        } else if raw == FORWARD_SWAPPING_VALUE {
-                            Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                            iter.refresh_following(chunk);
-                            continue 'MAIN;
                         } else {
                             // Other tags (except tombstone and locks)
                             if cfg!(debug_assertions) {
