@@ -262,7 +262,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{NUM_FIX_K, NUM_FIX_V},
+        base::{NUM_FIX_K, NUM_FIX_V, get_delayed_log},
         *,
     };
     use alloc::sync::Arc;
@@ -744,10 +744,11 @@ mod test {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}",
-                            key - NUM_FIX_K,
+                            "reinserting at key {}, get {:?}, epoch {}, last log {}",
+                            key,
                             map.get(&key),
-                            map.table.now_epoch()
+                            map.table.now_epoch(),
+                            get_delayed_log()
                         );
                     }
                     for j in 0..repeats {

@@ -1,4 +1,4 @@
-use std::{sync::Arc, thread};
+use std::{sync::Arc, thread, cell::{Cell, RefCell}, borrow::Borrow};
 
 use super::*;
 
@@ -50,6 +50,11 @@ pub const HOP_BYTES: usize = mem::size_of::<HopBits>();
 pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static DELAYED_LOG: RefCell<String> = RefCell::new(String::new());
+}
 
 enum ModResult<V> {
     Replaced(FVal, Option<V>, usize), // (origin fval, val, index)
@@ -120,6 +125,13 @@ struct ChunkMeta<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     new_chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     pub chunk: Atomic<ChunkPtr<K, V, A, ALLOC>>,
     epoch: AtomicUsize,
+}
+
+macro_rules! delay_log {
+    ($($arg:tt)+) => {
+        #[cfg(debug_assertions)]
+        DELAYED_LOG.with(|cell| *cell.borrow_mut() = format!($($arg)+))
+    };
 }
 
 impl<
@@ -373,10 +385,10 @@ impl<
                 }
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            let mut res = None;
+            let res;
             match (result, lock_old) {
-                (Some((0, _v)), Some(ModResult::Sentinel)) => {
-                    error!("Some((0, _v)), Some(ModResult::Sentinel)");
+                (Some((0, _)), Some(ModResult::Sentinel)) => {
+                    delay_log!("Some((0, _)), Some(ModResult::Sentinel) key {}", fkey - NUM_FIX_K); // Should not reachable
                     res = None;
                 }
                 (Some((fv, v)), Some(ModResult::Sentinel)) => {
@@ -401,15 +413,15 @@ impl<
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((0, _)), None) => {
-                    // error!("Some((0, _)), None");
+                    delay_log!("Some((0, _)), None key {}", fkey - NUM_FIX_K);
                     res = None;
                 }
                 (Some((0, _)), Some(ModResult::NotFound)) => {
-                    // error!("Some((0, _)), Some(ModResult::NotFound)");
+                    delay_log!("Some((0, _)), Some(ModResult::NotFound) key {}", fkey - NUM_FIX_K);
                     res = None;
                 }
                 (Some((0, _)), _) => {
-                    // error!("Some((0, _)), _"); // Should not reachable
+                    delay_log!("Some((0, _)), _ key {}", fkey - NUM_FIX_K); 
                     res = None;
                 }
                 (None, None) => {
@@ -430,7 +442,7 @@ impl<
             match &res {
                 Some((fv, _)) => {
                     if *fv <= NUM_FIX_V {
-                        // error!("*fv <= NUM_FIX_V {}", fv);
+                        delay_log!("*fv <= NUM_FIX_V {} key {}", fkey + NUM_FIX_K, fv);
                         return None;
                     }
                 }
@@ -769,6 +781,16 @@ impl<
                     continue 'MAIN;
                 }
                 match raw {
+                    SENTINEL_VALUE => {
+                        match &op {
+                            ModOp::Insert(_, _)
+                            | ModOp::AttemptInsert(_, _)
+                            | ModOp::UpsertFastVal(_) => {
+                                return ModResult::Sentinel;
+                            }
+                            _ => {}
+                        }
+                    }
                     BACKWARD_SWAPPING_VALUE => {
                         if iter.terminal {
                             // Only check terminal probing
@@ -784,16 +806,6 @@ impl<
                     }
                     _ => {}
                 }
-                if raw == SENTINEL_VALUE || v.is_primed() {
-                    match &op {
-                        ModOp::Insert(_, _)
-                        | ModOp::AttemptInsert(_, _)
-                        | ModOp::UpsertFastVal(_) => {
-                            return ModResult::Sentinel;
-                        }
-                        _ => {}
-                    }
-                }
                 if k == fkey {
                     let attachment = chunk.attachment.prefetch(idx);
                     let key_probe = attachment.probe(&key);
@@ -806,6 +818,10 @@ impl<
                     }
                     if key_probe {
                         let act_val = v.act_val::<V>();
+                        if v.is_primed() {
+                            backoff.spin();
+                            continue 'MAIN;
+                        }
                         if raw >= TOMBSTONE_VALUE {
                             match op {
                                 ModOp::Insert(fval, ov) => {
@@ -937,7 +953,7 @@ impl<
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE || v.is_primed() {
+                        } else if raw == SENTINEL_VALUE {
                             return ModResult::Sentinel;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -1579,7 +1595,9 @@ impl<
                 EMPTY_VALUE | TOMBSTONE_VALUE => {
                     // Probably does not need this anymore
                     // Need to make sure that during migration, empty value always leads to new chunk
-                    if !Self::cas_sentinel(old_address, fvalue.val) {
+                    if Self::cas_sentinel(old_address, fvalue.val) {
+                        // Self::store_key(old_address, DISABLED_KEY);
+                    } else {
                         warn!("Filling empty with sentinel for old table should succeed but not, retry");
                         backoff.spin();
                         continue;
@@ -2301,6 +2319,11 @@ impl SlotIter {
         let new_bits = chunk.get_hop_bits(self.home_idx);
         self.hop_bits = new_bits >> checked << checked;
     }
+}
+
+#[cfg(debug_assertions)]
+pub fn get_delayed_log() -> String {
+    DELAYED_LOG.with(|c| c.borrow().clone())
 }
 
 #[cfg(test)]
