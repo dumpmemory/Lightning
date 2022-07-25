@@ -1,4 +1,4 @@
-use std::cell::{Cell};
+use std::cell::Cell;
 use std::mem::forget;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
@@ -79,7 +79,10 @@ where
                 if retire_ver == current_ver {
                     // Bump global apoch
                     let new_ver = current_ver + 1;
-                    if let Err(actual_ver) = self.epoch.compare_exchange(current_ver, new_ver, Relaxed, Relaxed) {
+                    if let Err(actual_ver) =
+                        self.epoch
+                            .compare_exchange(current_ver, new_ver, Relaxed, Relaxed)
+                    {
                         current_ver = actual_ver;
                         continue;
                     } else {
@@ -89,7 +92,12 @@ where
                 }
                 break;
             }
-            debug_assert!(retire_ver < current_ver, "Version node {} vs. current {}", retire_ver, current_ver);
+            debug_assert!(
+                retire_ver < current_ver,
+                "Version node {} vs. current {}",
+                retire_ver,
+                current_ver
+            );
             node_ref.birth_ver.store(current_ver, Relaxed);
             node_ref.retire_ver.store(0, Release);
             let obj_ptr = node_ref.value.as_ptr();
@@ -175,7 +183,11 @@ where
     }
 
     #[inline(always)]
-    fn retire(&self, node_ptr: *mut PtrValueNode<V>, guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
+    fn retire(
+        &self,
+        node_ptr: *mut PtrValueNode<V>,
+        guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
+    ) {
         unsafe {
             let epoch = self.epoch.load(Relaxed);
             let node = node_ptr.as_ref().unwrap();
@@ -186,11 +198,11 @@ where
 }
 
 impl<K, V, ALLOC, H> DebugPtrMap<K, V> for PtrHashMap<K, V, ALLOC, H>
-    where
-        K: Clone + Hash + Eq,
-        V: Clone,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
 {
     fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize) {
         error!(
@@ -316,7 +328,6 @@ where
     fn clear(&self) {
         self.table.clear();
     }
-    
 }
 
 unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Send
@@ -508,13 +519,10 @@ where
         let guard = map.allocator.pin();
         let fvalue = map.ref_val(value.clone(), &guard);
         debug_assert_ne!(fvalue, fvalue | VAL_MUTEX_BIT);
-        match map.table.insert(
-            InsertOp::TryInsert,
-            key,
-            None,
-            0,
-            fvalue | VAL_MUTEX_BIT,
-        ) {
+        match map
+            .table
+            .insert(InsertOp::TryInsert, key, None, 0, fvalue | VAL_MUTEX_BIT)
+        {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,
                 key: key.clone(),
@@ -592,7 +600,10 @@ where
 mod ptr_map {
     use test::Bencher;
 
-    use crate::map::{*, base::{NUM_FIX_K, InsertOp}};
+    use crate::map::{
+        base::{InsertOp, NUM_FIX_K},
+        *,
+    };
     use std::{alloc::System, sync::Arc, thread};
 
     #[test]
@@ -1111,7 +1122,13 @@ mod ptr_map {
                     }
                     for j in 0..repeats {
                         let key = i * 100000 + j;
-                        assert_eq!(map.get(&key), Some(key), "reading at key {}, epoch {}", key, map.table.now_epoch());
+                        assert_eq!(
+                            map.get(&key),
+                            Some(key),
+                            "reading at key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
                     }
                 }));
             }

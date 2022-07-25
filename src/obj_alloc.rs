@@ -6,7 +6,7 @@ use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
-use std::{marker::PhantomData, mem, collections::HashSet};
+use std::{collections::HashSet, marker::PhantomData, mem};
 
 use crate::stack::LinkedRingBufferStack;
 
@@ -159,7 +159,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
             defer_free: Vec::with_capacity(64),
             #[cfg(debug_assertions)]
             #[cfg(asan)]
-            asan: alloc.asan.clone(), 
+            asan: alloc.asan.clone(),
             _marker: PhantomData,
         }
     }
@@ -469,13 +469,13 @@ impl<const B: usize> ThreadLocalPage<B> {
     }
 }
 
-unsafe impl <T, const B: usize> Send for  Allocator<T, B> {}
+unsafe impl<T, const B: usize> Send for Allocator<T, B> {}
 
-pub (crate) struct ASan {
+pub(crate) struct ASan {
     inner: Mutex<ASanInner>,
 }
 
-pub (crate) struct ASanInner {
+pub(crate) struct ASanInner {
     created: HashSet<usize>,
     allocated: HashSet<usize>,
     reclaimed: HashSet<usize>,
@@ -508,7 +508,10 @@ impl ASanInner {
         let create = self.created.contains(&addr);
         let allocated = self.allocated.contains(&addr);
         let reclaimed = self.reclaimed.contains(&addr);
-        panic!("Invalid alloc state: created {}, allocated {}, reclaimed {} address {}", create, allocated, reclaimed, addr);
+        panic!(
+            "Invalid alloc state: created {}, allocated {}, reclaimed {} address {}",
+            create, allocated, reclaimed, addr
+        );
     }
 
     pub fn free(&mut self, addr: usize) {
@@ -517,13 +520,13 @@ impl ASanInner {
         assert!(!self.reclaimed.contains(&addr), "address {}", addr);
         self.allocated.remove(&addr);
         self.reclaimed.insert(addr);
-    } 
+    }
 }
 
 impl ASan {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(ASanInner::new())
+            inner: Mutex::new(ASanInner::new()),
         }
     }
 
@@ -540,15 +543,10 @@ impl ASan {
     }
 
     #[cfg(not(asan))]
-    fn alloc(&self, _addr: usize) {
-
-    }
-
+    fn alloc(&self, _addr: usize) {}
 
     #[cfg(not(asan))]
-    fn free(&self, _addr: usize) {
-
-    }
+    fn free(&self, _addr: usize) {}
 }
 
 #[cfg(test)]

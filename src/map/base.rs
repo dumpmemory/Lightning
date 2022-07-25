@@ -69,6 +69,7 @@ enum ModOp<'a, V> {
     SwapFastVal(Box<dyn Fn(FVal) -> Option<FVal>>),
     Sentinel,
     Tombstone,
+    Lock,
 }
 
 pub enum InsertOp {
@@ -294,34 +295,47 @@ impl<
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value),
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
-            let old_chunk_val = new_chunk.map(|_| {
-                self.get_from_chunk(&*chunk, hash, key, fkey, &backoff, new_chunk.map(|c| &**c))
+            let lock_old = new_chunk.map(|_| {
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard, None)
             });
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
-            let mut result = None;
+            let result;
+            let reset_locked_old = || {
+                match &lock_old {
+                    Some(ModResult::Replaced(fv, _v, addr)) => {
+                        Self::store_value(*addr, *fv);
+                    }
+                    Some(ModResult::NotFound) | Some(ModResult::Sentinel) | None => {}
+                    _ => unreachable!()
+                }
+            };
             match value_insertion {
-                ModResult::Done(_, _, _) => {
+                ModResult::Done(_fv, v, _) => {
                     modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, Relaxed);
+                    result = Some((0, v))
                 }
                 ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => {
-                    result = Some((fv, v.unwrap()))
+                    debug_assert!(fv > 0);
+                    result = Some((fv, v))
                 }
                 ModResult::Fail => {
                     // If fail insertion then retry
                     warn!(
-                        "Insertion failed, do migration and retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
-                        new_chunk.is_some(),
-                        modify_chunk.capacity,
-                        modify_chunk.occupation.load(Relaxed),
-                        chunk_ptr,
-                        new_chunk_ptr
+                            "Insertion failed, do migration and retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
+                            new_chunk.is_some(),
+                            modify_chunk.capacity,
+                            modify_chunk.occupation.load(Relaxed),
+                            chunk_ptr,
+                            new_chunk_ptr
                     );
+                    reset_locked_old();
                     backoff.spin();
                     continue;
                 }
                 ModResult::TableFull => {
+                    reset_locked_old();
                     if new_chunk.is_none() {
                         self.do_migration(chunk_ptr, &guard);
                     } else {
@@ -331,74 +345,79 @@ impl<
                 }
                 ModResult::Sentinel => {
                     trace!("Discovered sentinel on insertion table upon probing, retry");
+                    reset_locked_old();
                     backoff.spin();
                     continue;
                 }
                 ModResult::NotFound => {
-                    // Only possible for Tombstone op
-                    if new_chunk.is_some() {
-                        // Cannot find the item to delete during migration
-                        // If can be in the old chunk which we can try to jut a sentinel
-                        match self.modify_entry(
-                            chunk,
-                            hash,
-                            key,
-                            fkey,
-                            ModOp::Sentinel,
-                            true,
-                            &guard,
-                            new_chunk.map(|c| &**c),
-                        ) {
-                            ModResult::Done(_, _, _) => {
-                                chunk.occupation.fetch_add(1, AcqRel);
-                            }
-                            ModResult::Replaced(fv, val, _) => {
-                                if fv > TOMBSTONE_VALUE {
-                                    return Some((fv, val.unwrap()));
-                                }
-                            }
-                            ModResult::NotFound => {}
-                            _ => {}
+                    match &lock_old {
+                        Some(ModResult::Replaced(fv, _v, addr)) => {
+                            Self::store_value(*addr, *fv);
+                            backoff.spin();
+                            continue;
+                        }, 
+                        Some(ModResult::Sentinel) => {
+                            backoff.spin();
+                            continue;
                         }
-                        backoff.spin();
-                        continue;
+                        Some(ModResult::NotFound) | None => {
+                            result = None;
+                        }
+                        _ => unreachable!()
                     }
                 }
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            match old_chunk_val {
-                Some(Some((fval, addr, attachment))) => {
-                    if !Self::cas_sentinel(addr, fval.val) {
-                        backoff.spin();
-                        continue;
-                    }
-                    if result.is_none() && fval.is_valued() {
-                        return Some((fval.act_val::<V>(), attachment.get_value()));
-                    }
+            let mut res = None;
+            match (result, lock_old) {
+                (Some((0, _v)), Some(ModResult::Sentinel)) => {
+                    res = None;
                 }
-                Some(None) => {
-                    match self.modify_entry(
-                        chunk,
-                        hash,
-                        key,
-                        fkey,
-                        ModOp::Sentinel,
-                        true,
-                        &guard,
-                        new_chunk.map(|c| &**c),
-                    ) {
-                        ModResult::Replaced(fval, val, _) | ModResult::Existed(fval, val) => {
-                            if result.is_none() && fval >= NUM_FIX_V {
-                                return Some((fval, val.unwrap().clone()));
-                            }
-                        }
-                        _ => {}
-                    }
+                (Some((fv, v)), Some(ModResult::Sentinel)) => {
+                    res = Some((fv, v.unwrap()));
                 }
-                None => {}
+                (None, Some(ModResult::Sentinel)) => {
+                    backoff.spin();
+                    continue;
+                }
+                (None, Some(ModResult::Replaced(fv, _v, addr))) => {
+                    Self::store_value(addr, fv);
+                    backoff.spin();
+                    continue;
+                },
+                (None, Some(_)) => {
+                    backoff.spin();
+                    continue;
+                },
+                (Some((0, _)), Some(ModResult::Replaced(fv, v, addr))) => {
+                    // New insertion in new chunk and have stuff in old chunk
+                    Self::store_value(addr, SENTINEL_VALUE);
+                    res = Some((fv, v.unwrap()))
+                }
+                (Some((0, _)), _) | (None, None) => {
+                    res = None;
+                }
+                (Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr))) => {
+                    // Replaced new chunk, should put sentinel in old chunk
+                    Self::store_value(addr, SENTINEL_VALUE);
+                    res = Some((fv, v.unwrap()))
+                },
+                (Some((fv, v)), Some(_)) => {
+                    res = Some((fv, v.unwrap()))
+                }
+                (Some((fv, v)), None) => {
+                    res = Some((fv, v.unwrap()))
+                }
             }
-            // trace!("Inserted key {}, with value {}", fkey, fvalue);
-            return result;
+            match &res {
+                Some((fv, _)) => {
+                    if *fv <= NUM_FIX_V {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+            return res;
         }
     }
 
@@ -826,6 +845,16 @@ impl<
                                         return ModResult::Replaced(act_val, value, idx);
                                     }
                                 }
+                                ModOp::Lock => {
+                                    if Self::cas_value(addr, v.val, LOCKED_VALUE).1 {
+                                        let attachment =
+                                            read_attachment.then(|| attachment.get_value());
+                                        return ModResult::Replaced(act_val, attachment, addr);
+                                    } else {
+                                        backoff.spin();
+                                        continue;
+                                    }
+                                }
                                 ModOp::UpsertFastVal(ref fv) => {
                                     if Self::cas_value(addr, v.val, *fv).1 {
                                         if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
@@ -1039,6 +1068,7 @@ impl<
                     }
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
+                    ModOp::Lock => return ModResult::NotFound,
                 };
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
