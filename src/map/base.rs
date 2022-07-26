@@ -91,7 +91,7 @@ enum ResizeResult {
 }
 
 pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
-    Succeed(FVal, usize, Shared<'a, ChunkPtr<K, V, A, ALLOC>>),
+    Succeed(FVal, usize, &'a ChunkPtr<K, V, A, ALLOC>),
     NotFound,
     Failed,
     Aborted,
@@ -460,12 +460,12 @@ impl<
     }
 
     pub fn swap<'a, F: Fn(FVal) -> Option<FVal> + Copy + 'static>(
-        &self,
+        &'a self,
         fkey: FKey,
         key: &K,
         func: F,
         guard: &'a Guard,
-    ) -> SwapResult<'a, K, V, A, ALLOC> {
+    ) -> SwapResult<K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
@@ -485,7 +485,7 @@ impl<
             match fast_mod_res {
                 ModResult::Replaced(fval, _, idx) => {
                     // That's it
-                    result = Some((fval, idx, update_chunk_ptr));
+                    result = Some((fval, idx, update_chunk));
                 }
                 ModResult::Fail | ModResult::Sentinel => {
                     // The key exists in the chunk, retry
@@ -503,7 +503,7 @@ impl<
                 _ => unreachable!("{:?}", fast_mod_res),
             }
             match (result, new_chunk.is_some()) {
-                (Some((fval, idx, mod_chunk_ptr)), true) => {
+                (Some((fval, idx, mod_chunk)), true) => {
                     let new_chunk_ref = new_chunk.map(|c| &**c);
                     loop {
                         // Just try to CAS a sentinel in the old chunk and we are done
@@ -524,7 +524,7 @@ impl<
                             ModResult::NotFound
                             | ModResult::Replaced(_, _, _)
                             | ModResult::Sentinel => {
-                                return SwapResult::Succeed(fval, idx, mod_chunk_ptr);
+                                return SwapResult::Succeed(fval, idx, mod_chunk);
                             }
                             _ => unreachable!("{:?}", sentinel_res),
                         }
@@ -625,9 +625,9 @@ impl<
     }
 
     #[inline]
-    fn chunk_refs(
-        &self, guard: &Guard
-    ) -> (&ChunkPtr<K, V, A, ALLOC>, Shared<ChunkPtr<K, V, A, ALLOC>>, Option<&ChunkPtr<K, V, A, ALLOC>>, usize) {
+    fn chunk_refs<'a>(
+        &self, guard: &'a Guard
+    ) -> (&'a ChunkPtr<K, V, A, ALLOC>, Shared<'a, ChunkPtr<K, V, A, ALLOC>>, Option<&'a ChunkPtr<K, V, A, ALLOC>>, usize) {
         let epoch = self.now_epoch();
         let chunk = self.meta.chunk.load(Acquire, &guard);
         let new_chunk = self.meta.new_chunk.load(Acquire, &guard);

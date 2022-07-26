@@ -342,8 +342,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             );
             match swap_res {
                 SwapResult::Succeed(_, idx, chunk) => {
-                    let chunk_ref = unsafe { chunk.deref() };
-                    let attachment = chunk_ref.attachment.prefetch(idx);
+                    let attachment = chunk.attachment.prefetch(idx);
                     let v = attachment.get_value();
                     value = v;
                     break;
