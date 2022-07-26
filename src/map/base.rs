@@ -180,12 +180,7 @@ impl<
         backoff: &Backoff,
     ) -> Option<(FVal, Option<V>, usize)> {
         'OUTER: loop {
-            let epoch = self.now_epoch();
-            let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
-            let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
-            let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
-            debug_assert!(!chunk_ptr.is_null());
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             if let Some((mut val, addr, aitem)) = self.get_from_chunk(
                 &*chunk,
                 hash,
@@ -278,11 +273,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let epoch = self.now_epoch();
-            let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
-            let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
-            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
+            let (chunk, chunk_ptr, new_chunk, epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
@@ -339,14 +330,6 @@ impl<
                 }
                 ModResult::Fail => {
                     // If fail insertion then retry
-                    warn!(
-                            "Insertion failed, do migration and retry. Copying {}, cap {}, count {}, old {:?}, new {:?}",
-                            new_chunk.is_some(),
-                            modify_chunk.capacity,
-                            modify_chunk.occupation.load(Relaxed),
-                            chunk_ptr,
-                            new_chunk_ptr
-                    );
                     reset_locked_old();
                     backoff.spin();
                     continue;
@@ -486,13 +469,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let epoch = self.now_epoch();
-            let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
-            let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
-            let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
-
-            let update_chunk_ptr = new_chunk.map(|_| new_chunk_ptr).unwrap_or(chunk_ptr);
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
             let mut result = None;
             let fast_mod_res = self.modify_entry(
@@ -585,11 +562,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
 
         'OUTER: loop {
-            let epoch = self.now_epoch();
-            let chunk_ptr = self.meta.chunk.load(Acquire, &guard);
-            let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
-            let chunk = unsafe { chunk_ptr.deref() };
-            let new_chunk = Self::new_chunk_ref(epoch, &new_chunk_ptr, &chunk_ptr);
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk.map(|_| {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, None)
@@ -652,15 +625,20 @@ impl<
     }
 
     #[inline]
-    fn new_chunk_ref<'a>(
-        epoch: usize,
-        new_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
-        old_chunk_ptr: &'a Shared<ChunkPtr<K, V, A, ALLOC>>,
-    ) -> Option<&'a ChunkPtr<K, V, A, ALLOC>> {
-        if Self::is_copying(epoch) && !old_chunk_ptr.with_tag(0).eq(new_chunk_ptr) {
-            unsafe { new_chunk_ptr.as_ref() } // null ptr will be handled by as_ref
-        } else {
-            None
+    fn chunk_refs(
+        &self, guard: &Guard
+    ) -> (&ChunkPtr<K, V, A, ALLOC>, Shared<ChunkPtr<K, V, A, ALLOC>>, Option<&ChunkPtr<K, V, A, ALLOC>>, usize) {
+        let epoch = self.now_epoch();
+        let chunk = self.meta.chunk.load(Acquire, &guard);
+        let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
+        let is_copying = Self::is_copying(epoch);
+        debug_assert!(!chunk.is_null());
+        unsafe {
+            if is_copying && chunk.with_tag(0) != new_chunk {
+                (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
+            } else {
+                (chunk.as_ref().unwrap(), chunk, None, epoch)
+            }
         }
     }
 
