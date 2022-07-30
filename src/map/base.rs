@@ -562,7 +562,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
 
         'OUTER: loop {
-            let (chunk, _, new_chunk, epoch) = self.chunk_refs(&guard);
+            let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk.map(|_| {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, None)

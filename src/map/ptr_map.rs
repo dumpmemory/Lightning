@@ -601,7 +601,7 @@ mod ptr_map {
     use test::Bencher;
 
     use crate::map::{
-        base::{InsertOp, NUM_FIX_K},
+        base::{InsertOp, NUM_FIX_K, NUM_FIX_V},
         *,
     };
     use std::{alloc::System, sync::Arc, thread};
@@ -1172,5 +1172,31 @@ mod ptr_map {
             }
             threads.into_iter().for_each(|t| t.join().unwrap());
         }
+    }
+
+    #[test]
+    fn swap_single_key() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+        let key = 10;
+        let (fkey, hash) = map.table.get_hash(0, &key);
+        let offsetted_key = key + NUM_FIX_K;
+        let num_threads = 256;
+        let num_rounds = 40960;
+        let mut threads = vec![];
+        map.table.insert(InsertOp::Insert, &key, Some(&()), fkey, NUM_FIX_V);
+        for _ in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                let guard = crossbeam_epoch::pin();
+                for _ in 0..num_rounds {
+                    map.table.swap(fkey, &key, |n| Some(n + 1), &guard);
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(map.table.get(&key, fkey, false), Some((num_threads * num_rounds + NUM_FIX_V, None)));
     }
 }
