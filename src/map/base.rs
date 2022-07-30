@@ -1,4 +1,9 @@
-use std::{sync::Arc, thread, cell::{Cell, RefCell}, borrow::Borrow};
+use std::{
+    borrow::Borrow,
+    cell::{Cell, RefCell},
+    sync::Arc,
+    thread,
+};
 
 use super::*;
 
@@ -310,14 +315,12 @@ impl<
             let value_insertion =
                 self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
             let result;
-            let reset_locked_old = || {
-                match &lock_old {
-                    Some(ModResult::Replaced(fv, _v, addr)) => {
-                        Self::store_value(*addr, *fv);
-                    }
-                    Some(ModResult::NotFound) | Some(ModResult::Sentinel) | None => {}
-                    _ => unreachable!()
+            let reset_locked_old = || match &lock_old {
+                Some(ModResult::Replaced(fv, _v, addr)) => {
+                    Self::store_value(*addr, *fv);
                 }
+                Some(ModResult::NotFound) | Some(ModResult::Sentinel) | None => {}
+                _ => unreachable!(),
             };
             match value_insertion {
                 ModResult::Done(_fv, v, _) => {
@@ -325,9 +328,7 @@ impl<
                     self.count.fetch_add(1, Relaxed);
                     result = Some((0, v))
                 }
-                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => {
-                    result = Some((fv, v))
-                }
+                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
                 ModResult::Fail => {
                     // If fail insertion then retry
                     reset_locked_old();
@@ -349,29 +350,30 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                ModResult::NotFound => {
-                    match &lock_old {
-                        Some(ModResult::Replaced(fv, _v, addr)) => {
-                            Self::store_value(*addr, *fv);
-                            backoff.spin();
-                            continue;
-                        }, 
-                        Some(ModResult::Sentinel) => {
-                            backoff.spin();
-                            continue;
-                        }
-                        Some(ModResult::NotFound) | None => {
-                            result = None;
-                        }
-                        _ => unreachable!()
+                ModResult::NotFound => match &lock_old {
+                    Some(ModResult::Replaced(fv, _v, addr)) => {
+                        Self::store_value(*addr, *fv);
+                        backoff.spin();
+                        continue;
                     }
-                }
+                    Some(ModResult::Sentinel) => {
+                        backoff.spin();
+                        continue;
+                    }
+                    Some(ModResult::NotFound) | None => {
+                        result = None;
+                    }
+                    _ => unreachable!(),
+                },
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
             let res;
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
-                    delay_log!("Some((0, _)), Some(ModResult::Sentinel) key {}", fkey - NUM_FIX_K); // Should not reachable
+                    delay_log!(
+                        "Some((0, _)), Some(ModResult::Sentinel) key {}",
+                        fkey - NUM_FIX_K
+                    ); // Should not reachable
                     res = None;
                 }
                 (Some((fv, v)), Some(ModResult::Sentinel)) => {
@@ -385,11 +387,11 @@ impl<
                     Self::store_value(addr, fv);
                     backoff.spin();
                     continue;
-                },
+                }
                 (None, Some(_)) => {
                     backoff.spin();
                     continue;
-                },
+                }
                 (Some((0, _)), Some(ModResult::Replaced(fv, v, addr))) => {
                     // New insertion in new chunk and have stuff in old chunk
                     Self::store_value(addr, SENTINEL_VALUE);
@@ -400,11 +402,14 @@ impl<
                     res = None;
                 }
                 (Some((0, _)), Some(ModResult::NotFound)) => {
-                    delay_log!("Some((0, _)), Some(ModResult::NotFound) key {}", fkey - NUM_FIX_K);
+                    delay_log!(
+                        "Some((0, _)), Some(ModResult::NotFound) key {}",
+                        fkey - NUM_FIX_K
+                    );
                     res = None;
                 }
                 (Some((0, _)), _) => {
-                    delay_log!("Some((0, _)), _ key {}", fkey - NUM_FIX_K); 
+                    delay_log!("Some((0, _)), _ key {}", fkey - NUM_FIX_K);
                     res = None;
                 }
                 (None, None) => {
@@ -414,13 +419,9 @@ impl<
                     // Replaced new chunk, should put sentinel in old chunk
                     Self::store_value(addr, SENTINEL_VALUE);
                     res = Some((fv, v.unwrap()))
-                },
-                (Some((fv, v)), Some(_)) => {
-                    res = Some((fv, v.unwrap()))
                 }
-                (Some((fv, v)), None) => {
-                    res = Some((fv, v.unwrap()))
-                }
+                (Some((fv, v)), Some(_)) => res = Some((fv, v.unwrap())),
+                (Some((fv, v)), None) => res = Some((fv, v.unwrap())),
             }
             match &res {
                 Some((fv, _)) => {
@@ -626,8 +627,14 @@ impl<
 
     #[inline]
     fn chunk_refs<'a>(
-        &self, guard: &'a Guard
-    ) -> (&'a ChunkPtr<K, V, A, ALLOC>, Shared<'a, ChunkPtr<K, V, A, ALLOC>>, Option<&'a ChunkPtr<K, V, A, ALLOC>>, usize) {
+        &self,
+        guard: &'a Guard,
+    ) -> (
+        &'a ChunkPtr<K, V, A, ALLOC>,
+        Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        Option<&'a ChunkPtr<K, V, A, ALLOC>>,
+        usize,
+    ) {
         let epoch = self.now_epoch();
         let chunk = self.meta.chunk.load(Acquire, &guard);
         let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
@@ -759,16 +766,14 @@ impl<
                     continue 'MAIN;
                 }
                 match raw {
-                    SENTINEL_VALUE => {
-                        match &op {
-                            ModOp::Insert(_, _)
-                            | ModOp::AttemptInsert(_, _)
-                            | ModOp::UpsertFastVal(_) => {
-                                return ModResult::Sentinel;
-                            }
-                            _ => {}
+                    SENTINEL_VALUE => match &op {
+                        ModOp::Insert(_, _)
+                        | ModOp::AttemptInsert(_, _)
+                        | ModOp::UpsertFastVal(_) => {
+                            return ModResult::Sentinel;
                         }
-                    }
+                        _ => {}
+                    },
                     BACKWARD_SWAPPING_VALUE => {
                         if iter.terminal {
                             // Only check terminal probing

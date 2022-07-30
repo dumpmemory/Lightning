@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::mem::forget;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
@@ -17,27 +16,21 @@ pub struct PtrHashMap<
 > {
     pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
-    epoch: AtomicUsize, // Global epoch for VBR
     shadow: PhantomData<(K, V, H)>,
 }
 
 #[repr(align(8))]
 struct PtrValueNode<V> {
     value: Cell<V>,
-    birth_ver: AtomicUsize,
-    retire_ver: AtomicUsize,
+    ver: AtomicUsize,
 }
 
 struct MapConsts<K, V> {
     _marker: PhantomData<(K, V)>,
 }
 
-impl<K, V, ALLOC, H> PtrHashMap<K, V, ALLOC, H>
-where
-    K: Clone + Hash + Eq,
-    V: Clone,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    PtrHashMap<K, V, ALLOC, H>
 {
     const VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS;
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
@@ -49,13 +42,13 @@ where
         key: K,
         value: V,
     ) -> Option<(
-        (*mut V, *mut PtrValueNode<V>),
+        (*mut V, usize),
         AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
     )> {
         let guard = self.allocator.pin();
         let v_num = self.ref_val(value, &guard);
         self.table
-            .insert(op, &key, None, 0 as FKey, v_num as FVal)
+            .insert(op, &key, Some(&()), 0 as FKey, v_num as FVal)
             .map(|(fv, _)| (self.ptr_of_val(fv), guard))
     }
 
@@ -72,71 +65,35 @@ where
         unsafe {
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
-            let retire_ver = node_ref.retire_ver.load(Relaxed);
-            let mut current_ver = self.epoch.load(Relaxed);
-            loop {
-                debug_assert!(retire_ver <= current_ver);
-                if retire_ver == current_ver {
-                    // Bump global apoch
-                    let new_ver = current_ver + 1;
-                    if let Err(actual_ver) =
-                        self.epoch
-                            .compare_exchange(current_ver, new_ver, Relaxed, Relaxed)
-                    {
-                        current_ver = actual_ver;
-                        continue;
-                    } else {
-                        current_ver = new_ver;
-                        break;
-                    }
-                }
-                break;
-            }
-            debug_assert!(
-                retire_ver < current_ver,
-                "Version node {} vs. current {}",
-                retire_ver,
-                current_ver
-            );
-            node_ref.birth_ver.store(current_ver, Relaxed);
-            node_ref.retire_ver.store(0, Release);
-            let obj_ptr = node_ref.value.as_ptr();
-            if retire_ver > 0 {
-                // Free existing object
-                ptr::read(obj_ptr);
-            }
-            ptr::write(obj_ptr, d);
-            Self::compose_value(node_ptr as usize, current_ver)
+            // Release: No other thread is changing the version, but we want the value assignment happened AFTER the version is changed
+            let next_ver = node_ref.ver.fetch_add(1, Release).wrapping_add(1);
+            ptr::write(node_ref.value.as_ptr(), d);
+            Self::compose_value(node_ptr as usize, next_ver)
         }
     }
 
     #[inline(always)]
-    fn deref_val(&self, key: &K, val: usize) -> Option<V> {
+    fn deref_val<T: Clone>(&self, val: usize) -> Option<T> {
         unsafe {
-            let pre_ver = self.epoch.load(Relaxed);
             let (addr, val_ver) = decompose_value::<K, V>(val);
-            let node_ptr = addr as *mut PtrValueNode<V>;
+            let node_ptr = addr as *mut PtrValueNode<T>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
-            let node_ver = node_ref.birth_ver.load(Relaxed);
-            let node_ver_short = node_ver & Self::VAL_NODE_LOW_BITS;
-            if node_ver_short != val_ver {
-                Self::print_ver_mismatch(key, &v_shadow, node_ver_short, val_ver);
-                // return None;
+            let ver_ptr = node_ref.ver.as_mut_ptr();
+            let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
+            if node_ver != val_ver {
+                return None;
             }
             let v = v_shadow.clone();
             mem::forget(v_shadow);
-            if self.epoch.load(Acquire) != pre_ver {
-                return None;
-            }
             Some(v)
         }
     }
 
     #[inline(always)]
-    fn ptr_of_val(&self, val: usize) -> (*mut V, *mut PtrValueNode<V>) {
+    fn ptr_of_val(&self, val: usize) -> (*mut V, usize) {
         unsafe {
             let (addr, _val_ver) = decompose_value::<K, V>(val);
             let node_ptr = addr as *mut PtrValueNode<V>;
@@ -144,7 +101,7 @@ where
             let val_ptr = node_ref.value.as_ptr();
             debug_assert!(!node_ptr.is_null());
             debug_assert!(!val_ptr.is_null());
-            (val_ptr, node_ptr)
+            (val_ptr, addr)
         }
     }
 
@@ -153,67 +110,8 @@ where
         let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
         let ver_part = ver & Self::VAL_NODE_LOW_BITS;
         let val = ptr_part | ver_part;
-        if cfg!(debug_assertions) {
-            let (n_ptr, n_ver) = decompose_value::<K, V>(val);
-            assert_eq!(ptr_part, n_ptr);
-            assert_eq!(ver_part, n_ver);
-            assert_ne!(val, val | VAL_MUTEX_BIT);
-            assert_eq!(val, val & WORD_MUTEX_DATA_BIT_MASK);
-        }
         val
     }
-
-    #[inline(never)]
-    fn retry_get(&self, key: &K, fv: &mut usize, addr: usize, backoff: &Backoff) -> Option<V> {
-        backoff.spin();
-        loop {
-            let new_fval = PtrTable::<K, V, ALLOC, H>::get_fast_value(addr);
-            if new_fval.val > NUM_FIX_V {
-                let now_val = self.deref_val(key, *fv);
-                if now_val.is_some() {
-                    return now_val;
-                } else {
-                    *fv = new_fval.val;
-                    backoff.spin();
-                    continue;
-                }
-            }
-            return None;
-        }
-    }
-
-    #[inline(always)]
-    fn retire(
-        &self,
-        node_ptr: *mut PtrValueNode<V>,
-        guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
-    ) {
-        unsafe {
-            let epoch = self.epoch.load(Relaxed);
-            let node = node_ptr.as_ref().unwrap();
-            node.retire_ver.store(epoch, Relaxed);
-            guard.buffered_free(node_ptr);
-        }
-    }
-}
-
-impl<K, V, ALLOC, H> DebugPtrMap<K, V> for PtrHashMap<K, V, ALLOC, H>
-where
-    K: Clone + Hash + Eq,
-    V: Clone,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
-{
-    fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize) {
-        error!(
-            "Version does not match for expect {} got {}",
-            node_ver, val_ver
-        );
-    }
-}
-
-trait DebugPtrMap<K, V> {
-    fn print_ver_mismatch(key: &K, val: &V, node_ver: usize, val_ver: usize);
 }
 
 #[inline(always)]
@@ -224,12 +122,8 @@ fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usiz
     )
 }
 
-impl<K, V, ALLOC, H> Map<K, V> for PtrHashMap<K, V, ALLOC, H>
-where
-    K: Clone + Hash + Eq,
-    V: Clone,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
+    for PtrHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
         let mut alloc = Box::new(obj_alloc::Allocator::new());
@@ -238,7 +132,6 @@ where
         Self {
             table: PtrTable::with_capacity(cap, attachment_init_meta),
             allocator: alloc,
-            epoch: AtomicUsize::new(1),
             shadow: PhantomData,
         }
     }
@@ -249,17 +142,14 @@ where
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         loop {
-            if let Some((mut fv, _, addr)) = self
+            if let Some((fv, _, _addr)) = self
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if let Some(val) = self.deref_val(key, fv) {
+                if let Some(val) = self.deref_val(fv & WORD_MUTEX_DATA_BIT_MASK) {
                     return Some(val);
                 }
-                let retry_val = self.retry_get(key, &mut fv, addr, &backoff);
-                if retry_val.is_some() {
-                    return retry_val;
-                }
+
                 backoff.spin();
                 // None would be value changed
             } else {
@@ -271,13 +161,10 @@ where
     #[inline(always)]
     fn insert(&self, key: K, value: V) -> Option<V> {
         self.insert_with_op(InsertOp::Insert, key, value)
-            .map(|((ptr, node_ptr), guard)| unsafe {
+            .map(|((ptr, node_addr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
-                let obj = ptr::read(ptr);
-                let res = obj.clone();
-                forget(obj);
-                self.retire(node_ptr, &guard);
-                res
+                guard.buffered_free(node_addr as *const PtrValueNode<V>);
+                ptr::read(ptr)
             })
     }
 
@@ -290,14 +177,11 @@ where
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
         self.table.remove(key, 0).map(|(fv, _)| {
-            let (val_ptr, node_ptr) = self.ptr_of_val(fv);
+            let (val_ptr, node_addr) = self.ptr_of_val(fv);
             unsafe {
-                let guard = self.allocator.pin();
                 let value = ptr::read(val_ptr);
-                let res = value.clone();
-                mem::forget(value);
-                self.retire(node_ptr, &guard);
-                res
+                self.allocator.buffered_free(node_addr as _);
+                value
             }
         })
     }
@@ -309,7 +193,7 @@ where
             .into_iter()
             .filter_map(|(_, fv, k, _)| {
                 // TODO: reload?
-                self.deref_val(&k, fv).map(|v| (k, v))
+                self.deref_val(fv).map(|v| (k, v))
             })
             .collect()
     }
@@ -406,10 +290,12 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         unsafe {
             let (addr, _val_ver) = decompose_value::<K, V>(fvalue & WORD_MUTEX_DATA_BIT_MASK);
             let node_ptr = addr as *mut PtrValueNode<V>;
-            let allocator = &*self.alloc;
-            let guard = allocator.pin();
+            let node_ref = &*node_ptr;
+            let val_ptr = node_ref.value.as_ptr();
             debug_assert!(!node_ptr.is_null(), "fval is {}", fvalue);
-            //.buffered_free(node_ptr);
+            debug_assert!(!val_ptr.is_null());
+            mem::drop(ptr::read(val_ptr));
+            (&*self.alloc).buffered_free(node_ptr);
         }
     }
 }
@@ -440,9 +326,8 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     fn erase(self, _old_fval: FVal) {}
 
     fn probe(self, probe_key: &K) -> bool {
-        fence(Acquire);
         let key = unsafe { &*(self.addr as *mut K) };
-        key.eq(probe_key)
+        key == probe_key
     }
 
     fn prep_write(self) {}
@@ -462,12 +347,8 @@ pub struct PtrMutexGuard<
     value: V,
 }
 
-impl<'a, K, V, ALLOC, H> PtrMutexGuard<'a, K, V, ALLOC, H>
-where
-    K: Clone + Hash + Eq,
-    V: Clone,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn new(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -491,18 +372,14 @@ where
             );
             match swap_res {
                 SwapResult::Succeed(val, _idx, _chunk) => {
-                    value = if let Some(v) = map.deref_val(key, val & WORD_MUTEX_DATA_BIT_MASK) {
+                    value = if let Some(v) = map.deref_val(val & WORD_MUTEX_DATA_BIT_MASK) {
                         v
                     } else {
                         continue;
                     };
                     break;
                 }
-                SwapResult::Aborted => {
-                    backoff.spin();
-                    continue;
-                }
-                SwapResult::Failed => {
+                SwapResult::Failed | SwapResult::Aborted => {
                     backoff.spin();
                     continue;
                 }
@@ -518,11 +395,13 @@ where
     fn create(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K, value: V) -> Option<Self> {
         let guard = map.allocator.pin();
         let fvalue = map.ref_val(value.clone(), &guard);
-        debug_assert_ne!(fvalue, fvalue | VAL_MUTEX_BIT);
-        match map
-            .table
-            .insert(InsertOp::TryInsert, key, None, 0, fvalue | VAL_MUTEX_BIT)
-        {
+        match map.table.insert(
+            InsertOp::TryInsert,
+            key,
+            Some(&()),
+            0,
+            fvalue | VAL_MUTEX_BIT,
+        ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,
                 key: key.clone(),
@@ -535,13 +414,11 @@ where
     pub fn remove(self) -> V {
         let guard = self.map.allocator.pin();
         let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
-        let (val_ptr, node_ptr) = self.map.ptr_of_val(fval);
+        let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
         let r = unsafe { ptr::read(val_ptr) };
-        let res = r.clone();
-        self.map.retire(node_ptr, &guard);
+        guard.buffered_free(node_addr as _);
         mem::forget(self);
-        mem::forget(r);
-        return res;
+        return r;
     }
 }
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
@@ -561,37 +438,28 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         &mut self.value
     }
 }
-impl<'a, K, V, ALLOC, H> Drop for PtrMutexGuard<'a, K, V, ALLOC, H>
-where
-    K: Clone + Hash + Eq,
-    V: Clone,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
         let val = self.value.clone();
-        let key = &self.key;
-        let ref_val = self.map.ref_val(val, &guard);
-        debug_assert_ne!(ref_val, ref_val | VAL_MUTEX_BIT);
+        let key = self.key.clone();
+        let fval = self.map.ref_val(val, &guard) & WORD_MUTEX_DATA_BIT_MASK;
         self.map
             .table
-            .insert(InsertOp::Insert, key, None, 0, ref_val);
+            .insert(InsertOp::Insert, &key, Some(&()), 0, fval);
     }
 }
 
-impl<'a, K, V, ALLOC, H> Drop for PtrHashMap<K, V, ALLOC, H>
-where
-    K: Clone + Hash + Eq,
-    V: Clone,
-    ALLOC: GlobalAlloc + Default,
-    H: Hasher + Default,
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for PtrHashMap<K, V, ALLOC, H>
 {
     fn drop(&mut self) {
         for (_fk, fv, _k, _v) in self.table.entries() {
             let (val_ptr, _) = self.ptr_of_val(fv);
             unsafe {
-                // ptr::read(val_ptr);
+                ptr::read(val_ptr);
             }
         }
     }
@@ -1021,9 +889,10 @@ mod ptr_map {
                         );
                         let val = {
                             let mut mutex = map.lock(&key).expect(&format!(
-                                "Locking key {}, copying {}",
+                                "Locking key {}, epoch {}, copying {}",
                                 key,
-                                map.table.now_epoch()
+                                map.table.now_epoch(),
+                                map.table.map_is_copying()
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
@@ -1053,7 +922,7 @@ mod ptr_map {
             }));
         }
         for thread in threads {
-            let _ = thread.join();
+            thread.join().unwrap();
         }
     }
 
@@ -1171,32 +1040,31 @@ mod ptr_map {
                 }));
             }
             threads.into_iter().for_each(|t| t.join().unwrap());
+            map.table.clear();
         }
     }
 
     #[test]
-    fn swap_single_key() {
+    fn mutex_single_key() {
         let _ = env_logger::try_init();
         let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
         let key = 10;
-        let (fkey, hash) = map.table.get_hash(0, &key);
-        let offsetted_key = key + NUM_FIX_K;
         let num_threads = 256;
-        let num_rounds = 40960;
+        let num_rounds = 1024;
         let mut threads = vec![];
-        map.table.insert(InsertOp::Insert, &key, Some(&()), fkey, NUM_FIX_V);
+        assert_eq!(map.insert(key, 0), None);
         for _ in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let guard = crossbeam_epoch::pin();
                 for _ in 0..num_rounds {
-                    map.table.swap(fkey, &key, |n| Some(n + 1), &guard);
+                    let mut mutex = map.lock(&key).unwrap();
+                    *mutex += 1;
                 }
             }));
         }
         for t in threads {
             t.join().unwrap();
         }
-        assert_eq!(map.table.get(&key, fkey, false), Some((num_threads * num_rounds + NUM_FIX_V, None)));
+        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
     }
 }

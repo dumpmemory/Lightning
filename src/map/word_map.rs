@@ -262,7 +262,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{NUM_FIX_K, NUM_FIX_V, get_delayed_log},
+        base::{get_delayed_log, NUM_FIX_K, NUM_FIX_V},
         *,
     };
     use alloc::sync::Arc;
@@ -604,7 +604,7 @@ mod test {
         let key = 10;
         map.insert(key, base_val - NUM_FIX_V);
         let offset_key = key + NUM_FIX_K;
-        for j in 0..4096 {
+        for j in 0..40960 {
             let curr_val = base_val + j;
             let next_val = curr_val + 1;
             map.insert(key, curr_val - NUM_FIX_V);
@@ -627,7 +627,7 @@ mod test {
                 let key = i + 20;
                 map.insert(key, base_val - NUM_FIX_V);
                 let offset_key = key + NUM_FIX_K;
-                for j in 0..4096 {
+                for j in 0..40960 {
                     let curr_val = base_val + j;
                     let next_val = curr_val + 1;
                     debug_assert_eq!(map.get(&key), Some(curr_val - NUM_FIX_V));
@@ -649,14 +649,15 @@ mod test {
     #[test]
     fn swap_with_resize() {
         let _ = env_logger::try_init();
-        let repeats: usize = 4096;
+        let repeats: usize = 409600;
+        let multiplier = 10000000;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
         for i in 0..32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 let guard = crossbeam_epoch::pin();
-                let base_val = (i + 20) * 10000000;
+                let base_val = (i + 20) * multiplier;
                 let key = i + 20;
                 map.insert(key, base_val - NUM_FIX_V);
                 let offset_key = key + NUM_FIX_K;
@@ -704,11 +705,11 @@ mod test {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 0..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multiplier + j;
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                 }
                 for j in 0..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multiplier + j;
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
@@ -717,7 +718,7 @@ mod test {
                     );
                 }
                 for j in 0..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multiplier + j;
                     assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
                 }
             }));
@@ -729,18 +730,19 @@ mod test {
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
         for _ in 0..32 {
-            let repeats: usize = 4096;
+            let repeats: usize = 40960;
+            let multplier = 100000;
             let map = Arc::new(WordMap::<System>::with_capacity(8));
             let mut threads = vec![];
             for i in 1..16 {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {
-                        let key = i * 100000 + j;
+                        let key = i * multplier + j;
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                     }
                     for j in 0..repeats {
-                        let key = i * 100000 + j;
+                        let key = i * multplier + j;
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
@@ -752,7 +754,7 @@ mod test {
                         );
                     }
                     for j in 0..repeats {
-                        let key = i * 100000 + j;
+                        let key = i * multplier + j;
                         assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
                     }
                 }));
