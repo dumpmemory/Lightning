@@ -446,14 +446,28 @@ impl<
                 continue;
             }
             let len = self.len();
-            let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
-                self.init_cap,
-                &self.attachment_init_meta,
-            )));
-            self.meta
+            let old_chunk = self.meta.chunk.load(Acquire, &guard);
+            if self
+                .meta
                 .chunk
-                .store(owned_new.into_shared(&guard), Release);
-            self.meta.new_chunk.store(Shared::null(), Release);
+                .compare_exchange(
+                    old_chunk.with_tag(0),
+                    old_chunk.with_tag(1),
+                    AcqRel,
+                    Relaxed,
+                    &guard,
+                )
+                .is_err()
+            {
+                backoff.spin();
+                continue;
+            } else {
+                let owned_new = Owned::new(ChunkPtr::new(Chunk::alloc_chunk(
+                    self.init_cap,
+                    &self.attachment_init_meta,
+                )));
+                self.meta.chunk.store(owned_new.into_shared(&guard), Release);
+            }
             dfence();
             self.count.fetch_sub(len, AcqRel);
             break;
