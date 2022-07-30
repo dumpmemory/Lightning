@@ -425,7 +425,7 @@ impl<
             }
             match &res {
                 Some((fv, _)) => {
-                    if *fv <= NUM_FIX_V {
+                    if *fv < NUM_FIX_V {
                         delay_log!("*fv <= NUM_FIX_V {} key {}", fkey + NUM_FIX_K, fv);
                         return None;
                     }
