@@ -278,7 +278,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let (chunk, chunk_ptr, new_chunk, epoch) = self.chunk_refs(&guard);
+            let (chunk, chunk_ptr, new_chunk, _epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
@@ -649,16 +649,21 @@ impl<
         Option<&'a ChunkPtr<K, V, A, ALLOC>>,
         usize,
     ) {
-        let epoch = self.now_epoch();
-        let chunk = self.meta.chunk.load(Acquire, &guard);
-        let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
-        let is_copying = Self::is_copying(epoch);
-        debug_assert!(!chunk.is_null());
-        unsafe {
-            if is_copying && chunk.with_tag(0) != new_chunk {
-                (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
-            } else {
-                (chunk.as_ref().unwrap(), chunk, None, epoch)
+        loop {
+            let epoch = self.now_epoch();
+            let chunk = self.meta.chunk.load(Acquire, &guard);
+            let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
+            let is_copying = Self::is_copying(epoch);
+            debug_assert!(!chunk.is_null());
+            let res = unsafe {
+                if is_copying && chunk.with_tag(0) != new_chunk {
+                    (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
+                } else {
+                    (chunk.as_ref().unwrap(), chunk, None, epoch)
+                }
+            };
+            if self.now_epoch() == epoch {
+                return res;
             }
         }
     }
@@ -1163,13 +1168,10 @@ impl<
 
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
-        let old_chunk_ref = self.meta.chunk.load(Acquire, &guard);
-        let new_chunk_ref = self.meta.new_chunk.load(Acquire, &guard);
-        let old_chunk = unsafe { old_chunk_ref.deref() };
-        let new_chunk = unsafe { new_chunk_ref.deref() };
-        let mut res = self.all_from_chunk(&*old_chunk);
-        if !new_chunk_ref.is_null() && old_chunk_ref != new_chunk_ref {
-            res.append(&mut self.all_from_chunk(&*new_chunk));
+        let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
+        let mut res = self.all_from_chunk(chunk);
+        if let Some(new_chunk) = new_chunk {
+            res.append(&mut self.all_from_chunk(&new_chunk));
         }
         return res;
     }

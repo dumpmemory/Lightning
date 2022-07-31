@@ -1005,6 +1005,7 @@ mod ptr_map {
         }
     }
 
+    #[ignore]
     #[test]
     fn checking_inserion_with_migrations_bypass_alloc() {
         let _ = env_logger::try_init();
