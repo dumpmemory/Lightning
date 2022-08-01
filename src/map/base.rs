@@ -185,7 +185,7 @@ impl<
         backoff: &Backoff,
     ) -> Option<(FVal, Option<V>, usize)> {
         'OUTER: loop {
-            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard, backoff);
             if let Some((mut val, addr, aitem)) = self.get_from_chunk(
                 &*chunk,
                 hash,
@@ -278,7 +278,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let (chunk, chunk_ptr, new_chunk, _epoch) = self.chunk_refs(&guard);
+            let (chunk, chunk_ptr, new_chunk, _epoch) = self.chunk_refs(&guard, &backoff);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
@@ -484,7 +484,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard, &backoff);
             let update_chunk = new_chunk.unwrap_or(chunk);
             let mut result = None;
             let fast_mod_res = self.modify_entry(
@@ -577,7 +577,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
 
         'OUTER: loop {
-            let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
+            let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard, &backoff);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk.map(|_| {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, None)
@@ -643,6 +643,7 @@ impl<
     fn chunk_refs<'a>(
         &self,
         guard: &'a Guard,
+        backoff: &Backoff
     ) -> (
         &'a ChunkPtr<K, V, A, ALLOC>,
         Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
@@ -654,17 +655,23 @@ impl<
             let chunk = self.meta.chunk.load(Acquire, &guard);
             let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
             let is_copying = Self::is_copying(epoch);
-            debug_assert!(!chunk.is_null());
             let res = unsafe {
-                if is_copying && chunk.with_tag(0) != new_chunk {
-                    (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
+                if is_copying {
+                    let new_chunk_ref = new_chunk.as_ref();
+                    if new_chunk_ref.is_none() {
+                        backoff.spin();
+                        continue;
+                    }
+                    (chunk.as_ref().unwrap(), chunk, new_chunk_ref, epoch)
                 } else {
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
                 }
             };
-            if self.now_epoch() == epoch && !(is_copying && res.2.is_none()) {
+            if self.now_epoch() == epoch && chunk != new_chunk {
+                debug_assert!(!chunk.is_null());
                 return res;
             }
+            backoff.spin();
         }
     }
 
@@ -1168,7 +1175,7 @@ impl<
 
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
-        let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
+        let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard, &Backoff::new());
         let mut res = self.all_from_chunk(chunk);
         if let Some(new_chunk) = new_chunk {
             res.append(&mut self.all_from_chunk(&new_chunk));
@@ -1478,6 +1485,7 @@ impl<
         let new_chunk_ptr = Owned::new(ChunkPtr::new(new_chunk))
             .into_shared(guard)
             .with_tag(0);
+        debug_assert_ne!(new_chunk_ptr, old_chunk_ptr.with_tag(0));
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         self.meta.epoch.fetch_add(1, AcqRel);
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
@@ -2132,8 +2140,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
                 old_chunk.ptr as *const c_void,
                 old_total_size,
             );
-            let cloned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
-            new_table.meta.chunk.store(cloned_old_ref, Release);
+            let cloned_owned_old_ref = Owned::new(ChunkPtr::new(cloned_old_ptr));
+            new_table.meta.chunk.store(cloned_owned_old_ref, Release);
 
             if new_chunk_ptr != Shared::null() {
                 let new_chunk = new_chunk_ptr.deref();

@@ -975,7 +975,7 @@ mod ptr_map {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {
-                        let key = i * 100000 + j;
+                         let key = i * 100000 + j;
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                     }
                     for j in 0..repeats {
