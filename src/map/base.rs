@@ -662,7 +662,7 @@ impl<
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
                 }
             };
-            if self.now_epoch() == epoch {
+            if self.now_epoch() == epoch && !(is_copying && res.2.is_none()) {
                 return res;
             }
         }
@@ -1479,8 +1479,8 @@ impl<
             .into_shared(guard)
             .with_tag(0);
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
-        self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         self.meta.epoch.fetch_add(1, AcqRel);
+        self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         let meta = self.meta.clone();
         let old_chunk_addr = old_chunk_ptr.into_usize();
         let new_chunk_addr = new_chunk_ptr.into_usize();

@@ -469,7 +469,7 @@ mod ptr_map {
     use test::Bencher;
 
     use crate::map::{
-        base::{InsertOp, NUM_FIX_K, NUM_FIX_V},
+        base::{InsertOp, NUM_FIX_K, NUM_FIX_V, get_delayed_log},
         *,
     };
     use std::{alloc::System, sync::Arc, thread};
@@ -983,10 +983,11 @@ mod ptr_map {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}",
+                            "reinserting at key {}, get {:?}, epoch {}, last log {}",
                             key - NUM_FIX_K,
                             map.get(&key),
-                            map.table.now_epoch()
+                            map.table.now_epoch(),
+                            get_delayed_log()
                         );
                     }
                     for j in 0..repeats {
