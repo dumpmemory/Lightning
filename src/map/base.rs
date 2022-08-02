@@ -12,7 +12,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -324,7 +324,6 @@ impl<
             };
             match value_insertion {
                 ModResult::Done(_fv, v, _) => {
-                    modify_chunk.occupation.fetch_add(1, Relaxed);
                     self.count.fetch_add(1, Relaxed);
                     result = Some((0, v))
                 }
@@ -466,7 +465,9 @@ impl<
                     self.init_cap,
                     &self.attachment_init_meta,
                 )));
-                self.meta.chunk.store(owned_new.into_shared(&guard), Release);
+                self.meta
+                    .chunk
+                    .store(owned_new.into_shared(&guard), Release);
             }
             dfence();
             self.count.fetch_sub(len, AcqRel);
@@ -643,7 +644,7 @@ impl<
     fn chunk_refs<'a>(
         &self,
         guard: &'a Guard,
-        backoff: &Backoff
+        backoff: &Backoff,
     ) -> (
         &'a ChunkPtr<K, V, A, ALLOC>,
         Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
@@ -999,10 +1000,9 @@ impl<
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, cas_fval);
                         match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
                             (_, true) => {
+                                chunk.occupation.fetch_add(1, AcqRel);
                                 let attachment = chunk.attachment.prefetch(idx);
-                                if !hop_adjustment {
-                                    attachment.set_key(key.clone());
-                                }
+                                attachment.set_key(key.clone());
                                 if Self::FAT_VAL {
                                     Self::store_key(addr, fkey);
                                     val.map(|val| attachment.set_value((*val).clone(), 0));
@@ -1057,6 +1057,7 @@ impl<
                         };
                         match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
                             (_, true) => {
+                                chunk.occupation.fetch_add(1, AcqRel);
                                 Self::store_key(addr, store_fkey);
                                 match Self::adjust_hops(
                                     hop_adjustment,
@@ -1145,6 +1146,10 @@ impl<
     }
 
     fn all_from_chunk(&self, chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(FKey, FVal, K, V)> {
+        Self::all_from_chunk_(chunk)
+    }
+
+    fn all_from_chunk_(chunk: &Chunk<K, V, A, ALLOC>) -> Vec<(FKey, FVal, K, V)> {
         let mut idx = 0;
         let cap = chunk.capacity;
         let mut counter = 0;
@@ -1171,6 +1176,31 @@ impl<
             counter += 1;
         }
         return res;
+    }
+
+    fn debug_assert_no_duplicates(chunk: &Chunk<K, V, A, ALLOC>) {
+        #[cfg(debug_assertions)]
+        {
+            let mut no_duplicates = true;
+            let all_entries = Self::all_from_chunk_(chunk);
+            let mut prev_entries = std::collections::HashMap::new();
+            for (k, v, _, _) in &all_entries {
+                if let Some(mv) = prev_entries.get(k) {
+                    error!("Existing key {} with value {}", k, mv);
+                    no_duplicates = false;
+                }
+                prev_entries.insert(k, v);
+            }
+            error!(
+                "No duplicates? {}, occ {}/{}/{}, num keys {}, entries {}",
+                no_duplicates,
+                chunk.occupation.load(Acquire),
+                chunk.occu_limit,
+                chunk.capacity,
+                prev_entries.len(),
+                all_entries.len()
+            );
+        }
     }
 
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
@@ -1771,7 +1801,6 @@ impl<
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
                     new_attachment.set_value(value, 0);
-                    fence(Acquire);
                     Self::store_key(addr, store_fkey);
                     match Self::adjust_hops(
                         hop_adjustment,
@@ -1823,6 +1852,7 @@ impl<
             } else {
                 new_chunk_ins.dump_dist();
                 new_chunk_ins.dump_kv();
+                Self::debug_assert_no_duplicates(new_chunk_ins);
                 panic!("Cannot find any slot for migration");
             }
         }

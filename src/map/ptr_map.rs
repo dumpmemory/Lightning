@@ -469,7 +469,7 @@ mod ptr_map {
     use test::Bencher;
 
     use crate::map::{
-        base::{InsertOp, NUM_FIX_K, NUM_FIX_V, get_delayed_log},
+        base::{get_delayed_log, InsertOp, NUM_FIX_K, NUM_FIX_V},
         *,
     };
     use std::{alloc::System, sync::Arc, thread};
@@ -971,11 +971,11 @@ mod ptr_map {
             let repeats: usize = 4096;
             let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
             let mut threads = vec![];
-            for i in 1..16 {
+            for i in 1..32 {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {
-                         let key = i * 100000 + j;
+                        let key = i * 100000 + j;
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                     }
                     for j in 0..repeats {
