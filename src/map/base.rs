@@ -792,14 +792,10 @@ impl<
                     backoff.spin();
                     continue 'MAIN;
                 }
+                let mut is_sentinel = v.is_primed();
                 match raw {
-                    SENTINEL_VALUE => match &op {
-                        ModOp::Insert(_, _)
-                        | ModOp::AttemptInsert(_, _)
-                        | ModOp::UpsertFastVal(_) => {
-                            return ModResult::Sentinel;
-                        }
-                        _ => {}
+                    SENTINEL_VALUE => {
+                        is_sentinel = true;
                     },
                     BACKWARD_SWAPPING_VALUE => {
                         if iter.terminal {
@@ -816,6 +812,16 @@ impl<
                     }
                     _ => {}
                 }
+                if is_sentinel {
+                    match &op {
+                        ModOp::Insert(_, _)
+                        | ModOp::AttemptInsert(_, _)
+                        | ModOp::UpsertFastVal(_) => {
+                            return ModResult::Sentinel;
+                        }
+                        _ => {}
+                    }
+                }
                 if k == fkey {
                     let attachment = chunk.attachment.prefetch(idx);
                     let key_probe = attachment.probe(&key);
@@ -828,10 +834,6 @@ impl<
                     }
                     if key_probe {
                         let act_val = v.act_val::<V>();
-                        if v.is_primed() {
-                            backoff.spin();
-                            continue 'MAIN;
-                        }
                         if raw >= TOMBSTONE_VALUE {
                             match op {
                                 ModOp::Insert(fval, ov) => {
@@ -963,7 +965,7 @@ impl<
                                     }
                                 }
                             }
-                        } else if raw == SENTINEL_VALUE {
+                        } else if is_sentinel {
                             return ModResult::Sentinel;
                         } else {
                             // Other tags (except tombstone and locks)
@@ -1812,9 +1814,9 @@ impl<
                         idx,
                         count,
                     ) {
-                        Err(idx) => {
+                        Err(distant_idx) => {
                             // Nothing else we can do, just take the distant slot
-                            let addr = new_chunk_ins.entry_addr(idx);
+                            let addr = new_chunk_ins.entry_addr(distant_idx);
                             Self::store_value(addr, act_val);
                             Self::store_key(addr, fkey);
                         }
