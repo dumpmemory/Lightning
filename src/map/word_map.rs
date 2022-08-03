@@ -740,6 +740,15 @@ mod test {
                     for j in 0..repeats {
                         let key = i * multplier + j;
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                        assert_eq!(
+                            map.insert(key, key),
+                            Some(key),
+                            "reinserting at key {}, get {:?}, epoch {}, last log {}",
+                            key,
+                            map.get(&key),
+                            map.table.now_epoch(),
+                            get_delayed_log()
+                        );
                     }
                     for j in 0..repeats {
                         let key = i * multplier + j;

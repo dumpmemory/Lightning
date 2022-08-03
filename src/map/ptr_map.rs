@@ -977,17 +977,26 @@ mod ptr_map {
                     for j in 0..repeats {
                         let key = i * 100000 + j;
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                        assert_eq!(
+                            map.insert(key, key),
+                            Some(key),
+                            "reinserting at key {}, get {:?}, epoch {}, last log {}, i {}",
+                            key - NUM_FIX_K,
+                            map.get(&key),
+                            map.table.now_epoch(),
+                            get_delayed_log(), i
+                        );
                     }
                     for j in 0..repeats {
                         let key = i * 100000 + j;
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {}",
+                            "reinserting at key {}, get {:?}, epoch {}, last log {}, i {}",
                             key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
-                            get_delayed_log()
+                            get_delayed_log(), i
                         );
                     }
                     for j in 0..repeats {
