@@ -1486,7 +1486,7 @@ impl<
             cap
         };
         // Preoccupie half of the new capacity for migration
-        let mut old_occupation = new_cap >> 1;
+        let mut old_occupation = old_cap;
         if old_occupation <= 256 {
             // The map is small, block all insertions until the migration is completed
             old_occupation = new_cap;
