@@ -654,12 +654,12 @@ impl<
         loop {
             let epoch = self.now_epoch();
             let chunk = self.meta.chunk.load(Acquire, &guard);
-            let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
             let is_copying = Self::is_copying(epoch);
             let res = unsafe {
                 if is_copying {
+                    let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
                     let new_chunk_ref = new_chunk.as_ref();
-                    if new_chunk_ref.is_none() {
+                    if new_chunk_ref.is_none() || new_chunk == chunk {
                         backoff.spin();
                         continue;
                     }
@@ -668,7 +668,7 @@ impl<
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
                 }
             };
-            if self.now_epoch() == epoch && chunk != new_chunk {
+            if self.now_epoch() == epoch {
                 debug_assert!(!chunk.is_null());
                 return res;
             }
@@ -796,7 +796,7 @@ impl<
                 match raw {
                     SENTINEL_VALUE => {
                         is_sentinel = true;
-                    },
+                    }
                     BACKWARD_SWAPPING_VALUE => {
                         if iter.terminal {
                             // Only check terminal probing
