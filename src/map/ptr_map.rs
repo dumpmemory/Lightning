@@ -976,14 +976,18 @@ mod ptr_map {
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {
                         let key = i * 100000 + j;
+                        let prev_epoch = map.table.now_epoch();
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                        let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {}, i {}",
+                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {}, i {}",
                             key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
+                            post_insert_epoch,
+                            prev_epoch,
                             get_delayed_log(), i
                         );
                     }
