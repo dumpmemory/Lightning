@@ -2,7 +2,7 @@
 # Recommend syntax for setting an infinite while loop
 set -e
 export RUST_BACKTRACE=1
-export RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address
+# export RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address
 while :
 do
 	current_date_time="`date "+%Y-%m-%d %H:%M:%S"`";

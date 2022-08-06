@@ -725,13 +725,14 @@ impl<
                 let attachment = chunk.attachment.prefetch(idx);
                 let probe = attachment.probe(key);
                 let val_res = Self::get_fast_value(addr);
+                let raw = val_res.val;
                 if Self::get_fast_key(addr) != k {
                     backoff.spin();
                     continue;
                 }
                 if probe {
-                    if val_res.val == FORWARD_SWAPPING_VALUE {
-                        Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, backoff);
+                    if raw == FORWARD_SWAPPING_VALUE {
+                        Self::wait_entry(addr, k, raw, backoff);
                         iter.refresh_following(chunk);
                         continue;
                     } else if val_res.val == BACKWARD_SWAPPING_VALUE {
@@ -1348,10 +1349,11 @@ impl<
                     let candidate_addr = chunk.entry_addr(candidate_idx);
                     let candidate_fkey = Self::get_fast_key(candidate_addr);
                     let candidate_fval = Self::get_fast_value(candidate_addr);
-                    if candidate_fval.val == SENTINEL_VALUE {
+                    let candidate_raw_val = candidate_fval.val;
+                    if candidate_raw_val == SENTINEL_VALUE {
                         return Err(dest_idx);
                     }
-                    if candidate_fval.val < NUM_FIX_V || candidate_fkey < NUM_FIX_K {
+                    if candidate_raw_val < NUM_FIX_V || candidate_fkey < NUM_FIX_K {
                         // Do not temper with non value slot, try next one
                         continue;
                     }
@@ -1365,11 +1367,17 @@ impl<
                         continue;
                     }
                     // First claim this candidate
-                    if !Self::cas_value(candidate_addr, candidate_fval.val, FORWARD_SWAPPING_VALUE)
+                    if !Self::cas_value(candidate_addr, candidate_raw_val, FORWARD_SWAPPING_VALUE)
                         .1
                     {
                         // The slot value have been changed, retry
                         iter.redo();
+                        continue;
+                    }
+                    if !chunk.is_bit_set(idx, candidate_distance) {
+                        // Revert the value change, refresh following bits and try again
+                        Self::store_value(candidate_addr, candidate_raw_val);
+                        iter.refresh_following(chunk);
                         continue;
                     }
 
@@ -1402,13 +1410,14 @@ impl<
 
                     // Discard swapping value on current address by replace it with new value
                     let primed_candidate_val =
-                        syn_val_digest(candidate_key_digest, candidate_fval.val);
+                        syn_val_digest(candidate_key_digest, candidate_raw_val);
                     Self::store_value(curr_addr, primed_candidate_val);
 
                     //Here we had candidate copied. Need to work on the candidate slot
                     // First check if it is already in range of home neighbourhood
                     if candidate_in_range {
                         // In range, fill the candidate slot with our key and values
+                        debug_assert!(fval >= NUM_FIX_V);
                         Self::store_value(candidate_addr, fval);
                         fence(AcqRel);
                         return Ok(candidate_idx);
@@ -2046,6 +2055,16 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     fn get_hop_bits(&self, idx: usize) -> HopBits {
         let addr = self.hop_base + HOP_TUPLE_BYTES * idx;
         unsafe { intrinsics::atomic_load_acquire(addr as *mut HopBits) }
+    }
+
+    #[inline(always)]
+    fn  is_bit_set(&self, idx: usize, pos: usize) -> bool {
+        #[cfg(debug_assertions)]
+        unsafe {
+            let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+            let set_bit = 1 << pos;
+            intrinsics::atomic_load_acquire(ptr) & set_bit > 0
+        }
     }
 
     #[inline(always)]
