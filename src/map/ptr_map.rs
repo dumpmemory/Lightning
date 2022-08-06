@@ -981,9 +981,10 @@ mod ptr_map {
                         assert_eq!(
                             map.get(&key),
                             Some(key),
-                            "Reading after insertion at key {}, epoch {}",
+                            "Reading after insertion at key {}, epoch {}/{}",
                             key,
-                            map.table.now_epoch()
+                            map.table.now_epoch(),
+                            prev_epoch,
                         );
                         let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
