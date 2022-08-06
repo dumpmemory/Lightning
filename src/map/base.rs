@@ -370,12 +370,16 @@ impl<
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
-                        "Some((0, _)), Some(ModResult::Sentinel) key {}",
+                        "Some((0, _)), Some(ModResult::Sentinel) key {}, should not reachable",
                         fkey - NUM_FIX_K
-                    ); // Should not reachable
+                    );
                     res = None;
                 }
                 (Some((fv, v)), Some(ModResult::Sentinel)) => {
+                    delay_log!(
+                        "Some((fv, v)), Some(ModResult::Sentinel) key {}",
+                        fkey - NUM_FIX_K
+                    );
                     res = Some((fv, v.unwrap()));
                 }
                 (None, Some(ModResult::Sentinel)) => {
@@ -393,7 +397,11 @@ impl<
                 }
                 (Some((0, _)), Some(ModResult::Replaced(fv, v, addr))) => {
                     // New insertion in new chunk and have stuff in old chunk
-                    Self::store_value(addr, SENTINEL_VALUE);
+                    delay_log!(
+                        "Some((0, _)), Some(ModResult::Replaced(fv, v, addr)) key {}",
+                        fkey - NUM_FIX_K
+                    );
+                    Self::store_sentinel(addr);
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((0, _)), None) => {
@@ -416,11 +424,20 @@ impl<
                 }
                 (Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr))) => {
                     // Replaced new chunk, should put sentinel in old chunk
-                    Self::store_value(addr, SENTINEL_VALUE);
+                    delay_log!(
+                        "Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr)) key {}",
+                        fkey - NUM_FIX_K
+                    );
+                    Self::store_sentinel(addr);
                     res = Some((fv, v.unwrap()))
                 }
-                (Some((fv, v)), Some(_)) => res = Some((fv, v.unwrap())),
-                (Some((fv, v)), None) => res = Some((fv, v.unwrap())),
+                (Some((fv, v)), _) => {
+                    delay_log!(
+                        "Some((fv, v)), _  key {}",
+                        fkey - NUM_FIX_K
+                    );
+                    res = Some((fv, v.unwrap())); 
+                }
             }
             match &res {
                 Some((fv, _)) => {
@@ -1794,7 +1811,7 @@ impl<
                     //     .attachment
                     //     .manually_drop(fvalue.act_val::<V>());
                     // New value in the new chunk, just put a sentinel and abort migration on this slot
-                    Self::store_value(old_address, SENTINEL_VALUE);
+                    Self::store_sentinel(old_address);
                     return true;
                 }
             } else if k == EMPTY_KEY {

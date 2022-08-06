@@ -738,16 +738,27 @@ mod test {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {
-                        let key = i * multplier + j;
+                        let key = i * 100000 + j;
+                        let prev_epoch = map.table.now_epoch();
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                        assert_eq!(
+                            map.get(&key),
+                            Some(key),
+                            "Reading after insertion at key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
+                        let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {}",
-                            key,
+                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {}, i {}",
+                            key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
-                            get_delayed_log()
+                            post_insert_epoch,
+                            prev_epoch,
+                            get_delayed_log(), i
                         );
                     }
                     for j in 0..repeats {

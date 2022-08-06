@@ -978,6 +978,13 @@ mod ptr_map {
                         let key = i * 100000 + j;
                         let prev_epoch = map.table.now_epoch();
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                        assert_eq!(
+                            map.get(&key),
+                            Some(key),
+                            "Reading after insertion at key {}, epoch {}",
+                            key,
+                            map.table.now_epoch()
+                        );
                         let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
                             map.insert(key, key),
