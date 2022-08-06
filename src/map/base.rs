@@ -370,16 +370,12 @@ impl<
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
-                        "Some((0, _)), Some(ModResult::Sentinel) key {}, should not reachable",
+                        "Some((0, _)), Some(ModResult::Sentinel) key {}",
                         fkey - NUM_FIX_K
-                    );
+                    ); // Should not reachable
                     res = None;
                 }
                 (Some((fv, v)), Some(ModResult::Sentinel)) => {
-                    delay_log!(
-                        "Some((fv, v)), Some(ModResult::Sentinel) key {}",
-                        fkey - NUM_FIX_K
-                    );
                     res = Some((fv, v.unwrap()));
                 }
                 (None, Some(ModResult::Sentinel)) => {
@@ -397,11 +393,7 @@ impl<
                 }
                 (Some((0, _)), Some(ModResult::Replaced(fv, v, addr))) => {
                     // New insertion in new chunk and have stuff in old chunk
-                    delay_log!(
-                        "Some((0, _)), Some(ModResult::Replaced(fv, v, addr)) key {}",
-                        fkey - NUM_FIX_K
-                    );
-                    Self::store_sentinel(addr);
+                    Self::store_value(addr, SENTINEL_VALUE);
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((0, _)), None) => {
@@ -424,20 +416,11 @@ impl<
                 }
                 (Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr))) => {
                     // Replaced new chunk, should put sentinel in old chunk
-                    delay_log!(
-                        "Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr)) key {}",
-                        fkey - NUM_FIX_K
-                    );
-                    Self::store_sentinel(addr);
+                    Self::store_value(addr, SENTINEL_VALUE);
                     res = Some((fv, v.unwrap()))
                 }
-                (Some((fv, v)), _) => {
-                    delay_log!(
-                        "Some((fv, v)), _  key {}",
-                        fkey - NUM_FIX_K
-                    );
-                    res = Some((fv, v.unwrap())); 
-                }
+                (Some((fv, v)), Some(_)) => res = Some((fv, v.unwrap())),
+                (Some((fv, v)), None) => res = Some((fv, v.unwrap())),
             }
             match &res {
                 Some((fv, _)) => {
