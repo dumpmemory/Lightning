@@ -2,12 +2,12 @@
 # Recommend syntax for setting an infinite while loop
 set -e
 export RUST_BACKTRACE=1
-# export RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address
+export RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address
 while :
 do
 	current_date_time="`date "+%Y-%m-%d %H:%M:%S"`";
 	echo $current_date_time;
-	cargo test checking_inserion_with_migrations --target x86_64-unknown-linux-gnu -- --test-threads=1
+	cargo test map --target x86_64-unknown-linux-gnu -- --test-threads=1
 	#lldb --batch  -o run -f /opt/optane/CargoTarget/release/lightning-bench -- --file amd runtime --stride 4 -c -l 26
 done
 #lldb --batch  -o run -f /opt/optane/CargoTarget/debug/deps/lightning-4f3dc7ee5c8b0c6c -- ptr_map

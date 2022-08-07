@@ -185,7 +185,7 @@ impl<
         backoff: &Backoff,
     ) -> Option<(FVal, Option<V>, usize)> {
         'OUTER: loop {
-            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard, backoff);
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             if let Some((mut val, addr, aitem)) = self.get_from_chunk(
                 &*chunk,
                 hash,
@@ -278,7 +278,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let (chunk, chunk_ptr, new_chunk, _epoch) = self.chunk_refs(&guard, &backoff);
+            let (chunk, chunk_ptr, new_chunk, _epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
@@ -465,9 +465,7 @@ impl<
                     self.init_cap,
                     &self.attachment_init_meta,
                 )));
-                self.meta
-                    .chunk
-                    .store(owned_new.into_shared(&guard), Release);
+                self.meta.chunk.store(owned_new.into_shared(&guard), Release);
             }
             dfence();
             self.count.fetch_sub(len, AcqRel);
@@ -485,7 +483,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard, &backoff);
+            let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
             let mut result = None;
             let fast_mod_res = self.modify_entry(
@@ -578,7 +576,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
 
         'OUTER: loop {
-            let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard, &backoff);
+            let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk.map(|_| {
                 self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, None)
@@ -644,7 +642,6 @@ impl<
     fn chunk_refs<'a>(
         &self,
         guard: &'a Guard,
-        backoff: &Backoff,
     ) -> (
         &'a ChunkPtr<K, V, A, ALLOC>,
         Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
@@ -654,25 +651,19 @@ impl<
         loop {
             let epoch = self.now_epoch();
             let chunk = self.meta.chunk.load(Acquire, &guard);
+            let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
             let is_copying = Self::is_copying(epoch);
+            debug_assert!(!chunk.is_null());
             let res = unsafe {
-                if is_copying {
-                    let new_chunk = self.meta.new_chunk.load(Acquire, &guard);
-                    let new_chunk_ref = new_chunk.as_ref();
-                    if new_chunk_ref.is_none() || new_chunk == chunk {
-                        backoff.spin();
-                        continue;
-                    }
-                    (chunk.as_ref().unwrap(), chunk, new_chunk_ref, epoch)
+                if is_copying && chunk.with_tag(0) != new_chunk {
+                    (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
                 } else {
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
                 }
             };
             if self.now_epoch() == epoch {
-                debug_assert!(!chunk.is_null());
                 return res;
             }
-            backoff.spin();
         }
     }
 
@@ -793,7 +784,11 @@ impl<
                     backoff.spin();
                     continue 'MAIN;
                 }
-                let mut is_sentinel = v.is_primed();
+                if v.is_primed() {
+                    backoff.spin();
+                    continue 'MAIN;
+                }
+                let mut is_sentinel = false;
                 match raw {
                     SENTINEL_VALUE => {
                         is_sentinel = true;
@@ -1208,7 +1203,7 @@ impl<
 
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
-        let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard, &Backoff::new());
+        let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
         let mut res = self.all_from_chunk(chunk);
         if let Some(new_chunk) = new_chunk {
             res.append(&mut self.all_from_chunk(&new_chunk));
@@ -1598,8 +1593,8 @@ impl<
                 ec, old_chunk_ptr
             );
         }
-        meta.epoch.fetch_add(1, AcqRel);
         meta.new_chunk.store(Shared::null(), Release);
+        meta.epoch.fetch_add(1, AcqRel);
         trace!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
             old_chunk_ptr,
@@ -1812,6 +1807,7 @@ impl<
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
                     new_attachment.set_value(value, 0);
+                    fence(Acquire);
                     Self::store_key(addr, store_fkey);
                     match Self::adjust_hops(
                         hop_adjustment,
