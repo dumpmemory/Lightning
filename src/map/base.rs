@@ -12,7 +12,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -706,7 +706,7 @@ impl<
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
         let home_idx = hash & cap_mask;
-        let reiter = || chunk.iter_slot_skipable(home_idx, true);
+        let reiter = || chunk.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
         let (mut idx, _) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
