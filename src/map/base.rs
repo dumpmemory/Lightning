@@ -1380,12 +1380,6 @@ impl<
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
                     chunk.set_hop_bit(idx, curr_candidate_distance);
 
-                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
-                    let candidate_in_range = target_hop_distance < NUM_HOPS;
-                    if candidate_in_range {
-                        chunk.set_hop_bit(home_idx, target_hop_distance);
-                    }
-
                     // Starting to copy it co current idx
                     let curr_addr = chunk.entry_addr(curr_idx);
                     // Start from key object in the attachment
@@ -1397,11 +1391,19 @@ impl<
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
+                    // Unset orginal bit right after a complete target key swap and before candidate key swap 
+                    chunk.unset_hop_bit(idx, candidate_distance);
+
+                    // Set the target bit only after the key is setted
+                    let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
+                    let candidate_in_range = target_hop_distance < NUM_HOPS;
+                    if candidate_in_range {
+                        chunk.set_hop_bit(home_idx, target_hop_distance);
+                    }
+
                     // Enable probing on the candidate with inserting key
                     key.map(|key| candidate_attachment.set_key(key.clone()));
                     Self::store_key(candidate_addr, fkey);
-
-                    chunk.unset_hop_bit(idx, candidate_distance);
 
                     // Discard swapping value on current address by replace it with new value
                     let primed_candidate_val =
