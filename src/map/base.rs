@@ -1376,16 +1376,17 @@ impl<
                         continue;
                     }
 
-                    // Should all locked up
-                    debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
-                    debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
-
                     // Update the hop bit
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
                     chunk.set_hop_bit(idx, curr_candidate_distance);
 
                     // Starting to copy it co current idx
                     let curr_addr = chunk.entry_addr(curr_idx);
+
+                    // Should all locked up
+                    debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
+                    debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
+
                     // Start from key object in the attachment
                     let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
                     let candidate_key = candidate_attachment.get_key();
