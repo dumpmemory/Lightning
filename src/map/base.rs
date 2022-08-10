@@ -1376,6 +1376,10 @@ impl<
                         continue;
                     }
 
+                    // Should all locked up
+                    debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
+                    debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
+
                     // Update the hop bit
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
                     chunk.set_hop_bit(idx, curr_candidate_distance);
