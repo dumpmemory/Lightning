@@ -1376,7 +1376,7 @@ impl<
                         continue;
                     }
 
-                    // Update the hop bits
+                    // Update the hop bit
                     let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
                     chunk.set_hop_bit(idx, curr_candidate_distance);
 
@@ -1391,19 +1391,22 @@ impl<
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
-                    // Unset orginal bit right after a complete target key swap and before candidate key swap 
-                    chunk.unset_hop_bit(idx, candidate_distance);
+                    // Enable probing on the candidate with inserting key
+                    key.map(|key| candidate_attachment.set_key(key.clone()));
+                    Self::store_key(candidate_addr, fkey);
 
-                    // Set the target bit only after the key is setted
+                    // Set the target bit only after keys are setted
                     let target_hop_distance = hop_distance(home_idx, candidate_idx, cap);
                     let candidate_in_range = target_hop_distance < NUM_HOPS;
                     if candidate_in_range {
                         chunk.set_hop_bit(home_idx, target_hop_distance);
                     }
 
-                    // Enable probing on the candidate with inserting key
-                    key.map(|key| candidate_attachment.set_key(key.clone()));
-                    Self::store_key(candidate_addr, fkey);
+                    chunk.unset_hop_bit(idx, candidate_distance);
+
+                    // Should all locked up
+                    debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
+                    debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
 
                     // Discard swapping value on current address by replace it with new value
                     let primed_candidate_val =
@@ -1438,7 +1441,7 @@ impl<
         candidate_idx: usize,
         capacity: usize,
     ) -> bool {
-        if home_idx < dest_idx {
+        if home_idx <= dest_idx {
             // No wrap
             if candidate_idx >= home_idx && candidate_idx < dest_idx {
                 return false;
