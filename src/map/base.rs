@@ -1394,10 +1394,12 @@ impl<
                     // And the key object
                     // Then swap the key
                     curr_attachment.set_key(candidate_key);
+                    fence(Release);
                     Self::store_key(curr_addr, candidate_fkey);
 
                     // Enable probing on the candidate with inserting key
                     key.map(|key| candidate_attachment.set_key(key.clone()));
+                    fence(Release);
                     Self::store_key(candidate_addr, fkey);
 
                     // Set the target bit only after keys are setted
@@ -1436,6 +1438,10 @@ impl<
                 }
                 break;
             }
+            debug_assert_eq!({
+                let addr = chunk.entry_addr(dest_idx);
+                Self::get_fast_value(addr).val
+            }, BACKWARD_SWAPPING_VALUE);
             return Err(dest_idx);
         }
     }
@@ -1843,7 +1849,7 @@ impl<
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
                     // other thread. Need to retry
-                    warn!("Migrate {} have conflict", fkey);
+                    trace!("Migrate {} have conflict", fkey);
                     continue;
                 }
             } else {
