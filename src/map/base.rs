@@ -1,8 +1,6 @@
 use std::{
-    borrow::Borrow,
-    cell::{Cell, RefCell},
+    cell::{RefCell},
     sync::Arc,
-    thread,
 };
 
 use super::*;
@@ -74,7 +72,6 @@ enum ModResult<V> {
 
 enum ModOp<'a, V> {
     Insert(FVal, Option<&'a V>),
-    UpsertFastVal(FVal),
     AttemptInsert(FVal, Option<&'a V>),
     SwapFastVal(Box<dyn Fn(FVal) -> Option<FVal>>),
     Sentinel,
@@ -84,7 +81,6 @@ enum ModOp<'a, V> {
 
 pub enum InsertOp {
     Insert,
-    UpsertFast,
     TryInsert,
     Tombstone,
 }
@@ -299,7 +295,6 @@ impl<
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
                 InsertOp::Insert => ModOp::Insert(masked_value, value),
-                InsertOp::UpsertFast => ModOp::UpsertFastVal(masked_value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value),
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
@@ -811,8 +806,7 @@ impl<
                 if is_sentinel {
                     match &op {
                         ModOp::Insert(_, _)
-                        | ModOp::AttemptInsert(_, _)
-                        | ModOp::UpsertFastVal(_) => {
+                        | ModOp::AttemptInsert(_, _) => {
                             return ModResult::Sentinel;
                         }
                         _ => {}
@@ -891,20 +885,6 @@ impl<
                                         let attachment =
                                             read_attachment.then(|| attachment.get_value());
                                         return ModResult::Replaced(act_val, attachment, addr);
-                                    } else {
-                                        backoff.spin();
-                                        continue;
-                                    }
-                                }
-                                ModOp::UpsertFastVal(ref fv) => {
-                                    if Self::cas_value(addr, v.val, *fv).1 {
-                                        if (act_val == TOMBSTONE_VALUE) | (act_val == EMPTY_VALUE) {
-                                            return ModResult::Done(0, None, idx);
-                                        } else {
-                                            let attachment =
-                                                read_attachment.then(|| attachment.get_value());
-                                            return ModResult::Replaced(act_val, attachment, idx);
-                                        }
                                     } else {
                                         backoff.spin();
                                         continue;
@@ -1012,7 +992,7 @@ impl<
                                         chunk,
                                         fkey,
                                         fval,
-                                        Some(key),
+                                        key,
                                         home_idx,
                                         idx,
                                         count,
@@ -1025,55 +1005,6 @@ impl<
                                             Self::store_value(new_addr, TOMBSTONE_VALUE);
                                             return ModResult::TableFull;
                                         }
-                                    }
-                                }
-                                return ModResult::Done(0, None, idx);
-                            }
-                            (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (FORWARD_SWAPPING_VALUE, false) => {
-                                Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
-                                iter.refresh_following(chunk);
-                                continue 'MAIN;
-                            }
-                            (BACKWARD_SWAPPING_VALUE, false) => {
-                                // Reprobe
-                                Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                                iter = reiter();
-                                continue 'MAIN;
-                            }
-                            (_, false) => {
-                                backoff.spin();
-                                continue;
-                            }
-                        }
-                    }
-                    ModOp::UpsertFastVal(fval) => {
-                        let (store_fkey, cas_fval) = if hop_adjustment {
-                            (fkey, BACKWARD_SWAPPING_VALUE)
-                        } else {
-                            (fkey, fval)
-                        };
-                        match Self::cas_value(addr, EMPTY_VALUE, cas_fval) {
-                            (_, true) => {
-                                chunk.occupation.fetch_add(1, AcqRel);
-                                Self::store_key(addr, store_fkey);
-                                match Self::adjust_hops(
-                                    hop_adjustment,
-                                    chunk,
-                                    fkey,
-                                    fval,
-                                    None,
-                                    home_idx,
-                                    idx,
-                                    count,
-                                ) {
-                                    Ok(new_idx) => {
-                                        idx = new_idx;
-                                    }
-                                    Err(new_idx) => {
-                                        let new_addr = chunk.entry_addr(new_idx);
-                                        Self::store_value(new_addr, TOMBSTONE_VALUE);
-                                        return ModResult::TableFull;
                                     }
                                 }
                                 return ModResult::Done(0, None, idx);
@@ -1113,7 +1044,7 @@ impl<
             }
         }
         match op {
-            ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) | ModOp::UpsertFastVal(_) => {
+            ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) => {
                 ModResult::TableFull
             }
             _ => ModResult::NotFound,
@@ -1288,7 +1219,7 @@ impl<
         chunk: &Chunk<K, V, A, ALLOC>,
         fkey: usize,
         fval: usize,
-        key: Option<&K>,
+        key: &K,
         home_idx: usize,
         mut dest_idx: usize,
         hops: usize,
@@ -1398,7 +1329,7 @@ impl<
                     Self::store_key(curr_addr, candidate_fkey);
 
                     // Enable probing on the candidate with inserting key
-                    key.map(|key| candidate_attachment.set_key(key.clone()));
+                    candidate_attachment.set_key(key.clone());
                     fence(Release);
                     Self::store_key(candidate_addr, fkey);
 
@@ -1830,7 +1761,7 @@ impl<
                         new_chunk_ins,
                         fkey,
                         act_val,
-                        Some(&key),
+                        &key,
                         home_idx,
                         idx,
                         count,

@@ -93,7 +93,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn insert(&self, key: K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::UpsertFast, key, value)
+        self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]

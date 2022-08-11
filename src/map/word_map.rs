@@ -46,7 +46,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 
     #[inline(always)]
     fn insert(&self, key: FKey, value: FVal) -> Option<FVal> {
-        self.insert_with_op(InsertOp::UpsertFast, key, value)
+        self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
@@ -198,7 +198,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
             self.value
         );
         self.table
-            .insert(InsertOp::UpsertFast, &(), None, offset_key, offset_val);
+            .insert(InsertOp::Insert, &(), None, offset_key, offset_val);
     }
 }
 

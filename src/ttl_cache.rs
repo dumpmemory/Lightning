@@ -79,7 +79,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> TTLCache<V, AL
                 return Some(comp_v);
             } else {
                 self.table
-                    .insert(InsertOp::UpsertFast, &(), None, key, new_ttl_val);
+                    .insert(InsertOp::Insert, &(), None, key, new_ttl_val);
                 return None;
             }
         }
