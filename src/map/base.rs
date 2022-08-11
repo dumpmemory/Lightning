@@ -1325,12 +1325,10 @@ impl<
                     // And the key object
                     // Then swap the key
                     curr_attachment.set_key(candidate_key);
-                    fence(Release);
                     Self::store_key(curr_addr, candidate_fkey);
 
                     // Enable probing on the candidate with inserting key
                     candidate_attachment.set_key(key.clone());
-                    fence(Release);
                     Self::store_key(candidate_addr, fkey);
 
                     // Set the target bit only after keys are setted
