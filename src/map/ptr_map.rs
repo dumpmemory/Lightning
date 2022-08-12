@@ -25,10 +25,6 @@ struct PtrValueNode<V> {
     ver: AtomicUsize,
 }
 
-struct MapConsts<K, V> {
-    _marker: PhantomData<(K, V)>,
-}
-
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     PtrHashMap<K, V, ALLOC, H>
 {

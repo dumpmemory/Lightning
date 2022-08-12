@@ -716,15 +716,14 @@ impl<
                     backoff.spin();
                     continue;
                 }
+                if raw == FORWARD_SWAPPING_VALUE {
+                    Self::wait_entry(addr, k, raw, backoff);
+                    iter.refresh_following(chunk);
+                    continue;
+                } else if val_res.val == BACKWARD_SWAPPING_VALUE {
+                    return None;
+                }
                 if probe {
-                    if raw == FORWARD_SWAPPING_VALUE {
-                        Self::wait_entry(addr, k, raw, backoff);
-                        iter.refresh_following(chunk);
-                        continue;
-                    } else if val_res.val == BACKWARD_SWAPPING_VALUE {
-                        // No bother, its inserting and swapping
-                        return None;
-                    }
                     if val_res.is_locked() {
                         backoff.spin();
                         continue;
