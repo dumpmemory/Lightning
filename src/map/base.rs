@@ -388,7 +388,7 @@ impl<
                 }
                 (Some((0, _)), Some(ModResult::Replaced(fv, v, addr))) => {
                     // New insertion in new chunk and have stuff in old chunk
-                    Self::store_value(addr, SENTINEL_VALUE);
+                    Self::store_sentinel(addr);
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((0, _)), None) => {
@@ -411,7 +411,7 @@ impl<
                 }
                 (Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr))) => {
                     // Replaced new chunk, should put sentinel in old chunk
-                    Self::store_value(addr, SENTINEL_VALUE);
+                    Self::store_sentinel(addr);
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((fv, v)), Some(_)) => res = Some((fv, v.unwrap())),
@@ -720,8 +720,12 @@ impl<
                     Self::wait_entry(addr, k, raw, backoff);
                     iter.refresh_following(chunk);
                     continue;
-                } else if val_res.val == BACKWARD_SWAPPING_VALUE {
+                } else if raw == BACKWARD_SWAPPING_VALUE && probe {
                     return None;
+                } else if raw == BACKWARD_SWAPPING_VALUE && !probe {
+                    Self::wait_entry(addr, k, raw, backoff);
+                    iter = reiter();
+                    continue;
                 }
                 if probe {
                     if val_res.is_locked() {
@@ -980,12 +984,11 @@ impl<
                                 chunk.occupation.fetch_add(1, AcqRel);
                                 let attachment = chunk.attachment.prefetch(idx);
                                 attachment.set_key(key.clone());
+                                Self::store_key(addr, store_fkey);
                                 if Self::FAT_VAL {
-                                    Self::store_key(addr, fkey);
                                     val.map(|val| attachment.set_value((*val).clone(), 0));
                                     Self::store_raw_value(addr, fval);
                                 } else {
-                                    Self::store_key(addr, store_fkey);
                                     match Self::adjust_hops(
                                         hop_adjustment,
                                         chunk,
@@ -1605,12 +1608,15 @@ impl<
                 }
                 _ => {
                     // The values. First check its key is the same
+                    let old_attachment = old_chunk_ins.attachment.prefetch(idx);
+                    let key = old_attachment.get_key();
                     if Self::get_fast_key(old_address) != fkey {
                         backoff.spin();
                         continue;
                     }
                     if !Self::migrate_entry(
                         fkey,
+                        key,
                         idx,
                         fvalue,
                         old_chunk_ins,
@@ -1680,6 +1686,7 @@ impl<
 
     fn migrate_entry(
         fkey: FKey,
+        key: K,
         old_idx: usize,
         fvalue: FastValue,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
@@ -1721,12 +1728,11 @@ impl<
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let new_attachment = new_chunk_ins.attachment.prefetch(idx);
-                let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
-                let key = old_attachment.get_key();
+                let probe = new_attachment.probe(&key);
                 if Self::get_fast_key(addr) != k {
                     continue;
                 }
-                if new_attachment.probe(&key) {
+                if probe {
                     // New value existed, skip with None result
                     // We also need to drop the fvalue we obtained because it does not fit any where
                     // old_chunk_ins
