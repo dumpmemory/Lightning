@@ -1281,7 +1281,7 @@ impl<
                     if candidate_raw_val == SENTINEL_VALUE {
                         return Err(dest_idx);
                     }
-                    if candidate_raw_val < NUM_FIX_V || candidate_fkey < NUM_FIX_K {
+                    if candidate_raw_val < NUM_FIX_V || candidate_fkey < NUM_FIX_K || candidate_fval.is_primed() {
                         // Do not temper with non value slot, try next one
                         continue;
                     }
