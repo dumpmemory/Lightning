@@ -724,7 +724,7 @@ impl<
                     return None;
                 } else if raw == BACKWARD_SWAPPING_VALUE && !probe {
                     Self::wait_entry(addr, k, raw, backoff);
-                    iter = reiter();
+                    iter.refresh_following(chunk);
                     continue;
                 }
                 if probe {
@@ -972,11 +972,11 @@ impl<
                 let hop_adjustment = Self::need_hop_adjustment(chunk, new_chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
-                        let (store_fkey, cas_fval) = if hop_adjustment {
+                        let cas_fval = if hop_adjustment {
                             // Use empty key to block probing progression for hops
-                            (fkey, BACKWARD_SWAPPING_VALUE)
+                            BACKWARD_SWAPPING_VALUE
                         } else {
-                            (fkey, fval)
+                            fval
                         };
                         let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, cas_fval);
                         match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
@@ -984,7 +984,7 @@ impl<
                                 chunk.occupation.fetch_add(1, AcqRel);
                                 let attachment = chunk.attachment.prefetch(idx);
                                 attachment.set_key(key.clone());
-                                Self::store_key(addr, store_fkey);
+                                Self::store_key(addr, fkey);
                                 if Self::FAT_VAL {
                                     val.map(|val| attachment.set_value((*val).clone(), 0));
                                     Self::store_raw_value(addr, fval);
@@ -1753,7 +1753,6 @@ impl<
                 if Self::cas_value(addr, EMPTY_VALUE, cas_fval).1 {
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
                     let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
-                    let key = old_attachment.get_key();
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
                     new_attachment.set_value(value, 0);
