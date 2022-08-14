@@ -965,8 +965,8 @@ mod ptr_map {
     #[test]
     fn ptr_checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..64 {
-            let repeats: usize = 4096;
+        for _ in 0..16 {
+            let repeats: usize = 40960;
             let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
             let mut threads = vec![];
             for i in 1..8 {
@@ -977,15 +977,18 @@ mod ptr_map {
                         let prev_epoch = map.table.now_epoch();
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                         let post_insert_epoch = map.table.now_epoch();
-                        assert_eq!(
-                            map.get(&key),
-                            Some(key),
-                            "Reading after insertion at key {}, epoch {}/{}/{}",
-                            key,
-                            map.table.now_epoch(),
-                            post_insert_epoch,
-                            prev_epoch,
-                        );
+                        {
+                            let get_test_res = map.get(&key);
+                            let get_epoch = map.table.now_epoch();
+                            if get_test_res != Some(key) {
+                                let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
+                                panic!(
+                                    "Reading after insertion at key {}, epoch {}/{}/{}. Dumped containing {:?}",
+                                    key, get_epoch, post_insert_epoch, prev_epoch,
+                                    all_pairs.get(&key)
+                                );
+                            }
+                        }
                         let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
                             map.insert(key, key),
