@@ -1295,6 +1295,11 @@ impl<
                         iter.redo();
                         continue;
                     }
+
+                    if cfg!(debug_assertions) && !Self::WORD_KEY {
+                        assert_eq!(candidate_fkey & cap_mask, idx);
+                    }
+
                     if !chunk.is_bit_set(idx, candidate_distance) {
                         // Revert the value change, refresh following bits and try again
                         Self::store_value(candidate_addr, candidate_raw_val);
