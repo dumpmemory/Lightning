@@ -1329,6 +1329,8 @@ impl<
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
+                    chunk.unset_hop_bit(idx, candidate_distance);
+
                     // Enable probing on the candidate with inserting key
                     candidate_attachment.set_key(key.clone());
                     Self::store_key(candidate_addr, fkey);
@@ -1339,8 +1341,6 @@ impl<
                     if candidate_in_range {
                         chunk.set_hop_bit(home_idx, target_hop_distance);
                     }
-
-                    chunk.unset_hop_bit(idx, candidate_distance);
 
                     // Should all locked up
                     debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
@@ -1357,7 +1357,6 @@ impl<
                         // In range, fill the candidate slot with our key and values
                         debug_assert!(fval >= NUM_FIX_V);
                         Self::store_value(candidate_addr, fval);
-                        fence(AcqRel);
                         return Ok(candidate_idx);
                     } else {
                         // Not in range, need to swap it closer
@@ -1756,7 +1755,6 @@ impl<
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
                     new_attachment.set_value(value, 0);
-                    fence(Acquire);
                     Self::store_key(addr, store_fkey);
                     match Self::adjust_hops(
                         hop_adjustment,

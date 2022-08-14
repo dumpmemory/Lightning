@@ -305,6 +305,7 @@ impl<K: Clone + Hash + Eq, V: Clone> PtrValAttachmentItem<K, V> {
 impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentItem<K, V> {
     fn get_key(self) -> K {
         let addr = self.addr;
+        fence(Acquire);
         unsafe { (*(addr as *mut K)).clone() }
     }
 
@@ -313,6 +314,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     fn set_key(self, key: K) {
         let addr = self.addr;
         unsafe { ptr::write_volatile(addr as *mut K, key) }
+        fence(Release);
     }
 
     fn set_value(self, _value: (), _old_fval: FVal) {
