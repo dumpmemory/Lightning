@@ -299,7 +299,7 @@ impl<
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
             let lock_old = new_chunk.map(|_| {
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard, None)
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard)
             });
             // match &lock_old {
             //     Some(ModResult::Sentinel)=> {
@@ -308,7 +308,7 @@ impl<
             //     _ => {}
             // }
             let value_insertion =
-                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard, None);
+                self.modify_entry(&*modify_chunk, hash, key, fkey, mod_op, true, &guard);
             let result;
             let reset_locked_old = || match &lock_old {
                 Some(ModResult::Replaced(fv, _v, addr)) => {
@@ -489,7 +489,6 @@ impl<
                 ModOp::SwapFastVal(Box::new(func)),
                 false,
                 &guard,
-                None,
             );
             match fast_mod_res {
                 ModResult::Replaced(fval, _, idx) => {
@@ -513,7 +512,6 @@ impl<
             }
             match (result, new_chunk.is_some()) {
                 (Some((fval, idx, mod_chunk)), true) => {
-                    let new_chunk_ref = new_chunk.map(|c| &**c);
                     loop {
                         // Just try to CAS a sentinel in the old chunk and we are done
                         let sentinel_res = self.modify_entry(
@@ -524,7 +522,6 @@ impl<
                             ModOp::Sentinel,
                             false,
                             &guard,
-                            new_chunk_ref,
                         );
                         match sentinel_res {
                             ModResult::Fail => {
@@ -574,7 +571,7 @@ impl<
             let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk.map(|_| {
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard, None)
+                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard)
             });
             'INNER: loop {
                 let chunk_val = self.modify_entry(
@@ -585,7 +582,6 @@ impl<
                     ModOp::Tombstone,
                     true,
                     &guard,
-                    None,
                 );
                 match chunk_val {
                     ModResult::Replaced(fval, val, _idx) => {
@@ -763,7 +759,6 @@ impl<
         op: ModOp<V>,
         read_attachment: bool,
         _guard: &'a Guard,
-        new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
     ) -> ModResult<V> {
         let cap_mask = chunk.cap_mask();
         let backoff = crossbeam_utils::Backoff::new();
@@ -969,7 +964,7 @@ impl<
             }
             if k == EMPTY_KEY {
                 // trace!("Inserting {}", fkey);
-                let hop_adjustment = Self::need_hop_adjustment(chunk, new_chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
+                let hop_adjustment = Self::need_hop_adjustment(chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
                         let cas_fval = if hop_adjustment {
@@ -1056,12 +1051,10 @@ impl<
     #[inline(always)]
     fn need_hop_adjustment(
         chunk: &Chunk<K, V, A, ALLOC>,
-        new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
         count: usize,
     ) -> bool {
         ENABLE_HOPSOTCH
             && !Self::FAT_VAL
-            && new_chunk.is_none()
             && chunk.capacity > NUM_HOPS
             && count > NUM_HOPS
     }
@@ -1742,7 +1735,7 @@ impl<
                     return true;
                 }
             } else if k == EMPTY_KEY {
-                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, None, count);
+                let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, count);
                 let (store_fkey, cas_fval) = if hop_adjustment {
                     // Use empty key to block probing progression for hops
                     (fkey, BACKWARD_SWAPPING_VALUE)
