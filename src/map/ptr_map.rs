@@ -980,12 +980,15 @@ mod ptr_map {
                         {
                             let get_test_res = map.get(&key);
                             let get_epoch = map.table.now_epoch();
-                            if get_test_res != Some(key) {
+                            let expecting = Some(key);
+                            if get_test_res != expecting {
                                 let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
+                                let dump_epoch = map.table.now_epoch();
                                 panic!(
-                                    "Reading after insertion at key {}, epoch {}/{}/{}. Dumped containing {:?}",
+                                    "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}. Dumped containing {:?} at epoch {}",
+                                    get_test_res, expecting,
                                     key, get_epoch, post_insert_epoch, prev_epoch,
-                                    all_pairs.get(&key)
+                                    all_pairs.get(&key), dump_epoch
                                 );
                             }
                         }
