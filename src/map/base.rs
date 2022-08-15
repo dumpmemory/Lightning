@@ -1237,16 +1237,17 @@ impl<
         let cap_mask = chunk.cap_mask();
         let cap = chunk.capacity;
         let target_key_digest = key_digest(fkey);
+        let overflowing = home_idx + hops >= cap;
         'SWAPPING: loop {
             // Need to adjust hops
             let scaled_curr_idx = dest_idx | cap;
             let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
             let curr_idx = scaled_curr_idx & cap_mask;
             assert_eq!(curr_idx, dest_idx);
-            let (probe_start, probe_end) = if starting < curr_idx {
-                (starting, curr_idx)
-            } else {
+            let (probe_start, probe_end) = if overflowing {
                 (starting, cap + curr_idx)
+            } else {
+                (starting, curr_idx)
             };
             let hop_bits = chunk.get_hop_bits(home_idx);
             if hop_bits == ALL_HOPS_TAKEN {
@@ -1263,7 +1264,7 @@ impl<
                         break;
                     }
                     // Range checking
-                    if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, cap) {
+                    if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, cap, overflowing) {
                         continue;
                     }
                     // Found a candidate slot
@@ -1379,19 +1380,20 @@ impl<
         dest_idx: usize,
         candidate_idx: usize,
         capacity: usize,
+        overflowing: bool,
     ) -> bool {
-        if home_idx <= dest_idx {
-            // No wrap
-            if candidate_idx >= home_idx && candidate_idx < dest_idx {
+        if overflowing {
+            // Wrapped
+            if candidate_idx >= home_idx && candidate_idx < capacity {
+                return false;
+            } else if candidate_idx < dest_idx {
                 return false;
             } else {
                 return true;
             }
         } else {
-            // Wrapped
-            if candidate_idx >= home_idx && candidate_idx < capacity {
-                return false;
-            } else if candidate_idx < dest_idx {
+            // No wrap
+            if candidate_idx >= home_idx && candidate_idx < dest_idx {
                 return false;
             } else {
                 return true;
