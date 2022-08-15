@@ -985,9 +985,10 @@ mod ptr_map {
                                 let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
                                 let dump_epoch = map.table.now_epoch();
                                 panic!(
-                                    "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}. Dumped containing {:?} at epoch {}",
+                                    "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
                                     get_test_res, expecting,
                                     key, get_epoch, post_insert_epoch, prev_epoch,
+                                    get_delayed_log(2),
                                     all_pairs.get(&key), dump_epoch
                                 );
                             }
@@ -996,13 +997,13 @@ mod ptr_map {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {}, i {}",
+                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
                             key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
                             post_insert_epoch,
                             prev_epoch,
-                            get_delayed_log(), i
+                            get_delayed_log(2), i
                         );
                     }
                     for j in 0..repeats {
@@ -1010,11 +1011,11 @@ mod ptr_map {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {}, i {}",
+                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
                             key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
-                            get_delayed_log(), i
+                            get_delayed_log(2), i
                         );
                     }
                     for j in 0..repeats {

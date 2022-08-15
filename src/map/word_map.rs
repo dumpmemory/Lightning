@@ -753,13 +753,13 @@ mod test {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {}, i {}",
+                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
                             key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
                             post_insert_epoch,
                             prev_epoch,
-                            get_delayed_log(), i
+                            get_delayed_log(2), i
                         );
                     }
                     for j in 0..repeats {
@@ -767,11 +767,11 @@ mod test {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {}",
+                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}",
                             key,
                             map.get(&key),
                             map.table.now_epoch(),
-                            get_delayed_log()
+                            get_delayed_log(2)
                         );
                     }
                     for j in 0..repeats {

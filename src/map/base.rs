@@ -1,6 +1,6 @@
 use std::{
     cell::{RefCell},
-    sync::Arc,
+    sync::Arc, collections::VecDeque,
 };
 
 use super::*;
@@ -54,9 +54,10 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
+const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
 thread_local! {
-    static DELAYED_LOG: RefCell<String> = RefCell::new(String::new());
+    static DELAYED_LOG: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 }
 
 enum ModResult<V> {
@@ -131,7 +132,13 @@ struct ChunkMeta<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 macro_rules! delay_log {
     ($($arg:tt)+) => {
         #[cfg(debug_assertions)]
-        DELAYED_LOG.with(|cell| *cell.borrow_mut() = format!($($arg)+))
+        DELAYED_LOG.with(|cell| {
+            let mut list = cell.borrow_mut();
+            list.push_back(format!($($arg)+));
+            if list.len() > DELAY_LOG_CAP {
+                list.pop_front();
+            } 
+        })
     };
 }
 
@@ -1209,7 +1216,7 @@ impl<
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
-    fn adjust_hops(
+    fn  adjust_hops(
         needs_adjust: bool,
         chunk: &Chunk<K, V, A, ALLOC>,
         fkey: usize,
@@ -1238,16 +1245,14 @@ impl<
         let cap = chunk.capacity;
         let target_key_digest = key_digest(fkey);
         let overflowing = home_idx + hops >= cap;
+        let targeting_idx = dest_idx;
         'SWAPPING: loop {
             // Need to adjust hops
-            let scaled_curr_idx = dest_idx | cap;
-            let starting = (scaled_curr_idx - (NUM_HOPS - 1)) & cap_mask;
-            let curr_idx = scaled_curr_idx & cap_mask;
-            assert_eq!(curr_idx, dest_idx);
-            let (probe_start, probe_end) = if overflowing {
-                (starting, cap + curr_idx)
+            let candidate_slots = NUM_HOPS - 1;
+            let (probe_start, probe_end) = if dest_idx < candidate_slots {
+                (cap - (candidate_slots - dest_idx), dest_idx + cap)
             } else {
-                (starting, curr_idx)
+                (dest_idx - candidate_slots, dest_idx)
             };
             let hop_bits = chunk.get_hop_bits(home_idx);
             if hop_bits == ALL_HOPS_TAKEN {
@@ -1264,7 +1269,7 @@ impl<
                         break;
                     }
                     // Range checking
-                    if Self::out_of_hop_range(home_idx, dest_idx, candidate_idx, cap, overflowing) {
+                    if Self::out_of_hop_range(home_idx, targeting_idx, candidate_idx, overflowing) {
                         continue;
                     }
                     // Found a candidate slot
@@ -1309,11 +1314,11 @@ impl<
                     }
 
                     // Update the hop bit
-                    let curr_candidate_distance = hop_distance(idx, curr_idx, cap);
+                    let curr_candidate_distance = hop_distance(idx, dest_idx, cap);
                     chunk.set_hop_bit(idx, curr_candidate_distance);
 
                     // Starting to copy it co current idx
-                    let curr_addr = chunk.entry_addr(curr_idx);
+                    let curr_addr = chunk.entry_addr(dest_idx);
 
                     // Should all locked up
                     debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
@@ -1322,7 +1327,7 @@ impl<
                     // Start from key object in the attachment
                     let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
                     let candidate_key = candidate_attachment.get_key();
-                    let curr_attachment = chunk.attachment.prefetch(curr_idx);
+                    let curr_attachment = chunk.attachment.prefetch(dest_idx);
                     // And the key object
                     // Then swap the key
                     curr_attachment.set_key(candidate_key);
@@ -1379,25 +1384,13 @@ impl<
         home_idx: usize,
         dest_idx: usize,
         candidate_idx: usize,
-        capacity: usize,
         overflowing: bool,
     ) -> bool {
         if overflowing {
             // Wrapped
-            if candidate_idx >= home_idx && candidate_idx < capacity {
-                return false;
-            } else if candidate_idx < dest_idx {
-                return false;
-            } else {
-                return true;
-            }
+            candidate_idx >= dest_idx && candidate_idx < home_idx
         } else {
-            // No wrap
-            if candidate_idx >= home_idx && candidate_idx < dest_idx {
-                return false;
-            } else {
-                return true;
-            }
+            candidate_idx < home_idx || candidate_idx >= dest_idx
         }
     }
 
@@ -2323,8 +2316,13 @@ impl SlotIter {
 }
 
 #[cfg(debug_assertions)]
-pub fn get_delayed_log() -> String {
-    DELAYED_LOG.with(|c| c.borrow().clone())
+pub fn get_delayed_log<'a>(num: usize) -> Vec<String> {
+    DELAYED_LOG.with(|c| {
+        let list = c.borrow();
+        let len = list.len();
+        let s = len - num;
+        list.range(s..).cloned().collect()
+    })
 }
 
 #[cfg(test)]
