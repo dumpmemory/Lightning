@@ -759,7 +759,8 @@ mod test {
                             map.table.now_epoch(),
                             post_insert_epoch,
                             prev_epoch,
-                            get_delayed_log(2), i
+                            get_delayed_log(2),
+                            i
                         );
                     }
                     for j in 0..repeats {

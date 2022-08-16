@@ -1,7 +1,4 @@
-use std::{
-    cell::{RefCell},
-    sync::Arc, collections::VecDeque,
-};
+use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 use super::*;
 
@@ -137,7 +134,7 @@ macro_rules! delay_log {
             list.push_back(format!($($arg)+));
             if list.len() > DELAY_LOG_CAP {
                 list.pop_front();
-            } 
+            }
         })
     };
 }
@@ -305,9 +302,8 @@ impl<
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value),
                 InsertOp::Tombstone => ModOp::Tombstone,
             };
-            let lock_old = new_chunk.map(|_| {
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard)
-            });
+            let lock_old = new_chunk
+                .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard));
             // match &lock_old {
             //     Some(ModResult::Sentinel)=> {
             //         continue;
@@ -467,7 +463,9 @@ impl<
                     self.init_cap,
                     &self.attachment_init_meta,
                 )));
-                self.meta.chunk.store(owned_new.into_shared(&guard), Release);
+                self.meta
+                    .chunk
+                    .store(owned_new.into_shared(&guard), Release);
             }
             dfence();
             self.count.fetch_sub(len, AcqRel);
@@ -577,9 +575,8 @@ impl<
         'OUTER: loop {
             let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
-            let old_chunk_val = new_chunk.map(|_| {
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard)
-            });
+            let old_chunk_val = new_chunk
+                .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard));
             'INNER: loop {
                 let chunk_val = self.modify_entry(
                     &*modify_chunk,
@@ -810,8 +807,7 @@ impl<
                 }
                 if is_sentinel {
                     match &op {
-                        ModOp::Insert(_, _)
-                        | ModOp::AttemptInsert(_, _) => {
+                        ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) => {
                             return ModResult::Sentinel;
                         }
                         _ => {}
@@ -1048,22 +1044,14 @@ impl<
             }
         }
         match op {
-            ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) => {
-                ModResult::TableFull
-            }
+            ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) => ModResult::TableFull,
             _ => ModResult::NotFound,
         }
     }
 
     #[inline(always)]
-    fn need_hop_adjustment(
-        chunk: &Chunk<K, V, A, ALLOC>,
-        count: usize,
-    ) -> bool {
-        ENABLE_HOPSOTCH
-            && !Self::FAT_VAL
-            && chunk.capacity > NUM_HOPS
-            && count > NUM_HOPS
+    fn need_hop_adjustment(chunk: &Chunk<K, V, A, ALLOC>, count: usize) -> bool {
+        ENABLE_HOPSOTCH && !Self::FAT_VAL && chunk.capacity > NUM_HOPS && count > NUM_HOPS
     }
 
     #[inline(always)]
@@ -1216,7 +1204,7 @@ impl<
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
 
-    fn  adjust_hops(
+    fn adjust_hops(
         needs_adjust: bool,
         chunk: &Chunk<K, V, A, ALLOC>,
         fkey: usize,
@@ -1229,15 +1217,38 @@ impl<
         // This algorithm only swap the current indexed slot with the
         // one that has hop bis set to avoid swapping with other swapping slot
         if !ENABLE_HOPSOTCH {
+            delay_log!(
+                "No adjustment for disabled, hops {}, home {}, dest {}",
+                hops,
+                home_idx,
+                dest_idx
+            );
             return Ok(dest_idx);
         }
 
         if hops < NUM_HOPS {
+            debug_assert!(!needs_adjust);
             chunk.set_hop_bit(home_idx, hops);
+            delay_log!(
+                "No adjustment for within range, hops {}, home {}, dest {}, fval {}",
+                hops,
+                home_idx,
+                dest_idx,
+                {
+                    let addr = chunk.entry_addr(dest_idx);
+                    Self::get_fast_value(addr).val
+                }
+            );
             return Ok(dest_idx);
         }
 
         if !needs_adjust {
+            delay_log!(
+                "No adjustment for not needed, hops {}, home {}, dest {}",
+                hops,
+                home_idx,
+                dest_idx
+            );
             return Ok(dest_idx);
         }
 
@@ -1257,6 +1268,13 @@ impl<
             let hop_bits = chunk.get_hop_bits(home_idx);
             if hop_bits == ALL_HOPS_TAKEN {
                 // No slots in the neighbour is available
+                delay_log!(
+                    "No adjustment for all slot taken, home {}, target {}, last {}, overflowing {}",
+                    home_idx,
+                    targeting_idx,
+                    dest_idx,
+                    overflowing
+                );
                 return Err(dest_idx);
             }
             debug_assert!(probe_start < probe_end);
@@ -1277,10 +1295,10 @@ impl<
                     let candidate_fkey = Self::get_fast_key(candidate_addr);
                     let candidate_fval = Self::get_fast_value(candidate_addr);
                     let candidate_raw_val = candidate_fval.val;
-                    if candidate_raw_val == SENTINEL_VALUE {
-                        return Err(dest_idx);
-                    }
-                    if candidate_raw_val < NUM_FIX_V || candidate_fkey < NUM_FIX_K || candidate_fval.is_primed() {
+                    if candidate_raw_val < NUM_FIX_V
+                        || candidate_fkey < NUM_FIX_K
+                        || candidate_fval.is_primed()
+                    {
                         // Do not temper with non value slot, try next one
                         continue;
                     }
@@ -1294,8 +1312,7 @@ impl<
                         continue;
                     }
                     // First claim this candidate
-                    if !Self::cas_value(candidate_addr, candidate_raw_val, FORWARD_SWAPPING_VALUE)
-                        .1
+                    if !Self::cas_value(candidate_addr, candidate_raw_val, FORWARD_SWAPPING_VALUE).1
                     {
                         // The slot value have been changed, retry
                         iter.redo();
@@ -1321,7 +1338,10 @@ impl<
                     let curr_addr = chunk.entry_addr(dest_idx);
 
                     // Should all locked up
-                    debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
+                    debug_assert_eq!(
+                        Self::get_fast_value(candidate_addr).val,
+                        FORWARD_SWAPPING_VALUE
+                    );
                     debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
 
                     // Start from key object in the attachment
@@ -1347,7 +1367,10 @@ impl<
                     }
 
                     // Should all locked up
-                    debug_assert_eq!(Self::get_fast_value(candidate_addr).val, FORWARD_SWAPPING_VALUE);
+                    debug_assert_eq!(
+                        Self::get_fast_value(candidate_addr).val,
+                        FORWARD_SWAPPING_VALUE
+                    );
                     debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
 
                     // Discard swapping value on current address by replace it with new value
@@ -1361,6 +1384,13 @@ impl<
                         // In range, fill the candidate slot with our key and values
                         debug_assert!(fval >= NUM_FIX_V);
                         Self::store_value(candidate_addr, fval);
+                        delay_log!(
+                            "Adjusted home {}, target {}, last {}, overflowing {}",
+                            home_idx,
+                            targeting_idx,
+                            dest_idx,
+                            overflowing
+                        );
                         return Ok(candidate_idx);
                     } else {
                         // Not in range, need to swap it closer
@@ -1372,10 +1402,20 @@ impl<
                 }
                 break;
             }
-            debug_assert_eq!({
-                let addr = chunk.entry_addr(dest_idx);
-                Self::get_fast_value(addr).val
-            }, BACKWARD_SWAPPING_VALUE);
+            debug_assert_eq!(
+                {
+                    let addr = chunk.entry_addr(dest_idx);
+                    Self::get_fast_value(addr).val
+                },
+                BACKWARD_SWAPPING_VALUE
+            );
+            delay_log!(
+                "No adjustment for no slot found, home {}, target {}, last {}, overflowing {}",
+                home_idx,
+                targeting_idx,
+                dest_idx,
+                overflowing
+            );
             return Err(dest_idx);
         }
     }
@@ -1994,7 +2034,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline(always)]
-    fn  is_bit_set(&self, idx: usize, pos: usize) -> bool {
+    fn is_bit_set(&self, idx: usize, pos: usize) -> bool {
         #[cfg(debug_assertions)]
         unsafe {
             let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
