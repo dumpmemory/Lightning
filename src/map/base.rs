@@ -7,7 +7,7 @@ pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
-pub const ENABLE_HOPSOTCH: bool = true;
+pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -186,6 +186,7 @@ impl<
     ) -> Option<(FVal, Option<V>, usize)> {
         'OUTER: loop {
             let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
+            let mut v;
             if let Some((mut val, addr, aitem)) = self.get_from_chunk(
                 &*chunk,
                 hash,
@@ -195,7 +196,7 @@ impl<
                 new_chunk.map(|c| c.deref()),
             ) {
                 'SPIN: loop {
-                    let v = val.val;
+                    v = val.val;
                     if val.is_valued() {
                         let act_val = val.act_val::<V>();
                         let mut attachment = None;
@@ -721,6 +722,7 @@ impl<
                     iter.refresh_following(chunk);
                     continue;
                 } else if raw == BACKWARD_SWAPPING_VALUE && probe {
+                    delay_log!("Get got nothing due to backward value at {} for key {}, hash {}, val {}, home {}", idx, fkey, hash, raw, home_idx);
                     return None;
                 } else if raw == BACKWARD_SWAPPING_VALUE && !probe {
                     Self::wait_entry(addr, k, raw, backoff);
@@ -735,6 +737,7 @@ impl<
                     return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
+                delay_log!("Get got nothing due empty key at {} for key {}, hash {}, val -, home {}", idx, fkey, hash, home_idx);
                 return None;
             }
             new_chunk.map(|new_chunk| {
@@ -749,7 +752,7 @@ impl<
             }
         }
 
-        // not found
+        delay_log!("Get got nothing due nothing found at {} for key {}, hash {}, val -, home {}", idx, fkey, hash, home_idx);
         return None;
     }
 
@@ -1320,7 +1323,7 @@ impl<
                     }
 
                     if cfg!(debug_assertions) && !Self::WORD_KEY {
-                        assert_eq!(candidate_fkey & cap_mask, idx);
+                        assert_eq!(candidate_fkey & cap_mask, idx, "Home mismatch capacity {}", cap);
                     }
 
                     if !chunk.is_bit_set(idx, candidate_distance) {
@@ -1756,7 +1759,7 @@ impl<
         let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
         loop {
-            let addr = new_chunk_ins.entry_addr(idx);
+            let mut addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
             if k == fkey {
                 let new_attachment = new_chunk_ins.attachment.prefetch(idx);
@@ -1776,11 +1779,11 @@ impl<
                 }
             } else if k == EMPTY_KEY {
                 let hop_adjustment = Self::need_hop_adjustment(new_chunk_ins, count);
-                let (store_fkey, cas_fval) = if hop_adjustment {
+                let cas_fval = if hop_adjustment {
                     // Use empty key to block probing progression for hops
-                    (fkey, BACKWARD_SWAPPING_VALUE)
+                    BACKWARD_SWAPPING_VALUE
                 } else {
-                    (fkey, act_val)
+                    act_val
                 };
                 if Self::cas_value(addr, EMPTY_VALUE, cas_fval).1 {
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
@@ -1788,7 +1791,7 @@ impl<
                     let value = old_attachment.get_value();
                     new_attachment.set_key(key.clone());
                     new_attachment.set_value(value, 0);
-                    Self::store_key(addr, store_fkey);
+                    Self::store_key(addr, fkey);
                     match Self::adjust_hops(
                         hop_adjustment,
                         new_chunk_ins,

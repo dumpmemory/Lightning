@@ -988,7 +988,7 @@ mod ptr_map {
                                     "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
                                     get_test_res, expecting,
                                     key, get_epoch, post_insert_epoch, prev_epoch,
-                                    get_delayed_log(2),
+                                    get_delayed_log(3),
                                     all_pairs.get(&key), dump_epoch
                                 );
                             }
@@ -1003,7 +1003,7 @@ mod ptr_map {
                             map.table.now_epoch(),
                             post_insert_epoch,
                             prev_epoch,
-                            get_delayed_log(2), i
+                            get_delayed_log(3), i
                         );
                     }
                     for j in 0..repeats {
@@ -1015,7 +1015,7 @@ mod ptr_map {
                             key - NUM_FIX_K,
                             map.get(&key),
                             map.table.now_epoch(),
-                            get_delayed_log(2), i
+                            get_delayed_log(3), i
                         );
                     }
                     for j in 0..repeats {
