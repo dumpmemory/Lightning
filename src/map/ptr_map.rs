@@ -965,11 +965,11 @@ mod ptr_map {
     #[test]
     fn ptr_checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..16 {
-            let repeats: usize = 40960;
+        for _ in 0..8 {
+            let repeats: usize = 20480;
             let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
             let mut threads = vec![];
-            for i in 1..8 {
+            for i in 1..64 {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {
