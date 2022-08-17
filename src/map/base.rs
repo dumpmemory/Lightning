@@ -723,7 +723,7 @@ impl<
                     continue;
                 } else if raw == BACKWARD_SWAPPING_VALUE { // Do NOT use probe here
                     Self::wait_entry(addr, k, raw, backoff);
-                    iter.refresh_following(chunk);
+                    iter = reiter();
                     continue;
                 }
                 if probe {
