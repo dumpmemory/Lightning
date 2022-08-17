@@ -729,12 +729,12 @@ mod test {
     #[test]
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..64 {
-            let repeats: usize = 4096;
+        for _ in 0..8 {
+            let repeats: usize = 20480;
             let multplier = 100000;
             let map = Arc::new(WordMap::<System>::with_capacity(8));
             let mut threads = vec![];
-            for i in 1..32 {
+            for i in 1..64 {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
                     for j in 0..repeats {

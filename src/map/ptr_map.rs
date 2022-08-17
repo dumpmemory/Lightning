@@ -782,20 +782,19 @@ mod ptr_map {
                           }
                       }
                       if j % 7 == 0 {
-                          let removing = || {
-                            assert_eq!(
-                                map.remove(&key).as_ref(),
-                                Some(&value),
-                                "Remove result, get {:?}, copying {}, round {}",
-                                map.get(&key),
-                                map.table.map_is_copying(),
-                                k
-                            );
-                            assert_eq!(map.get(&key), None, "Remove recursion");
-                            assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                            map.insert(key, value.clone());
-                          };
-                          removing();
+                        let pre_rm_epoch = map.table.now_epoch();
+                        assert_eq!(
+                            map.remove(&key).as_ref(),
+                            Some(&value),
+                            "Remove result, get {:?}, copying {}, round {}",
+                            map.get(&key),
+                            map.table.map_is_copying(),
+                            k
+                        );
+                        let post_rm_epoch = map.table.now_epoch();
+                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch());
+                        assert!(map.lock(&key).is_none(), "Remove recursion with lock");
+                        map.insert(key, value.clone());
                       }
                       if j % 3 == 0 {
                           let updating = || {
@@ -965,7 +964,7 @@ mod ptr_map {
     #[test]
     fn ptr_checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..8 {
+        for _ in 0..2 {
             let repeats: usize = 20480;
             let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
             let mut threads = vec![];
