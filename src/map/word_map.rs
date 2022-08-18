@@ -729,7 +729,7 @@ mod test {
     #[test]
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..8 {
+        for _ in 0..2 {
             let repeats: usize = 20480;
             let multplier = 100000;
             let map = Arc::new(WordMap::<System>::with_capacity(8));

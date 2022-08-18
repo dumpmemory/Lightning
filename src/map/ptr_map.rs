@@ -781,7 +781,7 @@ mod ptr_map {
                               // panic!("Unrecoverable value change for {:?}", key);
                           }
                       }
-                      if j % 7 == 0 {
+                      if j % 8 == 0 {
                         let pre_rm_epoch = map.table.now_epoch();
                         assert_eq!(
                             map.remove(&key).as_ref(),
@@ -796,7 +796,7 @@ mod ptr_map {
                         assert!(map.lock(&key).is_none(), "Remove recursion with lock");
                         map.insert(key, value.clone());
                       }
-                      if j % 3 == 0 {
+                      if j % 4 == 0 {
                           let updating = || {
                             let new_value = val_from(key, value_num + 7);
                             let pre_insert_epoch = map.table.now_epoch();
