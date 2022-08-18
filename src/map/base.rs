@@ -589,7 +589,8 @@ impl<
                     &guard,
                 );
                 match chunk_val {
-                    ModResult::Replaced(fval, val, _idx) => {
+                    ModResult::Replaced(fval, val, idx) => {
+                        delay_log!("Tombstone put at key {} index {}", fkey, idx);
                         return Some((fval, val.unwrap()));
                     }
                     ModResult::Fail => {
@@ -607,7 +608,12 @@ impl<
                 }
             }
             match old_chunk_val {
-                Some(ModResult::Replaced(fval, val, _idx)) => {
+                Some(ModResult::Replaced(fval, val, idx)) => {
+                    delay_log!(
+                        "Tombstone not put but sentinel put at key {} index {}",
+                        fkey,
+                        idx
+                    );
                     return Some((fval, val.unwrap()));
                 }
                 Some(ModResult::Fail) | Some(ModResult::Sentinel) => {
@@ -615,6 +621,7 @@ impl<
                     continue 'OUTER;
                 }
                 None | Some(ModResult::NotFound) => {
+                    delay_log!("Did not removed anything, not found {}", fkey);
                     return None;
                 }
                 Some(_) => {
@@ -732,6 +739,7 @@ impl<
                         backoff.spin();
                         continue;
                     }
+                    delay_log!("Get got for key {}, value {} at {}", fkey, raw, idx);
                     return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {

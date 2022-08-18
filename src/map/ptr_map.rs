@@ -792,7 +792,7 @@ mod ptr_map {
                             k
                         );
                         let post_rm_epoch = map.table.now_epoch();
-                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch());
+                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch(), get_delayed_log(3));
                         assert!(map.lock(&key).is_none(), "Remove recursion with lock");
                         map.insert(key, value.clone());
                       }
