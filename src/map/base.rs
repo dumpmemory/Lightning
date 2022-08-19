@@ -80,7 +80,6 @@ enum ModOp<'a, V> {
 pub enum InsertOp {
     Insert,
     TryInsert,
-    Tombstone,
 }
 
 enum ResizeResult {
@@ -301,7 +300,6 @@ impl<
             let mod_op = match op {
                 InsertOp::Insert => ModOp::Insert(masked_value, value),
                 InsertOp::TryInsert => ModOp::AttemptInsert(masked_value, value),
-                InsertOp::Tombstone => ModOp::Tombstone,
             };
             let lock_old = new_chunk
                 .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard));
@@ -578,6 +576,14 @@ impl<
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk
                 .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard));
+            match old_chunk_val {
+                Some(ModResult::Fail) => {
+                    // Make sure sentinel had succceed first
+                    backoff.spin();
+                    continue 'OUTER
+                }
+                _ => {}
+            }
             'INNER: loop {
                 let chunk_val = self.modify_entry(
                     &*modify_chunk,
@@ -590,7 +596,7 @@ impl<
                 );
                 match chunk_val {
                     ModResult::Replaced(fval, val, idx) => {
-                        delay_log!("Tombstone put at key {} index {}", fkey, idx);
+                        delay_log!("Tombstone key {} index {}, old_val {:?}", fkey, idx, old_chunk_val);
                         return Some((fval, val.unwrap()));
                     }
                     ModResult::Fail => {
@@ -880,6 +886,7 @@ impl<
                                     }
                                 }
                                 ModOp::Tombstone => {
+                                    debug_assert!(!v.is_primed());
                                     if Self::cas_tombstone(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
@@ -887,6 +894,7 @@ impl<
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
                                         } else {
+                                            delay_log!("Tombstone replace to key {} index {}, raw val {}, act val {}", fkey, idx, raw, act_val);
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         }
                                     } else {
@@ -1753,7 +1761,7 @@ impl<
         let primed_orig = fvalue.prime();
 
         // Prime the old address to avoid modification
-        if !Self::cas_value(old_address, fvalue.val, primed_orig.val).1 {
+        if !Self::cas_value(old_address, fvalue.val, primed_orig).1 {
             // here the ownership have been taken by other thread
             trace!("Entry {} has changed", fkey);
             return false;
@@ -1931,8 +1939,7 @@ impl FastValue {
 
     #[inline(always)]
     fn is_primed(self) -> bool {
-        let v = self.val;
-        v | VAL_PRIME_BIT == v
+        self.prime() == self.val
     }
 
     #[inline(always)]
@@ -1942,10 +1949,8 @@ impl FastValue {
     }
 
     #[inline(always)]
-    fn prime(self) -> Self {
-        Self {
-            val: self.val | VAL_PRIME_BIT,
-        }
+    fn prime(self) -> FVal {
+        self.val | VAL_PRIME_BIT
     }
 
     #[inline(always)]
@@ -2395,12 +2400,13 @@ mod test {
 
     #[test]
     fn val_prime() {
-        let mut val = FastValue::new(123);
+        let val = FastValue::new(123);
         assert!(!val.is_primed());
         assert!(!val.is_locked());
         assert!(!val.is_swapping());
         assert!(val.is_valued());
-        val = val.prime();
+        let val = val.prime();
+        let val = FastValue { val };
         assert!(val.is_primed());
         assert!(!val.is_locked());
         assert!(!val.is_swapping());
@@ -2412,12 +2418,13 @@ mod test {
     fn ptr_prime_masking() {
         let num = 123;
         let ptr = &num as *const i32 as usize;
-        let mut val = FastValue::new(ptr);
+        let val = FastValue::new(ptr);
         assert!(!val.is_primed());
         assert!(!val.is_locked());
         assert!(!val.is_swapping());
         assert!(val.is_valued());
-        val = val.prime();
+        let val = val.prime();
+        let val = FastValue { val };
         assert!(val.is_primed());
         assert!(!val.is_locked());
         assert!(!val.is_swapping());

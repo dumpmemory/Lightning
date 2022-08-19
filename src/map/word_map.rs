@@ -390,18 +390,20 @@ mod test {
                           }
                       }
                       if j % 5 == 0 {
-                          assert_eq!(
-                              map.remove(&key),
-                              Some(value),
-                              "Remove result, get {:?}, copying {}, round {}",
-                              map.get(&key),
-                              map.table.map_is_copying(),
-                              k
-                          );
-                          assert_eq!(map.get(&key), None, "Remove recursion, epoch {}, value prefix {}", map.table.now_epoch(), value_prefix);
-                          assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
-                          assert!(map.insert(key, value).is_none());
-                          assert_eq!(map.get(&key), Some(value));
+                        let pre_rm_epoch = map.table.now_epoch();
+                        assert_eq!(
+                            map.remove(&key).as_ref(),
+                            Some(&value),
+                            "Remove result, get {:?}, copying {}, round {}",
+                            map.get(&key),
+                            map.table.map_is_copying(),
+                            k
+                        );
+                        let post_rm_epoch = map.table.now_epoch();
+                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch(), get_delayed_log(3));
+                        assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
+                        assert!(map.insert(key, value).is_none());
+                        assert_eq!(map.get(&key), Some(value));
                       }
                       if j % 3 == 0 {
                           let new_value = value + 7;
