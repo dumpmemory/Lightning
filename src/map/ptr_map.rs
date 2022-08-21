@@ -16,13 +16,15 @@ pub struct PtrHashMap<
 > {
     pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
+    epoch: AtomicUsize, // Global epoch for VBR
     shadow: PhantomData<(K, V, H)>,
 }
 
 #[repr(align(8))]
 struct PtrValueNode<V> {
     value: Cell<V>,
-    ver: AtomicUsize,
+    birth_ver: AtomicUsize,
+    retire_ver: AtomicUsize,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
@@ -61,29 +63,54 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
-            // Release: No other thread is changing the version, but we want the value assignment happened AFTER the version is changed
-            let next_ver = node_ref.ver.fetch_add(1, Release).wrapping_add(1);
-            ptr::write(node_ref.value.as_ptr(), d);
-            Self::compose_value(node_ptr as usize, next_ver)
+            let node_ver = node_ref.retire_ver.load(Relaxed);
+            let mut current_ver = self.epoch.load(Relaxed);
+            loop {
+                if node_ver >= current_ver {
+                    // Bump global apoch
+                    let new_ver = current_ver + 1;
+                    if let Err(actual_ver) = self.epoch.compare_exchange(current_ver, new_ver, Relaxed, Relaxed) {
+                        current_ver = actual_ver;
+                        continue;
+                    } else {
+                        current_ver = new_ver;
+                        break;
+                    }
+                }
+                break;
+            }
+            debug_assert!(node_ver < current_ver, "Version node {} vs. current {}", node_ver, current_ver);
+            node_ref.birth_ver.store(current_ver, Relaxed);
+            node_ref.retire_ver.store(0, Release);
+            let obj_ptr = node_ref.value.as_ptr();
+            if node_ver > 0 {
+                // Free existing object
+                ptr::read(obj_ptr);
+            }
+            ptr::write(obj_ptr, d);
+            Self::compose_value(node_ptr as usize, current_ver)
         }
     }
 
     #[inline(always)]
-    fn deref_val<T: Clone>(&self, val: usize) -> Option<T> {
+    fn deref_val(&self, val: usize) -> Option<V> {
         unsafe {
+            let pre_ver = self.epoch.load(Relaxed);
             let (addr, val_ver) = decompose_value::<K, V>(val);
-            let node_ptr = addr as *mut PtrValueNode<T>;
+            let node_ptr = addr as *mut PtrValueNode<V>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
-            let ver_ptr = node_ref.ver.as_mut_ptr();
-            let node_ver = *ver_ptr & Self::VAL_NODE_LOW_BITS;
+            let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver {
                 return None;
             }
             let v = v_shadow.clone();
             mem::forget(v_shadow);
+            if self.epoch.load(Acquire) != pre_ver {
+                return None;
+            }
             Some(v)
         }
     }
@@ -128,6 +155,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         Self {
             table: PtrTable::with_capacity(cap, attachment_init_meta),
             allocator: alloc,
+            epoch: AtomicUsize::new(1),
             shadow: PhantomData,
         }
     }
