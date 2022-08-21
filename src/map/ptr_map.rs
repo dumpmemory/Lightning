@@ -22,9 +22,9 @@ pub struct PtrHashMap<
 
 #[repr(align(8))]
 struct PtrValueNode<V> {
-    value: Cell<V>,
     birth_ver: AtomicUsize,
     retire_ver: AtomicUsize,
+    value: Cell<V>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
