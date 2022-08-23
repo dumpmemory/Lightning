@@ -1,15 +1,20 @@
+use libc::c_void;
+use parking_lot::Mutex;
+
 // A supposed to be fast and lock-free object allocator without size class
 use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
-use std::{marker::PhantomData, mem};
+use std::{collections::HashSet, marker::PhantomData, mem};
 
 use crate::stack::LinkedRingBufferStack;
 
 pub struct Allocator<T, const B: usize> {
     shared: Arc<SharedAlloc<T, B>>,
     thread: ThreadLocal<TLAlloc<T, B>>,
+    #[cfg(debug_assertions)]
+    asan: Arc<ASan>,
 }
 
 pub struct TLAlloc<T, const B: usize> {
@@ -20,6 +25,9 @@ pub struct TLAlloc<T, const B: usize> {
     shared: Arc<SharedAlloc<T, B>>,
     guard_count: usize,
     defer_free: Vec<usize>,
+    #[cfg(debug_assertions)]
+    #[cfg(asan)]
+    asan: Arc<ASan>,
     _marker: PhantomData<T>,
 }
 
@@ -35,6 +43,8 @@ impl<T, const B: usize> Allocator<T, B> {
         Self {
             shared: Arc::new(SharedAlloc::new()),
             thread: ThreadLocal::new(),
+            #[cfg(debug_assertions)]
+            asan: Arc::new(ASan::new()),
         }
     }
 
@@ -45,15 +55,15 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 
     #[inline(always)]
-    pub fn free(&self, addr: *mut T) {
+    pub fn free(&self, ptr: *mut T) {
         let tl_alloc = self.tl_alloc();
-        tl_alloc.free(addr as usize)
+        tl_alloc.free(ptr)
     }
 
     #[inline(always)]
-    pub fn buffered_free(&self, addr: *mut T) {
+    pub fn buffered_free(&self, ptr: *mut T) {
         let tl_alloc = self.tl_alloc();
-        tl_alloc.buffered_free(addr as usize)
+        tl_alloc.buffered_free(ptr)
     }
 
     #[inline(always)]
@@ -67,7 +77,7 @@ impl<T, const B: usize> Allocator<T, B> {
 
     #[inline(always)]
     fn tl_alloc(&self) -> &mut TLAlloc<T, B> {
-        self.thread.get_or(|| TLAlloc::new(0, 0, &self.shared))
+        self.thread.get_or(|| TLAlloc::new(0, 0, &self))
     }
 }
 
@@ -92,7 +102,11 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         if let Some(pair) = self.free_buffer.pop() {
             return pair;
         }
-        let ptr = unsafe { libc::malloc(Self::BUMP_SIZE) } as usize;
+        let ptr = unsafe {
+            let heap = libc::malloc(Self::BUMP_SIZE);
+            libc::memset(heap, 0, Self::BUMP_SIZE);
+            heap as usize
+        };
         self.all_buffers.push(ptr);
         (ptr, ptr + Self::BUMP_SIZE)
     }
@@ -134,15 +148,18 @@ impl<T, const B: usize> TLAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
 
     #[inline(always)]
-    pub fn new(buffer: usize, limit: usize, shared: &Arc<SharedAlloc<T, B>>) -> Self {
+    pub fn new<'a>(buffer: usize, limit: usize, alloc: &'a Allocator<T, B>) -> Self {
         Self {
             free_list: TLBufferedStack::new(),
             buffered_free: Arc::new(ThreadLocalPage::new()),
             buffer_addr: buffer,
             buffer_limit: limit,
-            shared: shared.clone(),
+            shared: alloc.shared.clone(),
             guard_count: 0,
             defer_free: Vec::with_capacity(64),
+            #[cfg(debug_assertions)]
+            #[cfg(asan)]
+            asan: alloc.asan.clone(),
             _marker: PhantomData,
         }
     }
@@ -150,6 +167,9 @@ impl<T, const B: usize> TLAlloc<T, B> {
     #[inline(always)]
     pub fn alloc(&mut self) -> usize {
         if let Some(addr) = self.free_list.pop() {
+            #[cfg(debug_assertions)]
+            #[cfg(asan)]
+            self.asan.alloc(addr);
             return addr;
         }
         if self.buffer_addr + Self::OBJ_SIZE > self.buffer_limit {
@@ -158,10 +178,12 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 if let Some(free_buffer) = (&*self.shared).free_objs() {
                     let free_buffer_ref = free_buffer.as_mut();
                     if let Some(ptr) = free_buffer_ref.pop_back() {
-                        debug_assert_eq!(self.free_list.num_buffer, 0);
                         free_buffer_ref.next = AtomicArc::null();
                         self.free_list.head = free_buffer;
                         self.free_list.num_buffer += 1;
+                        #[cfg(debug_assertions)]
+                        #[cfg(asan)]
+                        self.asan.alloc(ptr);
                         return ptr;
                     }
                 }
@@ -175,23 +197,42 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 }
             }
         }
+        unsafe {
+            if let Some(addr) = self.buffered_free.as_mut().pop_back() {
+                #[cfg(debug_assertions)]
+                #[cfg(asan)]
+                self.asan.alloc(addr);
+                return addr;
+            }
+        }
         let obj_addr = self.buffer_addr;
         self.buffer_addr += Self::OBJ_SIZE;
         debug_assert!(self.buffer_addr <= self.buffer_limit);
+        #[cfg(debug_assertions)]
+        #[cfg(asan)]
+        self.asan.alloc(obj_addr);
+        // let obj_addr = unsafe { libc::malloc(Self::OBJ_SIZE) } as usize;
+        // unsafe {
+        //     libc::memset(obj_addr as *mut c_void, 0, Self::OBJ_SIZE);
+        // }
         return obj_addr;
     }
 
     #[inline(always)]
-    pub fn free(&mut self, addr: usize) {
-        if let Some(overflow_buffer) = self.free_list.push(addr) {
+    pub fn free(&mut self, ptr: *const T) {
+        if let Some(overflow_buffer) = self.free_list.push(ptr as usize) {
             (&*self.shared).attach_objs(&overflow_buffer);
         }
+        #[cfg(debug_assertions)]
+        #[cfg(asan)]
+        self.asan.free(ptr as usize);
+        // unsafe { libc::free(ptr as *mut c_void) }
     }
 
     #[inline(always)]
-    pub fn buffered_free(&mut self, addr: usize) {
+    pub fn buffered_free(&mut self, ptr: *const T) {
         unsafe {
-            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(addr) {
+            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(ptr as usize) {
                 // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
                 if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
                     &mut self.buffered_free,
@@ -205,6 +246,9 @@ impl<T, const B: usize> TLAlloc<T, B> {
                     .unwrap();
             }
         }
+        #[cfg(debug_assertions)]
+        #[cfg(asan)]
+        self.asan.free(ptr as usize);
     }
 
     #[inline(always)]
@@ -345,7 +389,7 @@ impl<'a, T, const B: usize> Drop for AllocGuard<T, B> {
         alloc.guard_count -= 1;
         if alloc.guard_count == 0 {
             while let Some(ptr) = alloc.defer_free.pop() {
-                alloc.free(ptr);
+                alloc.free(ptr as *const T);
             }
         }
     }
@@ -365,15 +409,15 @@ impl<'a, T, const B: usize> AllocGuard<T, B> {
     }
 
     #[inline(always)]
-    pub fn free(&self, addr: usize) {
+    pub fn free(&self, ptr: *const T) {
         let alloc = unsafe { &mut *self.alloc };
-        alloc.free(addr)
+        alloc.free(ptr)
     }
 
     #[inline(always)]
-    pub fn buffered_free(&self, addr: usize) {
+    pub fn buffered_free(&self, ptr: *const T) {
         let alloc = unsafe { &mut *self.alloc };
-        alloc.buffered_free(addr)
+        alloc.buffered_free(ptr)
     }
 }
 
@@ -422,5 +466,203 @@ impl<const B: usize> ThreadLocalPage<B> {
         }
         self.pos -= 1;
         Some(self.buffer[self.pos])
+    }
+}
+
+unsafe impl<T, const B: usize> Send for Allocator<T, B> {}
+
+pub(crate) struct ASan {
+    inner: Mutex<ASanInner>,
+}
+
+pub(crate) struct ASanInner {
+    created: HashSet<usize>,
+    allocated: HashSet<usize>,
+    reclaimed: HashSet<usize>,
+}
+
+impl ASanInner {
+    pub fn new() -> Self {
+        ASanInner {
+            created: HashSet::new(),
+            allocated: HashSet::new(),
+            reclaimed: HashSet::new(),
+        }
+    }
+
+    pub fn alloc(&mut self, addr: usize) {
+        if !self.created.contains(&addr) {
+            // address never allocated
+            assert!(!self.allocated.contains(&addr), "address {}", addr);
+            assert!(!self.reclaimed.contains(&addr), "address {}", addr);
+            self.created.insert(addr);
+            self.allocated.insert(addr);
+            return;
+        } else if self.reclaimed.contains(&addr) {
+            assert!(self.created.contains(&addr), "address {}", addr);
+            assert!(!self.allocated.contains(&addr), "address {}", addr);
+            self.reclaimed.remove(&addr);
+            self.allocated.insert(addr);
+            return;
+        }
+        let create = self.created.contains(&addr);
+        let allocated = self.allocated.contains(&addr);
+        let reclaimed = self.reclaimed.contains(&addr);
+        panic!(
+            "Invalid alloc state: created {}, allocated {}, reclaimed {} address {}",
+            create, allocated, reclaimed, addr
+        );
+    }
+
+    pub fn free(&mut self, addr: usize) {
+        assert!(self.created.contains(&addr), "address {}", addr);
+        assert!(self.allocated.contains(&addr), "address {}", addr);
+        assert!(!self.reclaimed.contains(&addr), "address {}", addr);
+        self.allocated.remove(&addr);
+        self.reclaimed.insert(addr);
+    }
+}
+
+impl ASan {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(ASanInner::new()),
+        }
+    }
+
+    #[cfg(asan)]
+    fn alloc(&self, addr: usize) {
+        let mut inner = self.inner.lock();
+        inner.alloc(addr)
+    }
+
+    #[cfg(asan)]
+    fn free(&self, addr: usize) {
+        let mut inner = self.inner.lock();
+        inner.free(addr)
+    }
+
+    #[cfg(not(asan))]
+    fn alloc(&self, _addr: usize) {}
+
+    #[cfg(not(asan))]
+    fn free(&self, _addr: usize) {}
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::HashSet, thread};
+
+    use super::*;
+
+    const BUFFER_SIZE: usize = 4;
+
+    #[test]
+    #[cfg(not(asan))]
+    fn recycle_thread_local_free_alloc() {
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
+        let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
+        let test_size = BUFFER_SIZE * 1024;
+        for i in 0..test_size {
+            thread_local.free(i as *const usize);
+        }
+        let mut reallocated = HashSet::new();
+        for i in 0..test_size {
+            let alloc_res = thread_local.alloc();
+            assert!(alloc_res < test_size, "Reallocated {} at {}", alloc_res, i);
+            assert!(!reallocated.contains(&alloc_res));
+            reallocated.insert(alloc_res);
+        }
+        assert!(thread_local.alloc() > test_size);
+    }
+
+    #[test]
+    #[cfg(not(asan))]
+    fn recycle_thread_local_buffered_free_alloc() {
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
+        let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
+        let test_size = BUFFER_SIZE * 1024;
+        for i in 0..test_size {
+            thread_local.buffered_free(i as *const usize);
+        }
+        let mut reallocated = HashSet::new();
+        for i in 0..test_size {
+            let alloc_res = thread_local.alloc();
+            assert!(alloc_res < test_size, "Reallocated {} at {}", alloc_res, i);
+            assert!(!reallocated.contains(&alloc_res));
+            reallocated.insert(alloc_res);
+        }
+        assert!(thread_local.alloc() > test_size);
+    }
+
+    #[test]
+    fn checking_thread_local_alloc() {
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
+        let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
+        let test_size = BUFFER_SIZE * 1024;
+        let mut allocated = HashSet::new();
+        for _ in 0..test_size {
+            let addr = thread_local.alloc();
+            assert!(!allocated.contains(&addr));
+            allocated.insert(addr);
+        }
+        assert_eq!(test_size, allocated.len());
+        for addr in &allocated.clone() {
+            thread_local.free(*addr as *const usize);
+        }
+        for _ in 0..test_size {
+            let addr = thread_local.alloc();
+            assert!(allocated.remove(&addr));
+        }
+        assert!(!allocated.contains(&thread_local.alloc()));
+        assert!(allocated.is_empty());
+    }
+
+    #[test]
+    fn checking_thread_local_alter_alloc() {
+        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
+        let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
+        let test_size = BUFFER_SIZE * 1024;
+        let mut allocated = HashSet::new();
+        for _ in 0..test_size {
+            let addr = thread_local.alloc();
+            assert!(!allocated.contains(&addr));
+            allocated.insert(addr);
+        }
+        let mut reallocated = HashSet::new();
+        for addr in &allocated {
+            let realloc_addr = thread_local.alloc();
+            thread_local.free(*addr as *const usize);
+            assert!(!reallocated.contains(&realloc_addr));
+            reallocated.insert(realloc_addr);
+        }
+    }
+
+    #[test]
+    fn checking_multithread_alter_alloc() {
+        let allocator = Arc::new(Allocator::<usize, BUFFER_SIZE>::new());
+        let num_threads = num_cpus::get();
+        let mut threads = vec![];
+        for _ in 0..num_threads {
+            let allocator = allocator.clone();
+            threads.push(thread::spawn(move || {
+                let test_size = BUFFER_SIZE * 10240;
+                let allocator = allocator.pin();
+                let mut allocated = HashSet::new();
+                for _ in 0..test_size {
+                    let addr = allocator.alloc();
+                    assert!(!allocated.contains(&addr));
+                    allocated.insert(addr);
+                }
+                let mut reallocated = HashSet::new();
+                for addr in &allocated {
+                    let realloc_addr = allocator.alloc();
+                    allocator.free(*addr as *mut usize);
+                    assert!(!reallocated.contains(&realloc_addr));
+                    reallocated.insert(realloc_addr);
+                }
+            }))
+        }
+        threads.into_iter().for_each(|t| t.join().unwrap());
     }
 }

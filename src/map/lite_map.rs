@@ -93,7 +93,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn insert(&self, key: K, value: V) -> Option<V> {
-        self.insert_with_op(InsertOp::UpsertFast, key, value)
+        self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
@@ -160,7 +160,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 k_num,
                 &(),
                 move |fast_value| {
-                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    let locked_val = fast_value | VAL_MUTEX_BIT;
                     if fast_value == locked_val {
                         // Locked, unchanged
                         None
@@ -200,7 +200,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             &(),
             Some(&()),
             k_num,
-            fvalue | MUTEX_BIT_MASK,
+            fvalue | VAL_MUTEX_BIT,
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,

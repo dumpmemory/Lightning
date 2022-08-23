@@ -46,7 +46,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 
     #[inline(always)]
     fn insert(&self, key: FKey, value: FVal) -> Option<FVal> {
-        self.insert_with_op(InsertOp::UpsertFast, key, value)
+        self.insert_with_op(InsertOp::Insert, key, value)
     }
 
     #[inline(always)]
@@ -56,9 +56,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 
     #[inline(always)]
     fn remove(&self, key: &FKey) -> Option<FVal> {
-        self.table
-            .remove(&(), key + NUM_FIX_K)
-            .map(|(v, _)| v - NUM_FIX_V)
+        self.table.remove(&(), key + NUM_FIX_K).map(|(v, _)| {
+            debug_assert!(v >= NUM_FIX_V, "Got illegal value {}", v);
+            v - NUM_FIX_V
+        })
     }
     fn entries(&self) -> Vec<(FKey, FVal)> {
         self.table
@@ -98,13 +99,9 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         let value = 0;
         let offset_key = key + NUM_FIX_K;
         let offset_value = 0 + NUM_FIX_V;
-        match table.insert(
-            InsertOp::TryInsert,
-            &(),
-            Some(&()),
-            offset_key,
-            offset_value | MUTEX_BIT_MASK,
-        ) {
+        let locked_val = offset_value | VAL_MUTEX_BIT;
+        debug_assert_ne!(offset_value, locked_val);
+        match table.insert(InsertOp::TryInsert, &(), Some(&()), offset_key, locked_val) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
                 Some(Self { table, key, value })
@@ -126,7 +123,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
-                    let locked_val = fast_value | MUTEX_BIT_MASK;
+                    let locked_val = fast_value | VAL_MUTEX_BIT;
                     if fast_value == locked_val {
                         // Locked, unchanged
                         trace!("The key {} have locked, unchanged and try again", key);
@@ -194,18 +191,14 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
     fn drop(&mut self) {
         let offset_key = self.key + NUM_FIX_V;
         let offset_val = self.value + NUM_FIX_V;
+        debug_assert_ne!(offset_val, offset_val | VAL_MUTEX_BIT);
         trace!(
             "Release lock for key {} with value {}",
             self.key,
             self.value
         );
-        self.table.insert(
-            InsertOp::UpsertFast,
-            &(),
-            None,
-            offset_key,
-            offset_val & WORD_MUTEX_DATA_BIT_MASK,
-        );
+        self.table
+            .insert(InsertOp::Insert, &(), None, offset_key, offset_val);
     }
 }
 
@@ -269,7 +262,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{NUM_FIX_K, NUM_FIX_V},
+        base::{get_delayed_log, NUM_FIX_K, NUM_FIX_V},
         *,
     };
     use alloc::sync::Arc;
@@ -393,21 +386,24 @@ mod test {
                                       );
                                   }
                               }
-                              panic!("Unable to recover for {}, round {}, copying {}", key, l , map.table.map_is_copying());
+                              panic!("Unable to recover for {}, round {}, copying {}, expecting {:?}, got {:?}", key, l , map.table.map_is_copying(), right, left);
                           }
                       }
                       if j % 5 == 0 {
-                          assert_eq!(
-                              map.remove(&key),
-                              Some(value),
-                              "Remove result, get {:?}, copying {}, round {}",
-                              map.get(&key),
-                              map.table.map_is_copying(),
-                              k
-                          );
-                          assert_eq!(map.get(&key), None, "Remove recursion, epoch {}", map.table.now_epoch());
-                          assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
-                          map.insert(key, value);
+                        let pre_rm_epoch = map.table.now_epoch();
+                        assert_eq!(
+                            map.remove(&key).as_ref(),
+                            Some(&value),
+                            "Remove result, get {:?}, copying {}, round {}",
+                            map.get(&key),
+                            map.table.map_is_copying(),
+                            k
+                        );
+                        let post_rm_epoch = map.table.now_epoch();
+                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch(), get_delayed_log(3));
+                        assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
+                        assert!(map.insert(key, value).is_none());
+                        assert_eq!(map.get(&key), Some(value));
                       }
                       if j % 3 == 0 {
                           let new_value = value + 7;
@@ -518,7 +514,7 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(16));
         let mut threads = vec![];
-        let num_threads = 16;
+        let num_threads = num_cpus::get();
         let test_load = 4096;
         let update_load = 128;
         for thread_id in 0..num_threads {
@@ -610,7 +606,7 @@ mod test {
         let key = 10;
         map.insert(key, base_val - NUM_FIX_V);
         let offset_key = key + NUM_FIX_K;
-        for j in 0..4096 {
+        for j in 0..40960 {
             let curr_val = base_val + j;
             let next_val = curr_val + 1;
             map.insert(key, curr_val - NUM_FIX_V);
@@ -633,7 +629,7 @@ mod test {
                 let key = i + 20;
                 map.insert(key, base_val - NUM_FIX_V);
                 let offset_key = key + NUM_FIX_K;
-                for j in 0..4096 {
+                for j in 0..40960 {
                     let curr_val = base_val + j;
                     let next_val = curr_val + 1;
                     debug_assert_eq!(map.get(&key), Some(curr_val - NUM_FIX_V));
@@ -655,14 +651,15 @@ mod test {
     #[test]
     fn swap_with_resize() {
         let _ = env_logger::try_init();
-        let repeats: usize = 4096;
+        let repeats: usize = 409600;
+        let multiplier = 10000000;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
-        for i in 0..128 {
+        for i in 0..32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 let guard = crossbeam_epoch::pin();
-                let base_val = (i + 20) * 10000000;
+                let base_val = (i + 20) * multiplier;
                 let key = i + 20;
                 map.insert(key, base_val - NUM_FIX_V);
                 let offset_key = key + NUM_FIX_K;
@@ -690,24 +687,31 @@ mod test {
                         },
                         &guard,
                     );
-                    debug_assert_eq!(
-                        map.get(&key),
-                        Some(next_val - NUM_FIX_V),
-                        "Value checking after swap at epoch {}", 
-                        map.table.now_epoch()
-                    );
+                    let got_value = map.get(&key);
+                    let expecting_value = Some(next_val - NUM_FIX_V);
+                    if got_value != expecting_value {
+                        let error_epoch = map.table.now_epoch();
+                        error!("Value checking after swap at epoch {:?}. Expecting {:?} found {:?}. Probing for final value", error_epoch, expecting_value, got_value);
+                        (0..256).for_each(|i| {
+                            let new_got_value = map.get(&key);
+                            if new_got_value == expecting_value {
+                                panic!("Value checking failed. Expecting {:?} got {:?} recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i, map.table.capacity());
+                            }
+                        });
+                        panic!("Value checking failed. Expecting {:?} got {:?} DID NOT recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i, map.table.capacity());
+                    }
                 }
             }));
         }
-        for i in 1..64 {
+        for i in 1..16 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 0..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multiplier + j;
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                 }
                 for j in 0..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multiplier + j;
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
@@ -716,7 +720,7 @@ mod test {
                     );
                 }
                 for j in 0..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multiplier + j;
                     assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
                 }
             }));
@@ -727,34 +731,60 @@ mod test {
     #[test]
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        let repeats: usize = 4096;
-        let map = Arc::new(WordMap::<System>::with_capacity(8));
-        let mut threads = vec![];
-        for i in 1..64 {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(
-                        map.insert(key, key),
-                        Some(key),
-                        "reinserting at key {}, get {:?}, epoch {}",
-                        key - NUM_FIX_K,
-                        map.get(&key),
-                        map.table.now_epoch()
-                    );
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
-                }
-            }));
+        for _ in 0..2 {
+            let repeats: usize = 20480;
+            let multplier = 100000;
+            let map = Arc::new(WordMap::<System>::with_capacity(8));
+            let mut threads = vec![];
+            for i in 1..64 {
+                let map = map.clone();
+                threads.push(thread::spawn(move || {
+                    for j in 0..repeats {
+                        let key = i * 100000 + j;
+                        let prev_epoch = map.table.now_epoch();
+                        assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                        assert_eq!(
+                            map.get(&key),
+                            Some(key),
+                            "Reading after insertion at key {}, epoch {}/{}",
+                            key,
+                            map.table.now_epoch(),
+                            prev_epoch
+                        );
+                        let post_insert_epoch = map.table.now_epoch();
+                        assert_eq!(
+                            map.insert(key, key),
+                            Some(key),
+                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
+                            key - NUM_FIX_K,
+                            map.get(&key),
+                            map.table.now_epoch(),
+                            post_insert_epoch,
+                            prev_epoch,
+                            get_delayed_log(2),
+                            i
+                        );
+                    }
+                    for j in 0..repeats {
+                        let key = i * multplier + j;
+                        assert_eq!(
+                            map.insert(key, key),
+                            Some(key),
+                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}",
+                            key,
+                            map.get(&key),
+                            map.table.now_epoch(),
+                            get_delayed_log(2)
+                        );
+                    }
+                    for j in 0..repeats {
+                        let key = i * multplier + j;
+                        assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                    }
+                }));
+            }
+            threads.into_iter().for_each(|t| t.join().unwrap());
         }
-        threads.into_iter().for_each(|t| t.join().unwrap());
     }
 
     #[bench]

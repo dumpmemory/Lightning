@@ -86,7 +86,7 @@ impl<T> Drop for ThreadLocal<T> {
                 continue;
             }
             unsafe {
-                Box::from_raw(v as *mut T);
+                drop(Box::from_raw(v as *mut T));
             }
         }
         for cell in self.fast_map.iter() {
@@ -95,7 +95,7 @@ impl<T> Drop for ThreadLocal<T> {
                 continue;
             }
             unsafe {
-                Box::from_raw(addr as *mut T);
+                drop(Box::from_raw(addr as *mut T));
             }
             cell.set(0 as *mut T);
         }

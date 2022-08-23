@@ -1,6 +1,5 @@
 use bustle::*;
 use scc::HashMap;
-use std::collections::hash_map::RandomState;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -9,7 +8,7 @@ pub struct Table(Arc<HashMap<usize, usize>>);
 impl Collection for Table {
     type Handle = Self;
     fn with_capacity(capacity: usize) -> Self {
-        Self(Arc::new(HashMap::new(capacity, RandomState::default())))
+        Self(Arc::new(HashMap::with_capacity(capacity)))
     }
 
     fn pin(&self) -> Self::Handle {

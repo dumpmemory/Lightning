@@ -1,10 +1,10 @@
 #![feature(core_intrinsics)]
 #![feature(allocator_api)]
-#![feature(const_fn_trait_bound)]
 #![feature(test)]
 #![feature(once_cell)]
 #![feature(atomic_mut_ptr)]
 #![feature(inherent_associated_types)]
+#![feature(specialization)]
 #[macro_use]
 extern crate log;
 extern crate alloc;
