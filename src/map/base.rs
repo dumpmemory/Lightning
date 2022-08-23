@@ -2057,7 +2057,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn is_bit_set(&self, idx: usize, pos: usize) -> bool {
-        #[cfg(debug_assertions)]
         unsafe {
             let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
             let set_bit = 1 << pos;
