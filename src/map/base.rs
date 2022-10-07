@@ -1165,7 +1165,7 @@ impl<
     fn cas_tombstone(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe {
-            intrinsics::atomic_cxchg_acqrel_failrelaxed(
+            intrinsics::atomic_cxchg_acqrel_relaxed(
                 addr as *mut FVal,
                 original,
                 TOMBSTONE_VALUE,
@@ -1177,7 +1177,7 @@ impl<
     fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> (FVal, bool) {
         debug_assert!(entry_addr > 0);
         let addr = entry_addr + mem::size_of::<FKey>();
-        unsafe { intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, value) }
+        unsafe { intrinsics::atomic_cxchg_acqrel_relaxed(addr as *mut FVal, original, value) }
     }
 
     #[inline(always)]
@@ -1218,7 +1218,7 @@ impl<
     fn cas_sentinel(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         let (val, done) = unsafe {
-            intrinsics::atomic_cxchg_acqrel_failrelaxed(addr as *mut FVal, original, SENTINEL_VALUE)
+            intrinsics::atomic_cxchg_acqrel_relaxed(addr as *mut FVal, original, SENTINEL_VALUE)
         };
         done || ((val & FVAL_VAL_BIT_MASK) == SENTINEL_VALUE)
     }
@@ -2104,7 +2104,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             unsafe {
                 let orig_bits = intrinsics::atomic_load_acquire(ptr);
                 let target_bits = orig_bits | set_bit & unset_mask;
-                if intrinsics::atomic_cxchg_relaxed(ptr, orig_bits, target_bits).1 {
+                if intrinsics::atomic_cxchg_acqrel_relaxed(ptr, orig_bits, target_bits).1 {
                     return;
                 }
             }
