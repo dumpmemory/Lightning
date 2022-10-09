@@ -367,8 +367,8 @@ impl<
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
-                        "Some((0, _)), Some(ModResult::Sentinel) key {}",
-                        fkey - NUM_FIX_K
+                        "Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}",
+                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base)
                     ); // Should not reachable
                     res = None;
                 }
@@ -394,7 +394,7 @@ impl<
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((0, _)), None) => {
-                    delay_log!("Some((0, _)), None key {}", fkey - NUM_FIX_K);
+                    delay_log!("Some((0, _)), None key {}, old chunk {}, new chunk {:?}", fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base));
                     res = None;
                 }
                 (Some((0, _)), Some(ModResult::NotFound)) => {
@@ -405,7 +405,7 @@ impl<
                     res = None;
                 }
                 (Some((0, _)), _) => {
-                    delay_log!("Some((0, _)), _ key {}", fkey - NUM_FIX_K);
+                    delay_log!("Some((0, _)), _ key {}, old chunk {}, new chunk {:?}", fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base));
                     res = None;
                 }
                 (None, None) => {
@@ -422,7 +422,7 @@ impl<
             match &res {
                 Some((fv, _)) => {
                     if *fv < NUM_FIX_V {
-                        delay_log!("*fv <= NUM_FIX_V {} key {}", fkey + NUM_FIX_K, fv);
+                        delay_log!("*fv <= NUM_FIX_V {} key {}, old chunk {}, new chunk {:?}", fkey + NUM_FIX_K, fv, chunk.base, new_chunk.map(|c| c.base));
                         return None;
                     }
                 }
@@ -596,7 +596,7 @@ impl<
                 );
                 match chunk_val {
                     ModResult::Replaced(fval, val, idx) => {
-                        delay_log!("Tombstone key {} index {}, old_val {:?}", fkey, idx, old_chunk_val);
+                        delay_log!("Tombstone key {} index {}, old_val {:?}, old chunk {}, new chunk {:?}", fkey, idx, old_chunk_val, chunk.base, new_chunk.map(|c| c.base));
                         return Some((fval, val.unwrap()));
                     }
                     ModResult::Fail => {
@@ -616,9 +616,10 @@ impl<
             match old_chunk_val {
                 Some(ModResult::Replaced(fval, val, idx)) => {
                     delay_log!(
-                        "Tombstone not put but sentinel put at key {} index {}",
+                        "Tombstone not put but sentinel put at key {} index {}, old chunk {}, new chunk {:?}",
                         fkey,
-                        idx
+                        idx,
+                        chunk.base, new_chunk.map(|c| c.base)
                     );
                     return Some((fval, val.unwrap()));
                 }
@@ -627,7 +628,7 @@ impl<
                     continue 'OUTER;
                 }
                 None | Some(ModResult::NotFound) => {
-                    delay_log!("Did not removed anything, not found {}", fkey);
+                    delay_log!("Did not removed anything, not found {}, old chunk {}, new chunk {:?}", fkey, chunk.base, new_chunk.map(|c| c.base));
                     return None;
                 }
                 Some(_) => {
@@ -745,16 +746,17 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                    delay_log!("Get got for key {}, value {} at {}", fkey, raw, idx);
+                    delay_log!("Get got for key {}, value {} at {}, chunk {}", fkey, raw, idx, chunk.base);
                     return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
                 delay_log!(
-                    "Get got nothing due empty key at {} for key {}, hash {}, val -, home {}",
+                    "Get got nothing due empty key at {} for key {}, hash {}, val -, home {}, chunk {}",
                     idx,
                     fkey,
                     hash,
-                    home_idx
+                    home_idx,
+                    chunk.base
                 );
                 return None;
             }
@@ -771,11 +773,12 @@ impl<
         }
 
         delay_log!(
-            "Get got nothing due nothing found at {} for key {}, hash {}, val -, home {}",
+            "Get got nothing due nothing found at {} for key {}, hash {}, val -, home {}, chunk {}",
             idx,
             fkey,
             hash,
-            home_idx
+            home_idx,
+            chunk.base
         );
         return None;
     }
@@ -894,7 +897,7 @@ impl<
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
                                         } else {
-                                            delay_log!("Tombstone replace to key {} index {}, raw val {}, act val {}", fkey, idx, raw, act_val);
+                                            delay_log!("Tombstone replace to key {} index {}, raw val {}, act val {}, chunk {}", fkey, idx, raw, act_val, chunk.base);
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         }
                                     } else {
@@ -1237,10 +1240,11 @@ impl<
         // one that has hop bis set to avoid swapping with other swapping slot
         if !ENABLE_HOPSOTCH {
             delay_log!(
-                "No adjustment for disabled, hops {}, home {}, dest {}",
+                "No adjustment for disabled, hops {}, home {}, dest {}, chunk {}",
                 hops,
                 home_idx,
-                dest_idx
+                dest_idx,
+                chunk.base
             );
             return Ok(dest_idx);
         }
@@ -1249,24 +1253,26 @@ impl<
             debug_assert!(!needs_adjust);
             chunk.set_hop_bit(home_idx, hops);
             delay_log!(
-                "No adjustment for within range, hops {}, home {}, dest {}, fval {}",
+                "No adjustment for within range, hops {}, home {}, dest {}, fval {}, chunk {}",
                 hops,
                 home_idx,
                 dest_idx,
                 {
                     let addr = chunk.entry_addr(dest_idx);
                     Self::get_fast_value(addr).val
-                }
+                },
+                chunk.base
             );
             return Ok(dest_idx);
         }
 
         if !needs_adjust {
             delay_log!(
-                "No adjustment for not needed, hops {}, home {}, dest {}",
+                "No adjustment for not needed, hops {}, home {}, dest {}, chunk {}",
                 hops,
                 home_idx,
-                dest_idx
+                dest_idx,
+                chunk.base
             );
             return Ok(dest_idx);
         }
@@ -1288,11 +1294,12 @@ impl<
             if hop_bits == ALL_HOPS_TAKEN {
                 // No slots in the neighbour is available
                 delay_log!(
-                    "No adjustment for all slot taken, home {}, target {}, last {}, overflowing {}",
+                    "No adjustment for all slot taken, home {}, target {}, last {}, overflowing {}, chunk {}",
                     home_idx,
                     targeting_idx,
                     dest_idx,
-                    overflowing
+                    overflowing,
+                    chunk.base
                 );
                 return Err(dest_idx);
             }
@@ -1410,11 +1417,12 @@ impl<
                         debug_assert!(fval >= NUM_FIX_V);
                         Self::store_value(candidate_addr, fval);
                         delay_log!(
-                            "Adjusted home {}, target {}, last {}, overflowing {}",
+                            "Adjusted home {}, target {}, last {}, overflowing {}, chunk {}",
                             home_idx,
                             targeting_idx,
                             dest_idx,
-                            overflowing
+                            overflowing,
+                            chunk.base
                         );
                         return Ok(candidate_idx);
                     } else {
@@ -1435,11 +1443,12 @@ impl<
                 BACKWARD_SWAPPING_VALUE
             );
             delay_log!(
-                "No adjustment for no slot found, home {}, target {}, last {}, overflowing {}",
+                "No adjustment for no slot found, home {}, target {}, last {}, overflowing {}, chunk {}",
                 home_idx,
                 targeting_idx,
                 dest_idx,
-                overflowing
+                overflowing,
+                chunk.base
             );
             return Err(dest_idx);
         }
