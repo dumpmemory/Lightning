@@ -746,10 +746,12 @@ mod test {
                         assert_eq!(
                             map.get(&key),
                             Some(key),
-                            "Reading after insertion at key {}, epoch {}/{}",
+                            "Reading after insertion at key {}, epoch {}/{}, last log {:?}, i {}",
                             key,
                             map.table.now_epoch(),
-                            prev_epoch
+                            prev_epoch,
+                            get_delayed_log(3),
+                            i
                         );
                         let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
@@ -761,7 +763,7 @@ mod test {
                             map.table.now_epoch(),
                             post_insert_epoch,
                             prev_epoch,
-                            get_delayed_log(2),
+                            get_delayed_log(3),
                             i
                         );
                     }
