@@ -278,7 +278,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
         loop {
-            let (chunk, chunk_ptr, new_chunk, _epoch) = self.chunk_refs(&guard);
+            let (chunk, chunk_ptr, new_chunk, epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
@@ -399,8 +399,8 @@ impl<
                 }
                 (Some((0, _)), Some(ModResult::NotFound)) => {
                     delay_log!(
-                        "Some((0, _)), Some(ModResult::NotFound) key {}",
-                        fkey - NUM_FIX_K
+                        "Some((0, _)), Some(ModResult::NotFound) key {}, old chunk {}, new chunk {:?}",
+                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base)
                     );
                     res = None;
                 }
@@ -426,7 +426,9 @@ impl<
                         return None;
                     }
                 }
-                _ => {}
+                None => {
+                    
+                }
             }
             return res;
         }
