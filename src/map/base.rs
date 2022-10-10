@@ -367,7 +367,7 @@ impl<
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
-                        "Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}",
+                        "Insert have Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}",
                         fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base)
                     ); // Should not reachable
                     res = None;
@@ -394,18 +394,28 @@ impl<
                     res = Some((fv, v.unwrap()))
                 }
                 (Some((0, _)), None) => {
-                    delay_log!("Some((0, _)), None key {}, old chunk {}, new chunk {:?}", fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base));
+                    delay_log!(
+                        "Insert have Some((0, _)), None key {}, old chunk {}, new chunk {:?}",
+                        fkey - NUM_FIX_K,
+                        chunk.base,
+                        new_chunk.map(|c| c.base)
+                    );
                     res = None;
                 }
                 (Some((0, _)), Some(ModResult::NotFound)) => {
                     delay_log!(
-                        "Some((0, _)), Some(ModResult::NotFound) key {}, old chunk {}, new chunk {:?}",
+                        "Insert have Some((0, _)), Some(ModResult::NotFound) key {}, old chunk {}, new chunk {:?}",
                         fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base)
                     );
                     res = None;
                 }
                 (Some((0, _)), _) => {
-                    delay_log!("Some((0, _)), _ key {}, old chunk {}, new chunk {:?}", fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base));
+                    delay_log!(
+                        "Insert have Some((0, _)), _ key {}, old chunk {}, new chunk {:?}",
+                        fkey - NUM_FIX_K,
+                        chunk.base,
+                        new_chunk.map(|c| c.base)
+                    );
                     res = None;
                 }
                 (None, None) => {
@@ -422,13 +432,17 @@ impl<
             match &res {
                 Some((fv, _)) => {
                     if *fv < NUM_FIX_V {
-                        delay_log!("*fv <= NUM_FIX_V {} key {}, old chunk {}, new chunk {:?}", fkey + NUM_FIX_K, fv, chunk.base, new_chunk.map(|c| c.base));
+                        delay_log!(
+                            "*fv <= NUM_FIX_V {} key {}, old chunk {}, new chunk {:?}",
+                            fkey + NUM_FIX_K,
+                            fv,
+                            chunk.base,
+                            new_chunk.map(|c| c.base)
+                        );
                         return None;
                     }
                 }
-                None => {
-
-                }
+                None => {}
             }
             return res;
         }
@@ -582,7 +596,7 @@ impl<
                 Some(ModResult::Fail) => {
                     // Make sure sentinel had succceed first
                     backoff.spin();
-                    continue 'OUTER
+                    continue 'OUTER;
                 }
                 _ => {}
             }
@@ -598,7 +612,14 @@ impl<
                 );
                 match chunk_val {
                     ModResult::Replaced(fval, val, idx) => {
-                        delay_log!("Tombstone key {} index {}, old_val {:?}, old chunk {}, new chunk {:?}", fkey, idx, old_chunk_val, chunk.base, new_chunk.map(|c| c.base));
+                        delay_log!(
+                            "Tombstone key {} index {}, old_val {:?}, old chunk {}, new chunk {:?}",
+                            fkey,
+                            idx,
+                            old_chunk_val,
+                            chunk.base,
+                            new_chunk.map(|c| c.base)
+                        );
                         return Some((fval, val.unwrap()));
                     }
                     ModResult::Fail => {
@@ -630,7 +651,12 @@ impl<
                     continue 'OUTER;
                 }
                 None | Some(ModResult::NotFound) => {
-                    delay_log!("Did not removed anything, not found {}, old chunk {}, new chunk {:?}", fkey, chunk.base, new_chunk.map(|c| c.base));
+                    delay_log!(
+                        "Did not removed anything, not found {}, old chunk {}, new chunk {:?}",
+                        fkey,
+                        chunk.base,
+                        new_chunk.map(|c| c.base)
+                    );
                     return None;
                 }
                 Some(_) => {
@@ -750,7 +776,13 @@ impl<
                         backoff.spin();
                         continue;
                     }
-                    delay_log!("Get got for key {}, value {} at {}, chunk {}", fkey, raw, idx, chunk.base);
+                    delay_log!(
+                        "Get got for key {}, value {} at {}, chunk {}",
+                        fkey,
+                        raw,
+                        idx,
+                        chunk.base
+                    );
                     return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
@@ -1058,7 +1090,7 @@ impl<
                     ModOp::Sentinel => return ModResult::NotFound,
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
-                    ModOp::Lock => {},
+                    ModOp::Lock => {}
                 };
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
@@ -1172,12 +1204,7 @@ impl<
     fn cas_tombstone(entry_addr: usize, original: FVal) -> bool {
         let addr = entry_addr + mem::size_of::<FKey>();
         unsafe {
-            intrinsics::atomic_cxchg_acqrel_relaxed(
-                addr as *mut FVal,
-                original,
-                TOMBSTONE_VALUE,
-            )
-            .1
+            intrinsics::atomic_cxchg_acqrel_relaxed(addr as *mut FVal, original, TOMBSTONE_VALUE).1
         }
     }
     #[inline(always)]

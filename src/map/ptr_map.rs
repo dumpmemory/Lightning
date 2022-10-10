@@ -69,7 +69,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 if node_ver >= current_ver {
                     // Bump global apoch
                     let new_ver = current_ver + 1;
-                    if let Err(actual_ver) = self.epoch.compare_exchange(current_ver, new_ver, Relaxed, Relaxed) {
+                    if let Err(actual_ver) =
+                        self.epoch
+                            .compare_exchange(current_ver, new_ver, Relaxed, Relaxed)
+                    {
                         current_ver = actual_ver;
                         continue;
                     } else {
@@ -79,7 +82,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 }
                 break;
             }
-            debug_assert!(node_ver < current_ver, "Version node {} vs. current {}", node_ver, current_ver);
+            debug_assert!(
+                node_ver < current_ver,
+                "Version node {} vs. current {}",
+                node_ver,
+                current_ver
+            );
             node_ref.birth_ver.store(current_ver, Relaxed);
             node_ref.retire_ver.store(0, Release);
             let obj_ptr = node_ref.value.as_ptr();
