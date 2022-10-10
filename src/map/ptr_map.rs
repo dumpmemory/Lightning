@@ -1023,7 +1023,7 @@ mod ptr_map {
                                     "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
                                     get_test_res, expecting,
                                     key, get_epoch, post_insert_epoch, prev_epoch,
-                                    get_delayed_log(3),
+                                    get_delayed_log(4),
                                     all_pairs.get(&key), dump_epoch
                                 );
                             }
