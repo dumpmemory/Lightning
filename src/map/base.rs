@@ -367,8 +367,8 @@ impl<
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
-                        "Insert have Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}",
-                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base)
+                        "Insert have Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base), epoch
                     ); // Should not reachable
                     res = None;
                 }
@@ -395,26 +395,26 @@ impl<
                 }
                 (Some((0, _)), None) => {
                     delay_log!(
-                        "Insert have Some((0, _)), None key {}, old chunk {}, new chunk {:?}",
+                        "Insert have Some((0, _)), None key {}, old chunk {}, new chunk {:?}, epoch {}",
                         fkey - NUM_FIX_K,
                         chunk.base,
-                        new_chunk.map(|c| c.base)
+                        new_chunk.map(|c| c.base), epoch
                     );
                     res = None;
                 }
                 (Some((0, _)), Some(ModResult::NotFound)) => {
                     delay_log!(
-                        "Insert have Some((0, _)), Some(ModResult::NotFound) key {}, old chunk {}, new chunk {:?}",
-                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base)
+                        "Insert have Some((0, _)), Some(ModResult::NotFound) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base), epoch
                     );
                     res = None;
                 }
                 (Some((0, _)), _) => {
                     delay_log!(
-                        "Insert have Some((0, _)), _ key {}, old chunk {}, new chunk {:?}",
+                        "Insert have Some((0, _)), _ key {}, old chunk {}, new chunk {:?}, epoch {}",
                         fkey - NUM_FIX_K,
                         chunk.base,
-                        new_chunk.map(|c| c.base)
+                        new_chunk.map(|c| c.base), epoch
                     );
                     res = None;
                 }
