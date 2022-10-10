@@ -193,6 +193,7 @@ impl<
                 fkey,
                 &backoff,
                 new_chunk.map(|c| c.deref()),
+                epoch,
             ) {
                 'SPIN: loop {
                     v = val.val;
@@ -223,7 +224,7 @@ impl<
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
                 if let Some((mut val, addr, aitem)) =
-                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff, None)
+                    self.get_from_chunk(&*new_chunk, hash, key, fkey, &backoff, None, epoch)
                 {
                     'SPIN_NEW: loop {
                         let v = val.val;
@@ -563,7 +564,7 @@ impl<
                 (None, true) => {
                     // Here, we had checked that the new chunk does not have anything to swap
                     // Which can be that the old chunk may have the value.
-                    match self.get_from_chunk(chunk, hash, key, fkey, &backoff, None) {
+                    match self.get_from_chunk(chunk, hash, key, fkey, &backoff, None, epoch) {
                         Some((fv, addr, _)) => {
                             // This is a tranision state and we just don't bother for its complexity
                             // Simply retry and wait until the entry is moved to new chunk
@@ -742,6 +743,7 @@ impl<
         fkey: FKey,
         backoff: &Backoff,
         new_chunk: Option<&Chunk<K, V, A, ALLOC>>,
+        epoch: usize,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk as *const Chunk<K, V, A, ALLOC> as usize, 0);
         let cap_mask = chunk.cap_mask();
@@ -777,22 +779,24 @@ impl<
                         continue;
                     }
                     delay_log!(
-                        "Get got for key {}, value {} at {}, chunk {}",
+                        "Get got for key {}, value {} at {}, chunk {}, epoch {}",
                         fkey,
                         raw,
                         idx,
-                        chunk.base
+                        chunk.base,
+                        epoch
                     );
                     return Some((val_res, addr, attachment));
                 }
             } else if k == EMPTY_KEY {
                 delay_log!(
-                    "Get got nothing due empty key at {} for key {}, hash {}, val -, home {}, chunk {}",
+                    "Get got nothing due empty key at {} for key {}, hash {}, val -, home {}, chunk {}, epoch {}",
                     idx,
                     fkey,
                     hash,
                     home_idx,
-                    chunk.base
+                    chunk.base,
+                    epoch
                 );
                 return None;
             }
