@@ -427,7 +427,7 @@ impl<
                     }
                 }
                 None => {
-                    
+
                 }
             }
             return res;
@@ -669,8 +669,10 @@ impl<
             let res = unsafe {
                 if is_copying && chunk.with_tag(0) != new_chunk {
                     (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
-                } else {
+                } else if new_chunk.is_null() {
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
+                } else {
+                    continue;
                 }
             };
             if self.now_epoch() == epoch {
@@ -1056,7 +1058,7 @@ impl<
                     ModOp::Sentinel => return ModResult::NotFound,
                     ModOp::Tombstone => return ModResult::NotFound,
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
-                    ModOp::Lock => return ModResult::NotFound,
+                    ModOp::Lock => {},
                 };
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
