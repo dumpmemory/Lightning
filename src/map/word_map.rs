@@ -752,7 +752,7 @@ mod test {
                             map.table.now_epoch(),
                             post_epoch,
                             prev_epoch,
-                            get_delayed_log(3),
+                            get_delayed_log(5),
                             i
                         );
                         let post_insert_epoch = map.table.now_epoch();
