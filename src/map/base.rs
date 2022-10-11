@@ -1922,6 +1922,7 @@ impl<
                 new_chunk_ins.dump_dist();
                 new_chunk_ins.dump_kv();
                 Self::debug_assert_no_duplicates(new_chunk_ins);
+                error!("Cannot find any slot for migration");
                 panic!("Cannot find any slot for migration");
             }
         }
