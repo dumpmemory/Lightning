@@ -1566,12 +1566,22 @@ impl<
         unsafe {
             (*new_chunk).occupation.store(old_occupation, Relaxed);
         }
-        let new_chunk_ptr = Owned::new(ChunkPtr::new(new_chunk))
+        let new_chunk_ptr_wrap = ChunkPtr::new(new_chunk);
+        let new_chunk_base = new_chunk_ptr_wrap.base;
+        let new_chunk_ptr = Owned::new(new_chunk_ptr_wrap)
             .into_shared(guard)
             .with_tag(0);
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr.with_tag(0));
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
-        self.meta.epoch.fetch_add(1, AcqRel);
+        let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
+        delay_log!(
+            "Migration from {} to {}, cap {}/{} at epoch {}",
+            old_chunk_ins.base,
+            new_chunk_base,
+            old_cap,
+            new_cap,
+            old_epoch
+        );
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         let meta = self.meta.clone();
         let old_chunk_addr = old_chunk_ptr.into_usize();
