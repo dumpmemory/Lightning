@@ -1556,12 +1556,6 @@ impl<
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        trace!(
-            "--- Resizing {:?}. New size is {}, was {}",
-            old_chunk_ptr,
-            new_cap,
-            old_cap,
-        );
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
             (*new_chunk).occupation.store(old_occupation, Relaxed);
@@ -1574,8 +1568,16 @@ impl<
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr.with_tag(0));
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
+        info!(
+            "--- Resizing {} to {}. New size is {}, was {} at old epoch {}",
+            old_chunk_ins.base,
+            new_chunk_base,
+            new_cap,
+            old_cap,
+            old_epoch
+        );
         delay_log!(
-            "Migration from {} to {}, cap {}/{} at epoch {}",
+            "Migration from {} to {}, cap {}/{} at old epoch {}",
             old_chunk_ins.base,
             new_chunk_base,
             old_cap,
@@ -1652,13 +1654,14 @@ impl<
             );
         }
         meta.new_chunk.store(Shared::null(), Release);
-        meta.epoch.fetch_add(1, AcqRel);
-        trace!(
-            "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}",
-            old_chunk_ptr,
-            new_chunk_ptr,
+        let old_epoch = meta.epoch.fetch_add(1, AcqRel);
+        info!(
+            "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}",
+            old_chunk_ins.base,
+            new_chunk_ins.base,
             old_chunk_ins.capacity,
-            new_chunk_ins.capacity
+            new_chunk_ins.capacity,
+            old_epoch
         );
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
