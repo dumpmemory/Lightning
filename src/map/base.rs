@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, sync::Arc};
+use std::{cell::{RefCell, UnsafeCell}, collections::VecDeque, sync::Arc};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -61,6 +61,11 @@ const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
 thread_local! {
     static DELAYED_LOG: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+}
+
+#[cfg(debug_assertions)]
+lazy_static! {
+    static ref MIGRATION_LOGS: Mutex<Vec<(usize, Vec<MigratedEntry>)>> = Mutex::new(vec![]);
 }
 
 enum ModResult<V> {
@@ -1616,6 +1621,7 @@ impl<
             new_chunk_addr,
             old_chunk_lock,
             old_occupation,
+            old_epoch
         );
         ResizeResult::InProgress
     }
@@ -1626,6 +1632,7 @@ impl<
         new_chunk_ptr: usize,
         old_chunk_lock: usize,
         old_occupation: usize,
+        epoch: usize
     ) {
         let guard = crossbeam_epoch::pin();
         let meta = unsafe {
@@ -1641,7 +1648,7 @@ impl<
             unsafe { Shared::<ChunkPtr<K, V, A, ALLOC>>::from_usize(old_chunk_lock) };
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        Self::migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, &guard);
+        Self::migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, epoch, &guard);
         let swap_chunk = meta.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1675,6 +1682,7 @@ impl<
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_occupation: usize,
+        epoch: usize,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
         trace!(
@@ -1776,15 +1784,7 @@ impl<
         #[cfg(debug_assertions)]
         {
             info!("Migrated {} entries to new chunk, num logs {}", effective_copy, migrated_entries.len());
-            for ((k, v), new_pos, stat) in migrated_entries {
-                println!(
-                    "ME k {}, v {}, p {}, s {}",
-                    k - NUM_FIX_K,
-                    v.act_val::<V>(),
-                    new_pos,
-                    stat
-                );
-            }
+            MIGRATION_LOGS.lock().push((epoch, migrated_entries))
         }
         return effective_copy;
     }
@@ -2467,6 +2467,16 @@ pub fn get_delayed_log<'a>(num: usize) -> Vec<String> {
         let s = len - num;
         list.range(s..).cloned().collect()
     })
+}
+
+#[cfg(debug_assertions)]
+pub fn dump_migration_log() {
+    let logs = MIGRATION_LOGS.lock();
+    logs.iter().for_each(|(epoch, item)| {
+        item.iter().for_each(|((k, v), pos, stat)|{
+            info!("epoch {} k {}, v {}, pos {} stat {}", epoch, k, v.val, pos, stat);
+        });
+    });
 }
 
 #[cfg(test)]

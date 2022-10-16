@@ -17,7 +17,7 @@ num_cpus = "1"
 libc = "0.2.69" 
 parking_lot = "*"
 static_assertions = "1"
-
+lazy_static = "1.4.0"
 
 [dev-dependencies]
 chashmap = "2.2.2"

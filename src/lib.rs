@@ -12,6 +12,8 @@ extern crate test;
 
 #[macro_use]
 extern crate static_assertions;
+#[macro_use]
+extern crate lazy_static;
 // pub mod deque;
 pub mod linked_map;
 pub mod list;

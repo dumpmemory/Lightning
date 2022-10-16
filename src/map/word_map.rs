@@ -262,7 +262,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{get_delayed_log, NUM_FIX_K, NUM_FIX_V},
+        base::{get_delayed_log, NUM_FIX_K, NUM_FIX_V, dump_migration_log},
         *,
     };
     use alloc::sync::Arc;
@@ -753,7 +753,10 @@ mod test {
                             post_epoch,
                             prev_epoch,
                             get_delayed_log(5),
-                            i
+                            {
+                                dump_migration_log();
+                                i
+                            }
                         ); 
                         let post_insert_epoch = map.table.now_epoch();
                         assert_eq!(
@@ -766,7 +769,10 @@ mod test {
                             post_insert_epoch,
                             prev_epoch,
                             get_delayed_log(3),
-                            i
+                            {
+                                dump_migration_log();
+                                i
+                            }
                         );
                     }
                     for j in 0..repeats {
@@ -774,11 +780,15 @@ mod test {
                         assert_eq!(
                             map.insert(key, key),
                             Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}",
+                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
                             key,
                             map.get(&key),
                             map.table.now_epoch(),
-                            get_delayed_log(2)
+                            get_delayed_log(2),
+                            {
+                                dump_migration_log();
+                                i
+                            }
                         );
                     }
                     for j in 0..repeats {
