@@ -1775,7 +1775,7 @@ impl<
         }
         #[cfg(debug_assertions)]
         {
-            info!("Migrated {} entries to new chunk", effective_copy);
+            info!("Migrated {} entries to new chunk, num logs {}", effective_copy, migrated_entries.len());
             for ((k, v), new_pos, stat) in migrated_entries {
                 println!(
                     "ME k {}, v {}, p {}, s {}",
