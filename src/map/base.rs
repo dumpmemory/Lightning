@@ -1579,7 +1579,7 @@ impl<
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr.with_tag(0));
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
-        info!(
+        debug!(
             "--- Resizing {} to {}. New size is {}, was {} at old epoch {}",
             old_chunk_ins.base, new_chunk_base, new_cap, old_cap, old_epoch
         );
@@ -1664,7 +1664,7 @@ impl<
         }
         meta.new_chunk.store(Shared::null(), Release);
         let old_epoch = meta.epoch.fetch_add(1, AcqRel);
-        info!(
+        debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}",
             old_chunk_ins.base,
             new_chunk_ins.base,
@@ -1783,7 +1783,7 @@ impl<
         }
         #[cfg(debug_assertions)]
         {
-            info!("Migrated {} entries to new chunk, num logs {}", effective_copy, migrated_entries.len());
+            debug!("Migrated {} entries to new chunk, num logs {}", effective_copy, migrated_entries.len());
             MIGRATION_LOGS.lock().push((epoch, migrated_entries))
         }
         return effective_copy;
