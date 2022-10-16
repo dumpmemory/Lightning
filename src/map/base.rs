@@ -1576,11 +1576,7 @@ impl<
         let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
         info!(
             "--- Resizing {} to {}. New size is {}, was {} at old epoch {}",
-            old_chunk_ins.base,
-            new_chunk_base,
-            new_cap,
-            old_cap,
-            old_epoch
+            old_chunk_ins.base, new_chunk_base, new_cap, old_cap, old_epoch
         );
         delay_log!(
             "Migration from {} to {}, cap {}/{} at old epoch {}",
@@ -1745,7 +1741,8 @@ impl<
                         new_chunk_ins,
                         old_address,
                         &mut effective_copy,
-                        #[cfg(debug_assertions)] &mut migrated_entries
+                        #[cfg(debug_assertions)]
+                        &mut migrated_entries,
                     ) {
                         backoff.spin();
                         continue;
@@ -1780,7 +1777,13 @@ impl<
         {
             info!("Migrated {} entries to new chunk", effective_copy);
             for ((k, v), new_pos, stat) in migrated_entries {
-                info!("Migrated entry k {}, v {:?}, new pos {}, stat {}", k - NUM_FIX_K, v, new_pos, stat);
+                info!(
+                    "Migrated entry k {}, v {}, new pos {}, stat {}",
+                    k - NUM_FIX_K,
+                    v.act_val(),
+                    new_pos,
+                    stat
+                );
             }
         }
         return effective_copy;
@@ -1822,7 +1825,7 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
         effective_copy: &mut usize,
-        #[cfg(debug_assertions)]  migrated: &mut Vec<MigratedEntry>
+        #[cfg(debug_assertions)] migrated: &mut Vec<MigratedEntry>,
     ) -> bool {
         // Will not migrate meta keys
         if fkey < NUM_FIX_K || fvalue.is_primed() {
