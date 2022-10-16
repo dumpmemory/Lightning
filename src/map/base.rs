@@ -1,11 +1,17 @@
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
+#[cfg(debug_assertions)]
+use parking_lot::Mutex;
+
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
 pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
+
+#[cfg(debug_assertions)]
+pub type MigratedEntry = ((usize, FastValue), usize, usize);
 
 pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
@@ -1680,6 +1686,8 @@ impl<
             old_chunk_ins.base,
             new_chunk_ins.base
         );
+        #[cfg(debug_assertions)]
+        let mut migrated_entries = vec![];
         let mut old_address = old_chunk_ins.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk_ins.capacity);
         let mut effective_copy = 0;
@@ -1737,6 +1745,7 @@ impl<
                         new_chunk_ins,
                         old_address,
                         &mut effective_copy,
+                        #[cfg(debug_assertions)] &mut migrated_entries
                     ) {
                         backoff.spin();
                         continue;
@@ -1767,7 +1776,13 @@ impl<
                 effective_copy, old_occupation
             );
         }
-        trace!("Migrated {} entries to new chunk", effective_copy);
+        #[cfg(debug_assertions)]
+        {
+            info!("Migrated {} entries to new chunk", effective_copy);
+            for ((k, v), new_pos, stat) in migrated_entries {
+                info!("Migrated entry k {}, v {:?}, new pos {}, stat {}", k, v, new_pos, stat);
+            }
+        }
         return effective_copy;
     }
 
@@ -1807,6 +1822,7 @@ impl<
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_address: usize,
         effective_copy: &mut usize,
+        #[cfg(debug_assertions)]  migrated: &mut Vec<MigratedEntry>
     ) -> bool {
         // Will not migrate meta keys
         if fkey < NUM_FIX_K || fvalue.is_primed() {
@@ -1821,6 +1837,8 @@ impl<
         if !Self::cas_value(old_address, fvalue.val, primed_orig).1 {
             // here the ownership have been taken by other thread
             trace!("Entry {} has changed", fkey);
+            #[cfg(debug_assertions)]
+            migrated.push(((fkey, fvalue), 0, 999));
             return false;
         }
 
@@ -1854,6 +1872,8 @@ impl<
                     //     .manually_drop(fvalue.act_val::<V>());
                     // New value in the new chunk, just put a sentinel and abort migration on this slot
                     Self::store_sentinel(old_address);
+                    #[cfg(debug_assertions)]
+                    migrated.push(((fkey, fvalue), idx, 888));
                     return true;
                 }
             } else if k == EMPTY_KEY {
@@ -1891,6 +1911,8 @@ impl<
                     }
                     Self::store_sentinel(old_address);
                     *effective_copy += 1;
+                    #[cfg(debug_assertions)]
+                    migrated.push(((fkey, fvalue), idx, 0));
                     return true;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
