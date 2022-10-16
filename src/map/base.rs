@@ -1777,7 +1777,7 @@ impl<
         {
             info!("Migrated {} entries to new chunk", effective_copy);
             for ((k, v), new_pos, stat) in migrated_entries {
-                info!(
+                println!(
                     "ME k {}, v {}, p {}, s {}",
                     k - NUM_FIX_K,
                     v.act_val::<V>(),
