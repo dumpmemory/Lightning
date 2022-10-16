@@ -1780,7 +1780,7 @@ impl<
         {
             info!("Migrated {} entries to new chunk", effective_copy);
             for ((k, v), new_pos, stat) in migrated_entries {
-                info!("Migrated entry k {}, v {:?}, new pos {}, stat {}", k, v, new_pos, stat);
+                info!("Migrated entry k {}, v {:?}, new pos {}, stat {}", k - NUM_FIX_K, v, new_pos, stat);
             }
         }
         return effective_copy;
