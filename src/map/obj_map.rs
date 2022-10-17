@@ -22,7 +22,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> ObjectMap<V, A
     #[inline(always)]
     fn insert_with_op(&self, op: InsertOp, key: FKey, value: V) -> Option<V> {
         self.table
-            .insert(op, &(), Some(&value), key + NUM_FIX_K, PLACEHOLDER_VAL)
+            .insert(op, &(), Some(&value), key, PLACEHOLDER_VAL)
             .map(|(_, v)| v)
     }
 
@@ -47,7 +47,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
     #[inline(always)]
     fn get(&self, key: &FKey) -> Option<V> {
         self.table
-            .get(&(), key + NUM_FIX_K, true)
+            .get(&(), *key, true)
             .map(|v| v.1.unwrap())
     }
 
@@ -63,7 +63,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
 
     #[inline(always)]
     fn remove(&self, key: &FKey) -> Option<V> {
-        self.table.remove(&(), key + NUM_FIX_K).map(|(_, v)| v)
+        self.table.remove(&(), *key).map(|(_, v)| v)
     }
 
     #[inline(always)]
@@ -71,13 +71,13 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
         self.table
             .entries()
             .into_iter()
-            .map(|(k, _, _, v)| (k - NUM_FIX_K, v))
+            .map(|(k, _, _, v)| (k, v))
             .collect()
     }
 
     #[inline(always)]
     fn contains_key(&self, key: &FKey) -> bool {
-        self.table.get(&(), key + NUM_FIX_K, false).is_some()
+        self.table.get(&(), *key, false).is_some()
     }
 
     #[inline(always)]
@@ -194,7 +194,6 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
-        let key = key + NUM_FIX_K;
         loop {
             let swap_res = table.swap(
                 key,
@@ -285,7 +284,6 @@ impl<'a, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value: V;
-        let key = key + NUM_FIX_K;
         loop {
             let swap_res = table.swap(
                 key,

@@ -50,12 +50,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             ptr::write(obj_ptr, d);
         }
-        return num as usize + NUM_FIX_V as usize;
+        return num as usize as usize;
     }
 
     #[inline(always)]
     fn decode<T: Clone>(&self, num: usize) -> T {
-        let num = (num - (NUM_FIX_V as usize)) as u64;
+        let num = num as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
         let obj = aligned.data.clone();
@@ -64,7 +64,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     unsafe fn decode_no_clone<T: Clone>(&self, num: usize) -> T {
-        let num = (num - (NUM_FIX_V as usize)) as u64;
+        let num = num as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = ptr::read(ptr);
         return aligned.data;
@@ -285,7 +285,7 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
 
     #[inline(always)]
     fn manually_drop(&self, fval: usize) {
-        let num = (fval - (NUM_FIX_V as usize)) as u64;
+        let num = fval as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<V>;
         unsafe { mem::drop(ptr::read(ptr)) }
     }

@@ -21,8 +21,8 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     #[inline(always)]
     fn insert_with_op(&self, op: InsertOp, key: FKey, value: FVal) -> Option<FVal> {
         self.table
-            .insert(op, &(), None, key + NUM_FIX_K, value + NUM_FIX_V)
-            .map(|(v, _)| v - NUM_FIX_V)
+            .insert(op, &(), None, key, value)
+            .map(|(v, _)| v)
     }
 
     pub fn get_from_mutex(&self, key: &FKey) -> Option<FVal> {
@@ -40,8 +40,8 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
     #[inline(always)]
     fn get(&self, key: &FKey) -> Option<FVal> {
         self.table
-            .get(&(), key + NUM_FIX_K, false)
-            .map(|v| v.0 - NUM_FIX_V)
+            .get(&(), *key, false)
+            .map(|v| v.0)
     }
 
     #[inline(always)]
@@ -56,16 +56,13 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 
     #[inline(always)]
     fn remove(&self, key: &FKey) -> Option<FVal> {
-        self.table.remove(&(), key + NUM_FIX_K).map(|(v, _)| {
-            debug_assert!(v >= NUM_FIX_V, "Got illegal value {}", v);
-            v - NUM_FIX_V
-        })
+        self.table.remove(&(), *key).map(|(v, _)| v)
     }
     fn entries(&self) -> Vec<(FKey, FVal)> {
         self.table
             .entries()
             .into_iter()
-            .map(|(k, v, _, _)| (k - NUM_FIX_K, v - NUM_FIX_V))
+            .map(|(k, v, _, _)| (k, v))
             .collect()
     }
 
@@ -97,11 +94,9 @@ pub struct WordMutexGuard<
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, ALLOC, H> {
     fn create(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
         let value = 0;
-        let offset_key = key + NUM_FIX_K;
-        let offset_value = 0 + NUM_FIX_V;
-        let locked_val = offset_value | VAL_MUTEX_BIT;
-        debug_assert_ne!(offset_value, locked_val);
-        match table.insert(InsertOp::TryInsert, &(), Some(&()), offset_key, locked_val) {
+        let locked_val = value | VAL_MUTEX_BIT;
+        debug_assert_ne!(value, locked_val);
+        match table.insert(InsertOp::TryInsert, &(), Some(&()), key, locked_val) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => {
                 trace!("Created locked key {}", key);
                 Some(Self { table, key, value })
@@ -113,13 +108,12 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
         }
     }
     fn new(table: &'a WordTable<ALLOC, H>, key: FKey) -> Option<Self> {
-        let offset_key = key + NUM_FIX_K;
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let value;
         loop {
             let swap_res = table.swap(
-                offset_key,
+                key,
                 &(),
                 move |fast_value| {
                     trace!("The key {} have value {}", key, fast_value);
@@ -158,14 +152,12 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
             }
         }
         debug_assert_ne!(value, 0);
-        let value = value - NUM_FIX_V;
         Some(Self { table, key, value })
     }
 
     pub fn remove(self) -> FVal {
-        let offset_key = self.key + NUM_FIX_V;
         trace!("Removing {}", self.key);
-        let res = self.table.remove(&(), offset_key).unwrap().0;
+        let res = self.table.remove(&(), self.key).unwrap().0;
         mem::forget(self);
         res & WORD_MUTEX_DATA_BIT_MASK
     }
@@ -189,16 +181,16 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
 
 impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGuard<'a, ALLOC, H> {
     fn drop(&mut self) {
-        let offset_key = self.key + NUM_FIX_V;
-        let offset_val = self.value + NUM_FIX_V;
-        debug_assert_ne!(offset_val, offset_val | VAL_MUTEX_BIT);
+        let key = self.key;
+        let val = self.value;
+        debug_assert_ne!(val, val | VAL_MUTEX_BIT);
         trace!(
             "Release lock for key {} with value {}",
             self.key,
             self.value
         );
         self.table
-            .insert(InsertOp::Insert, &(), None, offset_key, offset_val);
+            .insert(InsertOp::Insert, &(), None, key, val);
     }
 }
 
@@ -262,7 +254,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{get_delayed_log, NUM_FIX_K, NUM_FIX_V, dump_migration_log},
+        base::{get_delayed_log, dump_migration_log},
         *,
     };
     use alloc::sync::Arc;
@@ -577,7 +569,7 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(32));
         let key = 10;
-        let offsetted_key = key + NUM_FIX_K;
+        let offsetted_key = key;
         let num_threads = 256;
         let num_rounds = 40960;
         let mut threads = vec![];
@@ -604,14 +596,13 @@ mod test {
         let guard = crossbeam_epoch::pin();
         let base_val = 10;
         let key = 10;
-        map.insert(key, base_val - NUM_FIX_V);
-        let offset_key = key + NUM_FIX_K;
+        map.insert(key, base_val);
         for j in 0..40960 {
             let curr_val = base_val + j;
             let next_val = curr_val + 1;
-            map.insert(key, curr_val - NUM_FIX_V);
+            map.insert(key, curr_val);
             map.table.swap(
-                offset_key,
+                key,
                 &(),
                 move |v| {
                     assert_eq!(v, curr_val);
@@ -627,14 +618,13 @@ mod test {
                 let guard = crossbeam_epoch::pin();
                 let base_val = 10;
                 let key = i + 20;
-                map.insert(key, base_val - NUM_FIX_V);
-                let offset_key = key + NUM_FIX_K;
+                map.insert(key, base_val);
                 for j in 0..40960 {
                     let curr_val = base_val + j;
                     let next_val = curr_val + 1;
-                    debug_assert_eq!(map.get(&key), Some(curr_val - NUM_FIX_V));
+                    debug_assert_eq!(map.get(&key), Some(curr_val));
                     map.table.swap(
-                        offset_key,
+                        key,
                         &(),
                         move |v| {
                             assert_eq!(v, curr_val);
@@ -661,34 +651,33 @@ mod test {
                 let guard = crossbeam_epoch::pin();
                 let base_val = (i + 20) * multiplier;
                 let key = i + 20;
-                map.insert(key, base_val - NUM_FIX_V);
-                let offset_key = key + NUM_FIX_K;
+                map.insert(key, base_val);
                 for j in 0..repeats {
                     let curr_val = base_val + j;
                     let next_val = curr_val + 1;
                     debug_assert_eq!(
                         map.get(&key),
-                        Some(curr_val - NUM_FIX_V),
+                        Some(curr_val),
                         "Value checking before swap at epoch {}",
                         map.table.now_epoch()
                     );
                     let epoch = map.table.now_epoch();
                     let read_val = map.get(&key);
                     map.table.swap(
-                        offset_key,
+                        key,
                         &(),
                         move |v| {
                             assert_eq!(
                                 v, curr_val,
                                 "Fail check {} swapping offsetted {} from {} to {}, got {}. Get val {:?}. epoch {}",
-                                key, offset_key, curr_val, next_val, v, read_val, epoch
+                                key, key, curr_val, next_val, v, read_val, epoch
                             );
                             Some(next_val)
                         },
                         &guard,
                     );
                     let got_value = map.get(&key);
-                    let expecting_value = Some(next_val - NUM_FIX_V);
+                    let expecting_value = Some(next_val);
                     if got_value != expecting_value {
                         let error_epoch = map.table.now_epoch();
                         error!("Value checking after swap at epoch {:?}. Expecting {:?} found {:?}. Probing for final value", error_epoch, expecting_value, got_value);
@@ -716,7 +705,7 @@ mod test {
                         map.insert(key, key),
                         Some(key),
                         "reinserting at key {}",
-                        key - NUM_FIX_K
+                        key
                     );
                 }
                 for j in 0..repeats {
@@ -763,7 +752,7 @@ mod test {
                             map.insert(key, key),
                             Some(key),
                             "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
-                            key - NUM_FIX_K,
+                            key,
                             map.get(&key),
                             map.table.now_epoch(),
                             post_insert_epoch,

@@ -1,6 +1,7 @@
 use super::base::*;
 use super::*;
 
+const PLACEHOLDER_VAL: FVal = MAX_META_VAL + 1;
 pub type HashTable<K, V, ALLOC, H> = Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, H>;
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
