@@ -2474,7 +2474,9 @@ pub fn dump_migration_log() {
     let logs = MIGRATION_LOGS.lock();
     logs.iter().for_each(|(epoch, item)| {
         item.iter().for_each(|((k, v), pos, stat)|{
-            println!("epoch {} k {}, v {}, pos {} stat {}", epoch, k - NUM_FIX_K, v.val, pos, stat);
+            let k = k - NUM_FIX_K;
+            let v = if v.val <= NUM_FIX_V {v.val} else {v.val - NUM_FIX_V};
+            println!("e {} k {}, v {}, p {} s {}", epoch, k, v, pos, stat);
         });
     });
 }
