@@ -30,7 +30,8 @@ pub const TOMBSTONE_VALUE: FVal = 0b110;
 
 pub const MAX_META_VAL: FVal = TOMBSTONE_VALUE;
 pub const MAX_META_KEY: FKey = EMPTY_KEY;
-pub const PLACEHOLDER_VAL: FVal = MAX_META_VAL + 1;
+pub const PLACEHOLDER_VAL: FVal = MAX_META_VAL + 2;
+pub const RAW_START_IDX: usize = MAX_META_VAL + 1;
 
 pub const HEADING_BIT: FVal = !(!0 << 1 >> 1);
 pub const VAL_BIT_MASK: FVal = VAL_PRIME_VAL_MASK & (!VAL_KEY_DIGEST_MASK);
@@ -274,6 +275,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
+        limit_key(fkey);
         self.get_with_hash(key, fkey, hash, read_attachment, &guard, &backoff)
             .map(|(a, b, _)| (a, b))
     }
@@ -289,6 +291,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
+        limit_key_val(fkey, fvalue);
         loop {
             let (chunk, chunk_ptr, new_chunk, epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
@@ -509,6 +512,7 @@ impl<
     ) -> SwapResult<K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
+        limit_key(fkey);
         loop {
             let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
@@ -598,7 +602,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
-
+        limit_key(fkey);
         'OUTER: loop {
             let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
@@ -2478,6 +2482,21 @@ pub fn dump_migration_log() {
             println!("e {} k {}, v {}, p {} s {}", epoch, k, v, pos, stat);
         });
     });
+}
+
+#[inline(always)]
+pub fn limit_key_val(fkey: FKey, fvalue: FVal) {
+    #[cfg(debug_assertions)] {
+        assert!(fkey > MAX_META_KEY);
+        assert!(fvalue > MAX_META_VAL);
+    }
+}
+
+#[inline(always)]
+pub fn limit_key(fkey: FKey) {
+    #[cfg(debug_assertions)] {
+        assert!(fkey > MAX_META_KEY);
+    }
 }
 
 #[cfg(test)]

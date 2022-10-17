@@ -254,7 +254,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{get_delayed_log, dump_migration_log},
+        base::{get_delayed_log, dump_migration_log, RAW_START_IDX},
         *,
     };
     use alloc::sync::Arc;
@@ -281,10 +281,10 @@ mod test {
     fn resize() {
         let _ = env_logger::try_init();
         let map = WordMap::<System>::with_capacity(16);
-        for i in 5..2048 {
+        for i in RAW_START_IDX..2048 {
             map.insert(i, i * 2);
         }
-        for i in 5..2048 {
+        for i in RAW_START_IDX..2048 {
             match map.get(&i) {
                 Some(r) => assert_eq!(r, i * 2),
                 None => panic!("{}", i),
@@ -297,7 +297,7 @@ mod test {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(65536));
         let mut threads = vec![];
-        for i in 5..99 {
+        for i in RAW_START_IDX..99 {
             map.insert(i, i * 10);
         }
         for i in 100..900 {
@@ -308,8 +308,8 @@ mod test {
                 }
             }));
         }
-        for i in 5..9 {
-            for j in 1..10 {
+        for i in RAW_START_IDX..9 {
+            for j in RAW_START_IDX..10 {
                 map.remove(&(i * j));
             }
         }
@@ -317,7 +317,7 @@ mod test {
             thread.join().unwrap();
         }
         for i in 100..900 {
-            for j in 5..60 {
+            for j in RAW_START_IDX..60 {
                 assert_eq!(
                     map.get(&(i * 100 + j)),
                     Some(i * j),
@@ -326,8 +326,8 @@ mod test {
                 )
             }
         }
-        for i in 5..9 {
-            for j in 1..10 {
+        for i in RAW_START_IDX..9 {
+            for j in RAW_START_IDX..10 {
                 assert!(map.get(&(i * j)).is_none())
             }
         }
@@ -344,12 +344,12 @@ mod test {
         for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-              for j in 5..test_load {
+              for j in RAW_START_IDX..test_load {
                   let key = i * 10000000 + j;
                   let value_prefix = i * j * 100;
-                  for k in 1..repeat_load {
+                  for k in RAW_START_IDX..repeat_load {
                       let value = value_prefix + k;
-                      if k != 1 {
+                      if k != RAW_START_IDX {
                           assert_eq!(map.get(&key), Some(value - 1));
                       }
                       let pre_insert_epoch = map.table.now_epoch();
@@ -423,7 +423,7 @@ mod test {
             .collect::<Vec<_>>()
             .par_iter()
             .for_each(|i| {
-                for j in 5..test_load {
+                for j in RAW_START_IDX..test_load {
                     let k = i * 10000000 + j;
                     let value = i * j * 100 + repeat_load - 1;
                     let get_res = map.get(&k);
@@ -444,22 +444,22 @@ mod test {
     fn parallel_hybrid() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
-        for i in 5..128 {
+        for i in RAW_START_IDX..128 {
             map.insert(i, i * 10);
         }
         let mut threads = vec![];
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..60 {
+                for j in RAW_START_IDX..60 {
                     map.insert(i * 10 + j, 10);
                 }
             }));
         }
-        for i in 5..8 {
+        for i in RAW_START_IDX..8 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..8 {
+                for j in RAW_START_IDX..8 {
                     map.remove(&(i * j));
                 }
             }));
@@ -468,7 +468,7 @@ mod test {
             thread.join().unwrap();
         }
         for i in 256..265 {
-            for j in 5..60 {
+            for j in RAW_START_IDX..60 {
                 assert_eq!(map.get(&(i * 10 + j)), Some(10))
             }
         }
@@ -478,19 +478,19 @@ mod test {
     fn parallel_word_map_mutex() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(4));
-        map.insert(1, 0);
+        map.insert(RAW_START_IDX, RAW_START_IDX);
         let mut threads = vec![];
         let num_threads = 256;
         for _ in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                if let Some(mut guard) = map.lock(1) {
+                if let Some(mut guard) = map.lock(RAW_START_IDX) {
                     *guard += 1;
                 } else {
                     panic!(
                         "Cannot find key at epoch {}, get {:?}",
                         map.table.now_epoch(),
-                        map.get(&1)
+                        map.get(&RAW_START_IDX)
                     )
                 }
             }));
@@ -498,7 +498,7 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        assert_eq!(map.get(&1).unwrap(), num_threads);
+        assert_eq!(map.get(&RAW_START_IDX).unwrap(), RAW_START_IDX + num_threads);
     }
 
     #[test]
@@ -513,13 +513,13 @@ mod test {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 let target = thread_id;
-                for i in 0..test_load {
+                for i in RAW_START_IDX..test_load {
                     let key = target * 1000000 + i;
                     {
                         let mut mutex = map.try_insert_locked(key).unwrap();
-                        *mutex = 1;
+                        *mutex = RAW_START_IDX;
                     }
-                    for j in 1..update_load {
+                    for j in RAW_START_IDX..update_load {
                         assert!(
                             map.get(&key).is_some(),
                             "Pre getting value for mutex, key {}, epoch {}",
@@ -568,12 +568,12 @@ mod test {
     fn swap_single_key() {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(32));
-        let key = 10;
+        let key = RAW_START_IDX;
         let offsetted_key = key;
         let num_threads = 256;
         let num_rounds = 40960;
         let mut threads = vec![];
-        map.insert(key, 0);
+        map.insert(key, RAW_START_IDX);
         for _ in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
@@ -586,7 +586,7 @@ mod test {
         for t in threads {
             t.join().unwrap();
         }
-        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
+        assert_eq!(map.get(&key), Some(RAW_START_IDX + num_threads * num_rounds));
     }
 
     #[test]
@@ -692,15 +692,17 @@ mod test {
                 }
             }));
         }
-        for i in 1..16 {
+        for i in 0..16 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 0..repeats {
                     let key = i * multiplier + j;
+                    if key < RAW_START_IDX { continue; }
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                 }
                 for j in 0..repeats {
                     let key = i * multiplier + j;
+                    if key < RAW_START_IDX { continue; }
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
@@ -710,6 +712,7 @@ mod test {
                 }
                 for j in 0..repeats {
                     let key = i * multiplier + j;
+                    if key < RAW_START_IDX { continue; }
                     assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
                 }
             }));
@@ -728,7 +731,7 @@ mod test {
             for i in 1..64 {
                 let map = map.clone();
                 threads.push(thread::spawn(move || {
-                    for j in 0..repeats {
+                    for j in RAW_START_IDX..repeats {
                         let key = i * 100000 + j;
                         let prev_epoch = map.table.now_epoch();
                         assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
@@ -764,7 +767,7 @@ mod test {
                             }
                         );
                     }
-                    for j in 0..repeats {
+                    for j in RAW_START_IDX..repeats {
                         let key = i * multplier + j;
                         assert_eq!(
                             map.insert(key, key),
@@ -780,7 +783,7 @@ mod test {
                             }
                         );
                     }
-                    for j in 0..repeats {
+                    for j in RAW_START_IDX..repeats {
                         let key = i * multplier + j;
                         assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
                     }
@@ -794,7 +797,7 @@ mod test {
     fn resizing_before(b: &mut Bencher) {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(65536));
-        let mut i = 5;
+        let mut i = RAW_START_IDX;
         b.iter(|| {
             map.insert(i, i);
             i += 1;
@@ -806,7 +809,7 @@ mod test {
         let _ = env_logger::try_init();
         let prefill = 1048000;
         let map = Arc::new(WordMap::<System>::with_capacity(16));
-        for i in 0..prefill {
+        for i in RAW_START_IDX..prefill {
             map.insert(i, i);
         }
         let mut i = prefill;
@@ -820,7 +823,7 @@ mod test {
     fn resizing_with(b: &mut Bencher) {
         let _ = env_logger::try_init();
         let map = Arc::new(WordMap::<System>::with_capacity(2));
-        let mut i = 5;
+        let mut i = RAW_START_IDX;
         b.iter(|| {
             map.insert(i, i);
             i += 1;
@@ -837,7 +840,7 @@ mod test {
         for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 0..num_data {
+                for j in RAW_START_IDX..num_data {
                     let num = i * 1000 + j;
                     map.insert(num, num);
                     debug!("Inserted {}", num);
@@ -850,7 +853,7 @@ mod test {
             t.join().unwrap();
         }
         for i in 0..num_threads {
-            for j in 0..num_data {
+            for j in RAW_START_IDX..num_data {
                 let num = i * 1000 + j;
                 debug!("Get {}", num);
                 let first_round = map.get(&num);
