@@ -1603,7 +1603,7 @@ impl<
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
-        self.migrate_entries(
+        let num_migrated = self.migrate_entries(
             old_chunk_ins,
             new_chunk_ins,
             old_occupation,
@@ -1626,12 +1626,12 @@ impl<
         meta.new_chunk.store(Shared::null(), Release);
         let old_epoch = meta.epoch.fetch_add(1, AcqRel);
         debug!(
-            "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}",
+            "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
             old_chunk_ins.base,
             new_chunk_ins.base,
             old_chunk_ins.capacity,
             new_chunk_ins.capacity,
-            old_epoch
+            old_epoch, num_migrated
         );
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
