@@ -728,74 +728,72 @@ mod test {
     #[test]
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..2 {
-            let repeats: usize = 20480;
-            let multplier = 100000;
-            let map = Arc::new(WordMap::<System>::with_capacity(8));
-            let mut threads = vec![];
-            for i in 1..64 {
-                let map = map.clone();
-                threads.push(thread::spawn(move || {
-                    for j in RAW_START_IDX..repeats {
-                        let key = i * 100000 + j;
-                        let prev_epoch = map.table.now_epoch();
-                        assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                        let post_epoch = map.table.now_epoch();
-                        assert_eq!(
-                            map.get(&key),
-                            Some(key),
-                            "Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}, i {}",
-                            key,
-                            map.table.now_epoch(),
-                            post_epoch,
-                            prev_epoch,
-                            get_delayed_log(5),
-                            {
-                                dump_migration_log();
-                                i
-                            }
-                        ); 
-                        let post_insert_epoch = map.table.now_epoch();
-                        assert_eq!(
-                            map.insert(key, key),
-                            Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
-                            key,
-                            map.get(&key),
-                            map.table.now_epoch(),
-                            post_insert_epoch,
-                            prev_epoch,
-                            get_delayed_log(3),
-                            {
-                                dump_migration_log();
-                                i
-                            }
-                        );
-                    }
-                    for j in RAW_START_IDX..repeats {
-                        let key = i * multplier + j;
-                        assert_eq!(
-                            map.insert(key, key),
-                            Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
-                            key,
-                            map.get(&key),
-                            map.table.now_epoch(),
-                            get_delayed_log(2),
-                            {
-                                dump_migration_log();
-                                i
-                            }
-                        );
-                    }
-                    for j in RAW_START_IDX..repeats {
-                        let key = i * multplier + j;
-                        assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
-                    }
-                }));
-            }
-            assert_all_thread_passed(threads);
+        let repeats: usize = 20480;
+        let multplier = 100000;
+        let map = Arc::new(WordMap::<System>::with_capacity(8));
+        let mut threads = vec![];
+        for i in 1..64 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in RAW_START_IDX..repeats {
+                    let key = i * 100000 + j;
+                    let prev_epoch = map.table.now_epoch();
+                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                    let post_epoch = map.table.now_epoch();
+                    assert_eq!(
+                        map.get(&key),
+                        Some(key),
+                        "Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}, i {}",
+                        key,
+                        map.table.now_epoch(),
+                        post_epoch,
+                        prev_epoch,
+                        get_delayed_log(5),
+                        {
+                            dump_migration_log();
+                            i
+                        }
+                    ); 
+                    let post_insert_epoch = map.table.now_epoch();
+                    assert_eq!(
+                        map.insert(key, key),
+                        Some(key),
+                        "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
+                        key,
+                        map.get(&key),
+                        map.table.now_epoch(),
+                        post_insert_epoch,
+                        prev_epoch,
+                        get_delayed_log(3),
+                        {
+                            dump_migration_log();
+                            i
+                        }
+                    );
+                }
+                for j in RAW_START_IDX..repeats {
+                    let key = i * multplier + j;
+                    assert_eq!(
+                        map.insert(key, key),
+                        Some(key),
+                        "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
+                        key,
+                        map.get(&key),
+                        map.table.now_epoch(),
+                        get_delayed_log(2),
+                        {
+                            dump_migration_log();
+                            i
+                        }
+                    );
+                }
+                for j in RAW_START_IDX..repeats {
+                    let key = i * multplier + j;
+                    assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
+                }
+            }));
         }
+        assert_all_thread_passed(threads);
     }
 
     #[bench]

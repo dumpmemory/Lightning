@@ -1566,10 +1566,10 @@ impl<
             old_occupation = new_cap;
         }
         // Swap in new chunk as placeholder for the lock
-        if let Err(_) =
-            self.meta
+        if self.meta
                 .new_chunk
                 .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
+                .is_err()
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");

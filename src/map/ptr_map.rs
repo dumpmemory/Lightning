@@ -1001,113 +1001,71 @@ mod ptr_map {
     #[test]
     fn ptr_checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        for _ in 0..2 {
-            let repeats: usize = 20480;
-            let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
-            let mut threads = vec![];
-            for i in 1..64 {
-                let map = map.clone();
-                threads.push(thread::spawn(move || {
-                    for j in 0..repeats {
-                        let key = i * 100000 + j;
-                        let prev_epoch = map.table.now_epoch();
-                        assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                        let post_insert_epoch = map.table.now_epoch();
-                        {
-                            let get_test_res = map.get(&key);
-                            let get_epoch = map.table.now_epoch();
-                            let expecting = Some(key);
-                            if get_test_res != expecting {
-                                let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
-                                let dump_epoch = map.table.now_epoch();
-                                panic!(
-                                    "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
-                                    get_test_res, expecting,
-                                    key, get_epoch, post_insert_epoch, prev_epoch,
-                                    get_delayed_log(4),
-                                    all_pairs.get(&key), dump_epoch
-                                );
-                            }
+        let repeats: usize = 20480;
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+        let mut threads = vec![];
+        for i in 1..64 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    let prev_epoch = map.table.now_epoch();
+                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                    let post_insert_epoch = map.table.now_epoch();
+                    {
+                        let get_test_res = map.get(&key);
+                        let get_epoch = map.table.now_epoch();
+                        let expecting = Some(key);
+                        if get_test_res != expecting {
+                            let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
+                            let dump_epoch = map.table.now_epoch();
+                            panic!(
+                                "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
+                                get_test_res, expecting,
+                                key, get_epoch, post_insert_epoch, prev_epoch,
+                                get_delayed_log(4),
+                                all_pairs.get(&key), dump_epoch
+                            );
                         }
-                        let post_insert_epoch = map.table.now_epoch();
-                        assert_eq!(
-                            map.insert(key, key),
-                            Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
-                            key,
-                            map.get(&key),
-                            map.table.now_epoch(),
-                            post_insert_epoch,
-                            prev_epoch,
-                            get_delayed_log(3), i
-                        );
                     }
-                    for j in 0..repeats {
-                        let key = i * 100000 + j;
-                        assert_eq!(
-                            map.insert(key, key),
-                            Some(key),
-                            "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
-                            key,
-                            map.get(&key),
-                            map.table.now_epoch(),
-                            get_delayed_log(3), i
-                        );
-                    }
-                    for j in 0..repeats {
-                        let key = i * 100000 + j;
-                        assert_eq!(
-                            map.get(&key),
-                            Some(key),
-                            "reading at key {}, epoch {}",
-                            key,
-                            map.table.now_epoch()
-                        );
-                    }
-                }));
-            }
-            assert_all_thread_passed(threads);
+                    let post_insert_epoch = map.table.now_epoch();
+                    assert_eq!(
+                        map.insert(key, key),
+                        Some(key),
+                        "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
+                        key,
+                        map.get(&key),
+                        map.table.now_epoch(),
+                        post_insert_epoch,
+                        prev_epoch,
+                        get_delayed_log(3), i
+                    );
+                }
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(
+                        map.insert(key, key),
+                        Some(key),
+                        "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
+                        key,
+                        map.get(&key),
+                        map.table.now_epoch(),
+                        get_delayed_log(3), i
+                    );
+                }
+                for j in 0..repeats {
+                    let key = i * 100000 + j;
+                    assert_eq!(
+                        map.get(&key),
+                        Some(key),
+                        "reading at key {}, epoch {}",
+                        key,
+                        map.table.now_epoch()
+                    );
+                }
+            }));
         }
-    }
-
-    #[ignore]
-    #[test]
-    fn checking_inserion_with_migrations_bypass_alloc() {
-        let _ = env_logger::try_init();
-        for _ in 0..32 {
-            let repeats: usize = 4096;
-            let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
-            let mut threads = vec![];
-            for i in 1..16 {
-                let map = map.clone();
-                threads.push(thread::spawn(move || {
-                    for j in 0..repeats {
-                        let key = i * 100000 + j;
-                        let insert_res = map.table.insert(InsertOp::Insert, &key, None, key, key);
-                        assert_eq!(insert_res, None, "inserting at key {}", key);
-                    }
-                    for j in 0..repeats {
-                        let key = i * 100000 + j;
-                        let insert_res = map.table.insert(InsertOp::Insert, &key, None, key, key);
-                        assert_eq!(
-                            insert_res,
-                            Some((key, ())),
-                            "reinserting at key {}, get {:?}, epoch {}",
-                            key,
-                            map.get(&key),
-                            map.table.now_epoch()
-                        );
-                    }
-                    for j in 0..repeats {
-                        let key = i * 100000 + j;
-                        let get_res = map.table.get(&key, key, false);
-                        assert_eq!(get_res, Some((key, None)), "reading at key {}", key);
-                    }
-                }));
-            }
-            assert_all_thread_passed(threads);
-            map.table.clear();
-        }
+        assert_all_thread_passed(threads);
     }
 
     #[test]
