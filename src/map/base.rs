@@ -478,10 +478,10 @@ impl<
             let old_chunk = self.meta.chunk.load(Acquire, &guard);
             if self
                 .meta
-                .chunk
+                .new_chunk
                 .compare_exchange(
-                    old_chunk.with_tag(0),
-                    old_chunk.with_tag(1),
+                    Shared::null(),
+                    old_chunk,
                     AcqRel,
                     Relaxed,
                     &guard,
@@ -498,6 +498,9 @@ impl<
                 self.meta
                     .chunk
                     .store(owned_new.into_shared(&guard), Release);
+                self.meta
+                    .new_chunk
+                    .store(Shared::null(), Release);
             }
             dfence();
             self.count.fetch_sub(len, AcqRel);
@@ -711,7 +714,7 @@ impl<
             let is_copying = Self::is_copying(epoch);
             debug_assert!(!chunk.is_null());
             let res = unsafe {
-                if is_copying && chunk.with_tag(0) != new_chunk {
+                if is_copying && chunk != new_chunk {
                     (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
                 } else if new_chunk.is_null() {
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
@@ -1562,12 +1565,11 @@ impl<
             // The map is small, block all insertions until the migration is completed
             old_occupation = new_cap;
         }
-        // Swap in old chunk as placeholder for the lock
-        let old_chunk_lock = old_chunk_ptr.with_tag(1);
+        // Swap in new chunk as placeholder for the lock
         if let Err(_) =
             self.meta
-                .chunk
-                .compare_exchange(old_chunk_ptr, old_chunk_lock, AcqRel, Relaxed, guard)
+                .new_chunk
+                .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
         {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
@@ -1579,12 +1581,9 @@ impl<
         }
         let new_chunk_ptr_wrap = ChunkPtr::new(new_chunk);
         let new_chunk_base = new_chunk_ptr_wrap.base;
-        let new_chunk_ptr = Owned::new(new_chunk_ptr_wrap)
-            .into_shared(guard)
-            .with_tag(0);
+        let new_chunk_ptr = Owned::new(new_chunk_ptr_wrap).into_shared(guard);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        debug_assert_ne!(new_chunk_ptr, old_chunk_ptr.with_tag(0));
-        debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
+        debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
         let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
         debug!(
             "--- Resizing {} to {}. New size is {}, was {} at old epoch {}",
@@ -1610,19 +1609,7 @@ impl<
             old_epoch,
             &guard,
         );
-        let swap_chunk = meta.chunk.compare_exchange(
-            old_chunk_lock,
-            new_chunk_ptr.with_tag(0),
-            AcqRel,
-            Relaxed,
-            &guard,
-        );
-        if let Err(ec) = swap_chunk {
-            panic!(
-                "Must swap chunk, got {:?}, expecting {:?}",
-                ec, old_chunk_ptr
-            );
-        }
+        meta.chunk.store(new_chunk_ptr, Release);
         meta.new_chunk.store(Shared::null(), Release);
         let old_epoch = meta.epoch.fetch_add(1, AcqRel);
         debug!(
