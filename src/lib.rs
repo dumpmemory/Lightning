@@ -41,7 +41,6 @@ pub const fn align_padding(len: usize, align: usize) -> usize {
     len_rounded_up.wrapping_sub(len)
 }
 
-
 fn thread_id() -> u64 {
     std::thread::current().id().as_u64().get()
 }

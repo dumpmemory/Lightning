@@ -753,7 +753,7 @@ mod test {
                             dump_migration_log();
                             i
                         }
-                    ); 
+                    );
                     let post_insert_epoch = map.table.now_epoch();
                     assert_eq!(
                         map.insert(key, key),

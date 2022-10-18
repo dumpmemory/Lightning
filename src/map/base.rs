@@ -339,13 +339,25 @@ impl<
             match value_insertion {
                 ModResult::Done(fv, v, idx) => {
                     self.count.fetch_add(1, Relaxed);
-                    delay_log!("New val insert key {}, fval {} was {}, idx {}", fkey, fvalue, fv, idx);
+                    delay_log!(
+                        "New val insert key {}, fval {} was {}, idx {}",
+                        fkey,
+                        fvalue,
+                        fv,
+                        idx
+                    );
                     result = Some((0, v))
                 }
                 ModResult::Replaced(fv, v, idx) | ModResult::Existed(fv, v, idx) => {
-                    delay_log!("Replace val insert key {}, fval {} was {}, idx {}", fkey, fvalue, fv, idx);
+                    delay_log!(
+                        "Replace val insert key {}, fval {} was {}, idx {}",
+                        fkey,
+                        fvalue,
+                        fv,
+                        idx
+                    );
                     result = Some((fv, v))
-                },
+                }
                 ModResult::Fail => {
                     // If fail insertion then retry
                     reset_locked_old();
@@ -483,13 +495,7 @@ impl<
             if self
                 .meta
                 .new_chunk
-                .compare_exchange(
-                    Shared::null(),
-                    old_chunk,
-                    AcqRel,
-                    Relaxed,
-                    &guard,
-                )
+                .compare_exchange(Shared::null(), old_chunk, AcqRel, Relaxed, &guard)
                 .is_err()
             {
                 backoff.spin();
@@ -502,9 +508,7 @@ impl<
                 self.meta
                     .chunk
                     .store(owned_new.into_shared(&guard), Release);
-                self.meta
-                    .new_chunk
-                    .store(Shared::null(), Release);
+                self.meta.new_chunk.store(Shared::null(), Release);
             }
             dfence();
             self.count.fetch_sub(len, AcqRel);
@@ -1547,9 +1551,20 @@ impl<
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        if old_chunk_ptr.tag() != 0 {
+        // Swap in new chunk as placeholder for the lock
+        if self
+            .meta
+            .new_chunk
+            .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
+            .is_err()
+        {
+            // other thread have allocated new chunk and wins the competition, exit
+            trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
+        let old_epoch = self.meta.epoch.load(Acquire);
+        debug_assert!(!Self::is_copying(old_epoch));
+        self.meta.epoch.store(old_epoch + 1, Release);
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
@@ -1569,16 +1584,6 @@ impl<
             // The map is small, block all insertions until the migration is completed
             old_occupation = new_cap;
         }
-        // Swap in new chunk as placeholder for the lock
-        if self.meta
-                .new_chunk
-                .compare_exchange(Shared::null(), old_chunk_ptr, AcqRel, Relaxed, guard)
-                .is_err()
-        {
-            // other thread have allocated new chunk and wins the competition, exit
-            trace!("Cannot obtain lock for resize, will retry");
-            return ResizeResult::SwapFailed;
-        }
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
             (*new_chunk).occupation.store(old_occupation, Relaxed);
@@ -1588,7 +1593,6 @@ impl<
         let new_chunk_ptr = Owned::new(new_chunk_ptr_wrap).into_shared(guard);
         let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr);
-        let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
         debug!(
             "--- Resizing {} to {}. New size is {}, was {} at old epoch {}",
             old_chunk_ins.base, new_chunk_base, new_cap, old_cap, old_epoch
@@ -1614,7 +1618,6 @@ impl<
             &guard,
         );
         meta.chunk.store(new_chunk_ptr, Release);
-        meta.new_chunk.store(Shared::null(), Release);
         let old_epoch = meta.epoch.fetch_add(1, AcqRel);
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
@@ -1624,6 +1627,7 @@ impl<
             new_chunk_ins.capacity,
             old_epoch, num_migrated
         );
+        meta.new_chunk.store(Shared::null(), Release);
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
             guard.flush();
@@ -2434,7 +2438,10 @@ pub fn dump_migration_log() {
     logs.iter().for_each(|(epoch, item)| {
         item.iter().for_each(|((k, v), pos, stat, th)| {
             let v = v.val;
-            println!("e {} k {}, v {}, p {} s {} t {}", epoch, k, v, pos, stat, th);
+            println!(
+                "e {} k {}, v {}, p {} s {} t {}",
+                epoch, k, v, pos, stat, th
+            );
         });
     });
 }
