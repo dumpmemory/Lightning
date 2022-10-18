@@ -716,7 +716,7 @@ impl<
             let res = unsafe {
                 if is_copying && chunk != new_chunk {
                     (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
-                } else if new_chunk.is_null() {
+                } else if !is_copying && new_chunk.is_null() {
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
                 } else {
                     continue;
