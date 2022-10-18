@@ -3,8 +3,8 @@
 #![feature(test)]
 #![feature(once_cell)]
 #![feature(atomic_mut_ptr)]
-#![feature(inherent_associated_types)]
-#![feature(specialization)]
+#![feature(thread_id_value)]
+
 #[macro_use]
 extern crate log;
 extern crate alloc;
@@ -39,4 +39,9 @@ mod par_list_test_macros;
 pub const fn align_padding(len: usize, align: usize) -> usize {
     let len_rounded_up = len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1);
     len_rounded_up.wrapping_sub(len)
+}
+
+
+fn thread_id() -> u64 {
+    std::thread::current().id().as_u64().get()
 }

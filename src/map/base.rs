@@ -3,6 +3,8 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
 
+use crate::thread_id;
+
 use super::*;
 
 pub struct EntryTemplate(FKey, FVal);
@@ -11,7 +13,7 @@ pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
 #[cfg(debug_assertions)]
-pub type MigratedEntry = ((usize, FastValue), usize, usize);
+pub type MigratedEntry = ((usize, FastValue), usize, usize, u64);
 
 pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
@@ -1807,7 +1809,7 @@ impl<
             // here the ownership have been taken by other thread
             trace!("Entry {} has changed", fkey);
             #[cfg(debug_assertions)]
-            migrated.push(((fkey, fvalue), 0, 999));
+            migrated.push(((fkey, fvalue), 0, 999, thread_id()));
             return false;
         }
 
@@ -1842,7 +1844,7 @@ impl<
                     // New value in the new chunk, just put a sentinel and abort migration on this slot
                     Self::store_sentinel(old_address);
                     #[cfg(debug_assertions)]
-                    migrated.push(((fkey, fvalue), idx, 888));
+                    migrated.push(((fkey, fvalue), idx, 888, thread_id()));
                     return true;
                 }
             } else if k == EMPTY_KEY {
@@ -1881,7 +1883,7 @@ impl<
                     Self::store_sentinel(old_address);
                     *effective_copy += 1;
                     #[cfg(debug_assertions)]
-                    migrated.push(((fkey, fvalue), idx, 0));
+                    migrated.push(((fkey, fvalue), idx, 0, thread_id()));
                     return true;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
@@ -2439,9 +2441,9 @@ pub fn get_delayed_log<'a>(num: usize) -> Vec<String> {
 pub fn dump_migration_log() {
     let logs = MIGRATION_LOGS.lock();
     logs.iter().for_each(|(epoch, item)| {
-        item.iter().for_each(|((k, v), pos, stat)| {
+        item.iter().for_each(|((k, v), pos, stat, th)| {
             let v = v.val;
-            println!("e {} k {}, v {}, p {} s {}", epoch, k, v, pos, stat);
+            println!("e {} k {}, v {}, p {} s {} t {}", epoch, k, v, pos, stat, th);
         });
     });
 }

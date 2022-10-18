@@ -8,11 +8,7 @@ pub fn assert_all_thread_passed<R>(threads: Vec<JoinHandle<R>>) {
         .collect::<Vec<_>>();
     if !all_errors.is_empty() {
         panic!(
-            "Multithreaded test error with \n {}",
-            all_errors
-                .into_iter()
-                .map(|e| format!("{:?}", e))
-                .join("\n************\n")
+            "Have {} multithreaded test error", all_errors.len()
         );
     }
 }
