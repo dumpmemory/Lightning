@@ -645,7 +645,7 @@ mod test {
         let multiplier = 10000000;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
-        for i in 0..32 {
+        for i in 1..32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 let guard = crossbeam_epoch::pin();
@@ -658,8 +658,8 @@ mod test {
                     debug_assert_eq!(
                         map.get(&key),
                         Some(curr_val),
-                        "Value checking before swap at epoch {}",
-                        map.table.now_epoch()
+                        "Value checking before swap at epoch {}, expecting {}",
+                        map.table.now_epoch(), curr_val
                     );
                     let epoch = map.table.now_epoch();
                     let read_val = map.get(&key);
@@ -667,6 +667,7 @@ mod test {
                         key,
                         &(),
                         move |v| {
+                            assert!(v >= base_val);
                             assert_eq!(
                                 v, curr_val,
                                 "Fail check {} swapping offsetted {} from {} to {}, got {}. Get val {:?}. epoch {}",
@@ -692,17 +693,15 @@ mod test {
                 }
             }));
         }
-        for i in 0..16 {
+        for i in 1..16 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in 0..repeats {
                     let key = i * multiplier + j;
-                    if key < RAW_START_IDX { continue; }
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                 }
                 for j in 0..repeats {
                     let key = i * multiplier + j;
-                    if key < RAW_START_IDX { continue; }
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
