@@ -1723,19 +1723,19 @@ impl<
         if effective_copy > old_occupation {
             let delta = effective_copy - old_occupation;
             new_chunk_ins.occupation.fetch_add(delta, Relaxed);
-            debug!(
+            trace!(
                 "Occupation {}-{} offset {}",
                 effective_copy, old_occupation, delta
             );
         } else if effective_copy < old_occupation {
             let delta = old_occupation - effective_copy;
             new_chunk_ins.occupation.fetch_sub(delta, Relaxed);
-            debug!(
+            trace!(
                 "Occupation {}-{} offset neg {}",
                 effective_copy, old_occupation, delta
             );
         } else {
-            debug!(
+            trace!(
                 "Occupation {}-{} zero offset",
                 effective_copy, old_occupation
             );
@@ -1743,7 +1743,7 @@ impl<
         #[cfg(debug_assertions)]
         {
             debug!(
-                "Migrated {} entries to new chunk, num logs {}",
+                "* Migrated {} entries to new chunk, num logs {}",
                 effective_copy,
                 migrated_entries.len()
             );
