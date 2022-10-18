@@ -502,10 +502,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 mod ptr_map {
     use test::Bencher;
 
-    use crate::{map::{
-        base::{get_delayed_log, InsertOp},
-        *
-    }, tests_misc::assert_all_thread_passed};
+    use crate::{
+        map::{
+            base::{get_delayed_log, InsertOp},
+            *,
+        },
+        tests_misc::assert_all_thread_passed,
+    };
     use std::{alloc::System, sync::Arc, thread};
 
     #[test]
