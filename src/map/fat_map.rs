@@ -247,7 +247,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             );
             match swap_res {
                 SwapResult::Succeed(_, idx, chunk) => {
-                    let chunk_ref = unsafe { chunk.deref() };
+                    let chunk_ref = chunk.deref();
                     let attachment = chunk_ref.attachment.prefetch(idx);
                     let v = attachment.get_value();
                     value = v;
@@ -669,13 +669,13 @@ mod test {
         let _ = env_logger::try_init();
         let map_cont = super::LockingHashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(1, Obj::new(0));
+        map.insert(RAW_START_IDX as u32, Obj::new(RAW_START_IDX));
         let mut threads = vec![];
         let num_threads = 16;
         for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let mut guard = map.write(&1u32).unwrap();
+                let mut guard = map.write(&(RAW_START_IDX as u32)).unwrap();
                 let val = guard.get();
                 guard.set(val + 1);
                 trace!("Dealt with {}", i);
@@ -684,7 +684,7 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        map.get(&1).unwrap().validate(num_threads);
+        map.get(&(RAW_START_IDX as u32)).unwrap().validate(RAW_START_IDX + num_threads);
     }
 
     #[test]

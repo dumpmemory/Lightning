@@ -503,7 +503,7 @@ mod ptr_map {
     use test::Bencher;
 
     use crate::map::{
-        base::{get_delayed_log, InsertOp, NUM_FIX_K, NUM_FIX_V},
+        base::{get_delayed_log, InsertOp},
         *,
     };
     use std::{alloc::System, sync::Arc, thread};
@@ -1033,7 +1033,7 @@ mod ptr_map {
                             map.insert(key, key),
                             Some(key),
                             "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
-                            key - NUM_FIX_K,
+                            key,
                             map.get(&key),
                             map.table.now_epoch(),
                             post_insert_epoch,
@@ -1047,7 +1047,7 @@ mod ptr_map {
                             map.insert(key, key),
                             Some(key),
                             "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
-                            key - NUM_FIX_K,
+                            key,
                             map.get(&key),
                             map.table.now_epoch(),
                             get_delayed_log(3), i
@@ -1092,7 +1092,7 @@ mod ptr_map {
                             insert_res,
                             Some((key, ())),
                             "reinserting at key {}, get {:?}, epoch {}",
-                            key - NUM_FIX_K,
+                            key,
                             map.get(&key),
                             map.table.now_epoch()
                         );

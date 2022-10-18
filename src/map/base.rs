@@ -28,8 +28,10 @@ pub const FORWARD_SWAPPING_VALUE: FVal = 0b101;
 
 pub const TOMBSTONE_VALUE: FVal = 0b110;
 
-pub const NUM_FIX_K: FKey = 0b1000; // = 8
-pub const NUM_FIX_V: FVal = 0b1000; // = 8
+pub const MAX_META_VAL: FVal = TOMBSTONE_VALUE;
+pub const MAX_META_KEY: FKey = EMPTY_KEY;
+pub const PLACEHOLDER_VAL: FVal = MAX_META_VAL + 2;
+pub const RAW_START_IDX: usize = MAX_META_VAL + 1;
 
 pub const HEADING_BIT: FVal = !(!0 << 1 >> 1);
 pub const VAL_BIT_MASK: FVal = VAL_PRIME_VAL_MASK & (!VAL_KEY_DIGEST_MASK);
@@ -50,7 +52,6 @@ pub const FVAL_BITS: usize = mem::size_of::<FVal>() * 8;
 pub const FVAL_VER_POS: FVal = (FVAL_BITS as FVal) / 2;
 pub const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 pub const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
-pub const PLACEHOLDER_VAL: FVal = NUM_FIX_V + 1;
 
 pub const HOP_BYTES: usize = mem::size_of::<HopBits>();
 pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
@@ -274,6 +275,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
+        limit_key(fkey);
         self.get_with_hash(key, fkey, hash, read_attachment, &guard, &backoff)
             .map(|(a, b, _)| (a, b))
     }
@@ -289,6 +291,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
+        limit_key_val(fkey, fvalue);
         loop {
             let (chunk, chunk_ptr, new_chunk, epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
@@ -380,7 +383,7 @@ impl<
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
                         "Insert have Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}, epoch {}",
-                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base), epoch
+                        fkey, chunk.base, new_chunk.map(|c| c.base), epoch
                     ); // Should not reachable
                     res = None;
                 }
@@ -408,7 +411,7 @@ impl<
                 (Some((0, _)), None) => {
                     delay_log!(
                         "Insert have Some((0, _)), None key {}, old chunk {}, new chunk {:?}, epoch {}",
-                        fkey - NUM_FIX_K,
+                        fkey,
                         chunk.base,
                         new_chunk.map(|c| c.base), epoch
                     );
@@ -417,14 +420,14 @@ impl<
                 (Some((0, _)), Some(ModResult::NotFound)) => {
                     delay_log!(
                         "Insert have Some((0, _)), Some(ModResult::NotFound) key {}, old chunk {}, new chunk {:?}, epoch {}",
-                        fkey - NUM_FIX_K, chunk.base, new_chunk.map(|c| c.base), epoch
+                        fkey, chunk.base, new_chunk.map(|c| c.base), epoch
                     );
                     res = None;
                 }
                 (Some((0, _)), _) => {
                     delay_log!(
                         "Insert have Some((0, _)), _ key {}, old chunk {}, new chunk {:?}, epoch {}",
-                        fkey - NUM_FIX_K,
+                        fkey,
                         chunk.base,
                         new_chunk.map(|c| c.base), epoch
                     );
@@ -443,10 +446,10 @@ impl<
             }
             match &res {
                 Some((fv, _)) => {
-                    if *fv < NUM_FIX_V {
+                    if *fv <= MAX_META_VAL {
                         delay_log!(
                             "*fv <= NUM_FIX_V {} key {}, old chunk {}, new chunk {:?}",
-                            fkey + NUM_FIX_K,
+                            fkey,
                             fv,
                             chunk.base,
                             new_chunk.map(|c| c.base)
@@ -509,6 +512,7 @@ impl<
     ) -> SwapResult<K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
+        limit_key(fkey);
         loop {
             let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
@@ -598,7 +602,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
-
+        limit_key(fkey);
         'OUTER: loop {
             let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
@@ -854,7 +858,7 @@ impl<
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
             let k = Self::get_fast_key(addr);
-            if k >= NUM_FIX_K {
+            if k > MAX_META_VAL {
                 let v = Self::get_fast_value(addr);
                 let raw = v.val;
                 if v.is_primed() {
@@ -1154,7 +1158,7 @@ impl<
             if k != EMPTY_KEY {
                 let val_res = Self::get_fast_value(addr);
                 let act_val = val_res.act_val::<V>();
-                if act_val >= NUM_FIX_V {
+                if act_val > MAX_META_VAL {
                     let attachment = chunk.attachment.prefetch(idx);
                     let key = attachment.get_key();
                     let value = attachment.get_value();
@@ -1367,8 +1371,8 @@ impl<
                     let candidate_fkey = Self::get_fast_key(candidate_addr);
                     let candidate_fval = Self::get_fast_value(candidate_addr);
                     let candidate_raw_val = candidate_fval.val;
-                    if candidate_raw_val < NUM_FIX_V
-                        || candidate_fkey < NUM_FIX_K
+                    if candidate_raw_val <= MAX_META_VAL
+                        || candidate_fkey <= MAX_META_KEY
                         || candidate_fval.is_primed()
                     {
                         // Do not temper with non value slot, try next one
@@ -1460,7 +1464,7 @@ impl<
                     // First check if it is already in range of home neighbourhood
                     if candidate_in_range {
                         // In range, fill the candidate slot with our key and values
-                        debug_assert!(fval >= NUM_FIX_V);
+                        debug_assert!(fval >= MAX_META_VAL);
                         Self::store_value(candidate_addr, fval);
                         delay_log!(
                             "Adjusted home {}, target {}, last {}, overflowing {}, chunk {}",
@@ -1828,7 +1832,7 @@ impl<
         #[cfg(debug_assertions)] migrated: &mut Vec<MigratedEntry>,
     ) -> bool {
         // Will not migrate meta keys
-        if fkey < NUM_FIX_K || fvalue.is_primed() {
+        if fkey <= MAX_META_KEY || fvalue.is_primed() {
             return true;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
@@ -2099,7 +2103,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             let fvalue = Self::get_fast_value(old_address);
             let fkey = Self::get_fast_key(old_address);
             let val = fvalue.val;
-            if fkey != EMPTY_KEY && val >= NUM_FIX_V {
+            if fkey != EMPTY_KEY && val > MAX_META_VAL {
                 let attachment = self.attachment.prefetch(idx);
                 attachment.erase(val);
             }
@@ -2474,11 +2478,25 @@ pub fn dump_migration_log() {
     let logs = MIGRATION_LOGS.lock();
     logs.iter().for_each(|(epoch, item)| {
         item.iter().for_each(|((k, v), pos, stat)|{
-            let k = k - NUM_FIX_K;
-            let v = if v.val <= NUM_FIX_V {v.val} else {v.val - NUM_FIX_V};
+            let v = v.val;
             println!("e {} k {}, v {}, p {} s {}", epoch, k, v, pos, stat);
         });
     });
+}
+
+#[inline(always)]
+pub fn limit_key_val(fkey: FKey, fvalue: FVal) {
+    #[cfg(debug_assertions)] {
+        assert!(fkey > MAX_META_KEY);
+        assert!(fvalue > MAX_META_VAL);
+    }
+}
+
+#[inline(always)]
+pub fn limit_key(fkey: FKey) {
+    #[cfg(debug_assertions)] {
+        assert!(fkey > MAX_META_KEY);
+    }
 }
 
 #[cfg(test)]

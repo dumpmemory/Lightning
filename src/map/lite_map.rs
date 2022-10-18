@@ -50,12 +50,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         unsafe {
             ptr::write(obj_ptr, d);
         }
-        return num as usize + NUM_FIX_V as usize;
+        return num as usize as usize;
     }
 
     #[inline(always)]
     fn decode<T: Clone>(&self, num: usize) -> T {
-        let num = (num - (NUM_FIX_V as usize)) as u64;
+        let num = num as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
         let obj = aligned.data.clone();
@@ -64,7 +64,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     unsafe fn decode_no_clone<T: Clone>(&self, num: usize) -> T {
-        let num = (num - (NUM_FIX_V as usize)) as u64;
+        let num = num as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
         let aligned = ptr::read(ptr);
         return aligned.data;
@@ -285,7 +285,7 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
 
     #[inline(always)]
     fn manually_drop(&self, fval: usize) {
-        let num = (fval - (NUM_FIX_V as usize)) as u64;
+        let num = fval as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<V>;
         unsafe { mem::drop(ptr::read(ptr)) }
     }
@@ -293,19 +293,19 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
 
 #[cfg(test)]
 mod lite_tests {
-    use crate::map::*;
+    use crate::map::{*, base::{RAW_START_IDX, MAX_META_KEY, MAX_META_VAL}};
     use std::{alloc::System, sync::Arc};
 
     #[test]
     fn no_resize() {
         let _ = env_logger::try_init();
         let map = LiteHashMap::<usize, usize, System>::with_capacity(4096);
-        for i in 5..2048 {
+        for i in RAW_START_IDX..2048 {
             let k = i;
             let v = i * 2;
             map.insert(k, v);
         }
-        for i in 5..2048 {
+        for i in RAW_START_IDX..2048 {
             let k = i;
             let v = i * 2;
             match map.get(&k) {
@@ -341,13 +341,13 @@ mod lite_tests {
     fn no_resize_arc() {
         let _ = env_logger::try_init();
         let map = LiteHashMap::<usize, Arc<FatStruct>, System>::with_capacity(4096);
-        for i in 5..2048 {
+        for i in RAW_START_IDX..2048 {
             let k = i;
             let v = i * 2;
             let d = Arc::new(FatStruct::new(v));
             map.insert(k, d);
         }
-        for i in 5..2048 {
+        for i in RAW_START_IDX..2048 {
             let k = i;
             let v = i * 2;
             match map.get(&k) {
@@ -367,11 +367,13 @@ mod lite_tests {
         for i in 0..2048 {
             let k = i as u8;
             let v = (i * 2) as u8;
+            if k <= MAX_META_KEY as u8 || v <= MAX_META_VAL as u8 { continue; }
             map.insert(k, v);
         }
         for i in 0..2048 {
             let k = i as u8;
             let v = (i * 2) as u8;
+            if k <= MAX_META_KEY as u8 || v <= MAX_META_VAL as u8 { continue; }
             match map.get(&k) {
                 Some(r) => {
                     assert_eq!(r, v);
