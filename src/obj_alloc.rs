@@ -552,6 +552,7 @@ impl ASan {
 #[cfg(test)]
 mod test {
     use std::{collections::HashSet, thread};
+    use crate::tests_misc::assert_all_thread_passed;
 
     use super::*;
 
@@ -663,6 +664,6 @@ mod test {
                 }
             }))
         }
-        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert_all_thread_passed(threads);
     }
 }

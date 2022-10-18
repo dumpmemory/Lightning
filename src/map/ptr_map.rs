@@ -502,10 +502,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 mod ptr_map {
     use test::Bencher;
 
-    use crate::map::{
+    use crate::{map::{
         base::{get_delayed_log, InsertOp},
-        *,
-    };
+        *
+    }, tests_misc::assert_all_thread_passed};
     use std::{alloc::System, sync::Arc, thread};
 
     #[test]
@@ -954,9 +954,7 @@ mod ptr_map {
                 }
             }));
         }
-        for thread in threads {
-            thread.join().unwrap();
-        }
+        assert_all_thread_passed(threads);
     }
 
     #[bench]
@@ -1065,7 +1063,7 @@ mod ptr_map {
                     }
                 }));
             }
-            threads.into_iter().for_each(|t| t.join().unwrap());
+            assert_all_thread_passed(threads);
         }
     }
 
@@ -1104,7 +1102,7 @@ mod ptr_map {
                     }
                 }));
             }
-            threads.into_iter().for_each(|t| t.join().unwrap());
+            assert_all_thread_passed(threads);
             map.table.clear();
         }
     }
@@ -1127,9 +1125,7 @@ mod ptr_map {
                 }
             }));
         }
-        for t in threads {
-            t.join().unwrap();
-        }
+        assert_all_thread_passed(threads);
         assert_eq!(map.get(&key), Some(num_threads * num_rounds));
     }
 }

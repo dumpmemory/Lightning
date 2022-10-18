@@ -30,6 +30,9 @@ pub mod obj_alloc;
 pub mod rand;
 pub mod thread_local;
 
+#[cfg(test)]
+mod tests_misc;
+
 #[macro_use]
 mod par_list_test_macros;
 

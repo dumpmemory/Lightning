@@ -248,10 +248,10 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 
 #[cfg(test)]
 mod test {
-    use crate::map::{
+    use crate::{map::{
         base::{dump_migration_log, get_delayed_log, RAW_START_IDX},
-        *,
-    };
+        *
+    }, tests_misc::assert_all_thread_passed};
     use alloc::sync::Arc;
     use rayon::prelude::*;
     use std::{thread, time::Duration};
@@ -636,7 +636,7 @@ mod test {
                 }
             }));
         }
-        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert_all_thread_passed(threads);
     }
 
     #[test]
@@ -719,7 +719,7 @@ mod test {
                 }
             }));
         }
-        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert_all_thread_passed(threads);
     }
 
     #[test]
@@ -791,7 +791,7 @@ mod test {
                     }
                 }));
             }
-            threads.into_iter().for_each(|t| t.join().unwrap());
+            assert_all_thread_passed(threads);
         }
     }
 
