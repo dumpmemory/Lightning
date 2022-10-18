@@ -19,6 +19,7 @@ pub const ENABLE_HOPSOTCH: bool = false;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
+pub const DISABLED_KEY: FKey = 1;
 
 pub const EMPTY_VALUE: FVal = 0b000;
 pub const SENTINEL_VALUE: FVal = 0b010;
@@ -31,7 +32,7 @@ pub const FORWARD_SWAPPING_VALUE: FVal = 0b101;
 pub const TOMBSTONE_VALUE: FVal = 0b110;
 
 pub const MAX_META_VAL: FVal = TOMBSTONE_VALUE;
-pub const MAX_META_KEY: FKey = EMPTY_KEY;
+pub const MAX_META_KEY: FKey = DISABLED_KEY;
 pub const PLACEHOLDER_VAL: FVal = MAX_META_VAL + 2;
 pub const RAW_START_IDX: usize = MAX_META_VAL + 1;
 
@@ -1667,13 +1668,18 @@ impl<
                 Self::get_fast_key(old_address)
             );
             match fvalue.val {
-                EMPTY_VALUE | TOMBSTONE_VALUE => {
+                EMPTY_VALUE => {
                     // Probably does not need this anymore
                     // Need to make sure that during migration, empty value always leads to new chunk
                     if Self::cas_sentinel(old_address, fvalue.val) {
-                        // Self::store_key(old_address, DISABLED_KEY);
+                        Self::store_key(old_address, DISABLED_KEY);
                     } else {
-                        warn!("Filling empty with sentinel for old table should succeed but not, retry");
+                        backoff.spin();
+                        continue;
+                    }
+                }
+                TOMBSTONE_VALUE => {
+                    if !Self::cas_sentinel(old_address, fvalue.val) {
                         backoff.spin();
                         continue;
                     }
@@ -1792,6 +1798,8 @@ impl<
     ) -> bool {
         // Will not migrate meta keys
         if fkey <= MAX_META_KEY || fvalue.is_primed() {
+            #[cfg(debug_assertions)]
+            migrated.push(((fkey, fvalue), 0, 888, thread_id()));
             return true;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
