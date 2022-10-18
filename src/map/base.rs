@@ -73,7 +73,7 @@ lazy_static! {
 
 enum ModResult<V> {
     Replaced(FVal, Option<V>, usize), // (origin fval, val, index)
-    Existed(FVal, Option<V>),
+    Existed(FVal, Option<V>, usize),
     Fail,
     Sentinel,
     NotFound,
@@ -337,11 +337,15 @@ impl<
                 _ => unreachable!(),
             };
             match value_insertion {
-                ModResult::Done(_fv, v, _) => {
+                ModResult::Done(fv, v, idx) => {
                     self.count.fetch_add(1, Relaxed);
+                    delay_log!("New val insert key {}, fval {} was {}, idx {}", fkey, fvalue, fv, idx);
                     result = Some((0, v))
                 }
-                ModResult::Replaced(fv, v, _) | ModResult::Existed(fv, v) => result = Some((fv, v)),
+                ModResult::Replaced(fv, v, idx) | ModResult::Existed(fv, v, idx) => {
+                    delay_log!("Replace val insert key {}, fval {} was {}, idx {}", fkey, fvalue, fv, idx);
+                    result = Some((fv, v))
+                },
                 ModResult::Fail => {
                     // If fail insertion then retry
                     reset_locked_old();
@@ -995,7 +999,7 @@ impl<
                                                 backoff.spin();
                                                 continue;
                                             }
-                                            return ModResult::Existed(act_val, prev_val);
+                                            return ModResult::Existed(act_val, prev_val, idx);
                                         }
                                     } else {
                                         if Self::FAT_VAL
@@ -1006,7 +1010,7 @@ impl<
                                             continue;
                                         }
                                         let value = read_attachment.then(|| attachment.get_value());
-                                        return ModResult::Existed(act_val, value);
+                                        return ModResult::Existed(act_val, value, idx);
                                     }
                                 }
                                 ModOp::SwapFastVal(ref swap) => {
@@ -2319,7 +2323,7 @@ impl<V> Debug for ModResult<V> {
             Self::Replaced(arg0, _arg1, arg2) => {
                 f.debug_tuple("Replaced").field(arg0).field(arg2).finish()
             }
-            Self::Existed(arg0, _arg1) => f.debug_tuple("Existed").field(arg0).finish(),
+            Self::Existed(arg0, _arg1, _) => f.debug_tuple("Existed").field(arg0).finish(),
             Self::Fail => write!(f, "Fail"),
             Self::Sentinel => write!(f, "Sentinel"),
             Self::NotFound => write!(f, "NotFound"),
