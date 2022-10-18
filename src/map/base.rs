@@ -1617,8 +1617,13 @@ impl<
             old_epoch,
             &guard,
         );
+        meta.epoch.store(old_epoch + 2, Release);
         meta.chunk.store(new_chunk_ptr, Release);
-        let old_epoch = meta.epoch.fetch_add(1, AcqRel);
+        meta.new_chunk.store(Shared::null(), Release);
+        unsafe {
+            guard.defer_destroy(old_chunk_ptr);
+            guard.flush();
+        }
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
             old_chunk_ins.base,
@@ -1627,11 +1632,6 @@ impl<
             new_chunk_ins.capacity,
             old_epoch, num_migrated
         );
-        meta.new_chunk.store(Shared::null(), Release);
-        unsafe {
-            guard.defer_destroy(old_chunk_ptr);
-            guard.flush();
-        }
         ResizeResult::InProgress
     }
 
