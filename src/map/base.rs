@@ -1,4 +1,4 @@
-use std::{cell::{RefCell, UnsafeCell}, collections::VecDeque, sync::Arc};
+use std::{cell::{RefCell}, collections::VecDeque, sync::Arc};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -1580,6 +1580,7 @@ impl<
         let new_chunk_ptr = Owned::new(new_chunk_ptr_wrap)
             .into_shared(guard)
             .with_tag(0);
+        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         debug_assert_ne!(new_chunk_ptr, old_chunk_ptr.with_tag(0));
         debug_assert_eq!(self.meta.new_chunk.load(Acquire, guard), Shared::null());
         let old_epoch = self.meta.epoch.fetch_add(1, AcqRel);
@@ -1597,10 +1598,6 @@ impl<
         );
         self.meta.new_chunk.store(new_chunk_ptr, Release); // Stump becasue we have the lock already
         let meta = self.meta.clone();
-        let old_chunk_addr = old_chunk_ptr.into_usize();
-        let new_chunk_addr = new_chunk_ptr.into_usize();
-        let old_chunk_lock = old_chunk_lock.into_usize();
-        let meta_addr = Arc::into_raw(meta) as usize;
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
@@ -1619,40 +1616,7 @@ impl<
         //         );
         //     })
         //     .unwrap();
-        Self::migrate_with_thread(
-            meta_addr,
-            old_chunk_addr,
-            new_chunk_addr,
-            old_chunk_lock,
-            old_occupation,
-            old_epoch
-        );
-        ResizeResult::InProgress
-    }
-
-    fn migrate_with_thread(
-        meta_addr: usize,
-        old_chunk_ptr: usize,
-        new_chunk_ptr: usize,
-        old_chunk_lock: usize,
-        old_occupation: usize,
-        epoch: usize
-    ) {
-        let guard = crossbeam_epoch::pin();
-        let meta = unsafe {
-            Arc::<ChunkMeta<K, V, A, ALLOC>>::from_raw(
-                meta_addr as *const ChunkMeta<K, V, A, ALLOC>,
-            )
-        };
-        let old_chunk_ptr =
-            unsafe { Shared::<ChunkPtr<K, V, A, ALLOC>>::from_usize(old_chunk_ptr) };
-        let new_chunk_ptr =
-            unsafe { Shared::<ChunkPtr<K, V, A, ALLOC>>::from_usize(new_chunk_ptr) };
-        let old_chunk_lock =
-            unsafe { Shared::<ChunkPtr<K, V, A, ALLOC>>::from_usize(old_chunk_lock) };
-        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
-        let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
-        Self::migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, epoch, &guard);
+        self.migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, old_epoch, &guard);
         let swap_chunk = meta.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1680,9 +1644,11 @@ impl<
             guard.defer_destroy(old_chunk_ptr);
             guard.flush();
         }
+        ResizeResult::InProgress
     }
 
     fn migrate_entries(
+        &self,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
         new_chunk_ins: &Chunk<K, V, A, ALLOC>,
         old_occupation: usize,
@@ -1706,6 +1672,7 @@ impl<
             let fkey = Self::get_fast_key(old_address);
             let fvalue = Self::get_fast_value(old_address);
             debug_assert_eq!(old_address, old_chunk_ins.entry_addr(idx));
+            debug_assert_eq!(self.now_epoch(), epoch + 1);
             // Reasoning value states
             trace!(
                 "Migrating entry have key {}",
@@ -1759,6 +1726,7 @@ impl<
                         backoff.spin();
                         continue;
                     }
+
                 }
             }
             old_address += ENTRY_SIZE;
