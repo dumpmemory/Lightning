@@ -1,4 +1,4 @@
-use std::{cell::{RefCell}, collections::VecDeque, sync::Arc};
+use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -1601,22 +1601,13 @@ impl<
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
-        // thread::Builder::new()
-        //     .name(format!(
-        //         "map-migration-{}-{}",
-        //         old_chunk_addr, new_chunk_addr
-        //     ))
-        //     .spawn(move || {
-        //         Self::migrate_with_thread(
-        //             meta_addr,
-        //             old_chunk_addr,
-        //             new_chunk_addr,
-        //             old_chunk_lock,
-        //             old_occupation,
-        //         );
-        //     })
-        //     .unwrap();
-        self.migrate_entries(old_chunk_ins, new_chunk_ins, old_occupation, old_epoch, &guard);
+        self.migrate_entries(
+            old_chunk_ins,
+            new_chunk_ins,
+            old_occupation,
+            old_epoch,
+            &guard,
+        );
         let swap_chunk = meta.chunk.compare_exchange(
             old_chunk_lock,
             new_chunk_ptr.with_tag(0),
@@ -1726,7 +1717,6 @@ impl<
                         backoff.spin();
                         continue;
                     }
-
                 }
             }
             old_address += ENTRY_SIZE;
@@ -1755,7 +1745,11 @@ impl<
         }
         #[cfg(debug_assertions)]
         {
-            debug!("Migrated {} entries to new chunk, num logs {}", effective_copy, migrated_entries.len());
+            debug!(
+                "Migrated {} entries to new chunk, num logs {}",
+                effective_copy,
+                migrated_entries.len()
+            );
             MIGRATION_LOGS.lock().push((epoch, migrated_entries))
         }
         return effective_copy;
@@ -2445,7 +2439,7 @@ pub fn get_delayed_log<'a>(num: usize) -> Vec<String> {
 pub fn dump_migration_log() {
     let logs = MIGRATION_LOGS.lock();
     logs.iter().for_each(|(epoch, item)| {
-        item.iter().for_each(|((k, v), pos, stat)|{
+        item.iter().for_each(|((k, v), pos, stat)| {
             let v = v.val;
             println!("e {} k {}, v {}, p {} s {}", epoch, k, v, pos, stat);
         });
@@ -2454,7 +2448,8 @@ pub fn dump_migration_log() {
 
 #[inline(always)]
 pub fn limit_key_val(fkey: FKey, fvalue: FVal) {
-    #[cfg(debug_assertions)] {
+    #[cfg(debug_assertions)]
+    {
         assert!(fkey > MAX_META_KEY);
         assert!(fvalue > MAX_META_VAL);
     }
@@ -2462,7 +2457,8 @@ pub fn limit_key_val(fkey: FKey, fvalue: FVal) {
 
 #[inline(always)]
 pub fn limit_key(fkey: FKey) {
-    #[cfg(debug_assertions)] {
+    #[cfg(debug_assertions)]
+    {
         assert!(fkey > MAX_META_KEY);
     }
 }

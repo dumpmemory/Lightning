@@ -293,7 +293,10 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
 
 #[cfg(test)]
 mod lite_tests {
-    use crate::map::{*, base::{RAW_START_IDX, MAX_META_KEY, MAX_META_VAL}};
+    use crate::map::{
+        base::{MAX_META_KEY, MAX_META_VAL, RAW_START_IDX},
+        *,
+    };
     use std::{alloc::System, sync::Arc};
 
     #[test]
@@ -367,13 +370,17 @@ mod lite_tests {
         for i in 0..2048 {
             let k = i as u8;
             let v = (i * 2) as u8;
-            if k <= MAX_META_KEY as u8 || v <= MAX_META_VAL as u8 { continue; }
+            if k <= MAX_META_KEY as u8 || v <= MAX_META_VAL as u8 {
+                continue;
+            }
             map.insert(k, v);
         }
         for i in 0..2048 {
             let k = i as u8;
             let v = (i * 2) as u8;
-            if k <= MAX_META_KEY as u8 || v <= MAX_META_VAL as u8 { continue; }
+            if k <= MAX_META_KEY as u8 || v <= MAX_META_VAL as u8 {
+                continue;
+            }
             match map.get(&k) {
                 Some(r) => {
                     assert_eq!(r, v);

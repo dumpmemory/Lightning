@@ -20,9 +20,7 @@ pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     #[inline(always)]
     fn insert_with_op(&self, op: InsertOp, key: FKey, value: FVal) -> Option<FVal> {
-        self.table
-            .insert(op, &(), None, key, value)
-            .map(|(v, _)| v)
+        self.table.insert(op, &(), None, key, value).map(|(v, _)| v)
     }
 
     pub fn get_from_mutex(&self, key: &FKey) -> Option<FVal> {
@@ -39,9 +37,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 
     #[inline(always)]
     fn get(&self, key: &FKey) -> Option<FVal> {
-        self.table
-            .get(&(), *key, false)
-            .map(|v| v.0)
+        self.table.get(&(), *key, false).map(|v| v.0)
     }
 
     #[inline(always)]
@@ -189,8 +185,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop for WordMutexGu
             self.key,
             self.value
         );
-        self.table
-            .insert(InsertOp::Insert, &(), None, key, val);
+        self.table.insert(InsertOp::Insert, &(), None, key, val);
     }
 }
 
@@ -254,7 +249,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::map::{
-        base::{get_delayed_log, dump_migration_log, RAW_START_IDX},
+        base::{dump_migration_log, get_delayed_log, RAW_START_IDX},
         *,
     };
     use alloc::sync::Arc;
@@ -498,7 +493,10 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        assert_eq!(map.get(&RAW_START_IDX).unwrap(), RAW_START_IDX + num_threads);
+        assert_eq!(
+            map.get(&RAW_START_IDX).unwrap(),
+            RAW_START_IDX + num_threads
+        );
     }
 
     #[test]
@@ -586,7 +584,10 @@ mod test {
         for t in threads {
             t.join().unwrap();
         }
-        assert_eq!(map.get(&key), Some(RAW_START_IDX + num_threads * num_rounds));
+        assert_eq!(
+            map.get(&key),
+            Some(RAW_START_IDX + num_threads * num_rounds)
+        );
     }
 
     #[test]
@@ -711,7 +712,9 @@ mod test {
                 }
                 for j in 0..repeats {
                     let key = i * multiplier + j;
-                    if key < RAW_START_IDX { continue; }
+                    if key < RAW_START_IDX {
+                        continue;
+                    }
                     assert_eq!(map.get(&key), Some(key), "reading at key {}", key);
                 }
             }));

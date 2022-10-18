@@ -46,9 +46,7 @@ impl<V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, V>
 
     #[inline(always)]
     fn get(&self, key: &FKey) -> Option<V> {
-        self.table
-            .get(&(), *key, true)
-            .map(|v| v.1.unwrap())
+        self.table.get(&(), *key, true).map(|v| v.1.unwrap())
     }
 
     #[inline(always)]
@@ -394,7 +392,9 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        map.get(&RAW_START_IDX).unwrap().validate(RAW_START_IDX + num_threads);
+        map.get(&RAW_START_IDX)
+            .unwrap()
+            .validate(RAW_START_IDX + num_threads);
     }
 
     #[test]

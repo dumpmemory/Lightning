@@ -684,7 +684,9 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        map.get(&(RAW_START_IDX as u32)).unwrap().validate(RAW_START_IDX + num_threads);
+        map.get(&(RAW_START_IDX as u32))
+            .unwrap()
+            .validate(RAW_START_IDX + num_threads);
     }
 
     #[test]
