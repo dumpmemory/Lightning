@@ -2264,9 +2264,10 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
         unsafe {
-            guard.defer_destroy(self.meta.chunk.load(Acquire, &guard));
+            let old_chunk_ptr = self.meta.chunk.load(Acquire, &guard);
             let new_chunk_ptr = self.meta.new_chunk.load(Acquire, &guard);
-            if !new_chunk_ptr.is_null() {
+            guard.defer_destroy(old_chunk_ptr);
+            if !new_chunk_ptr.is_null() && old_chunk_ptr != new_chunk_ptr {
                 guard.defer_destroy(new_chunk_ptr);
             }
         }
@@ -2285,7 +2286,6 @@ unsafe impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Drop for ChunkPtr<K, V, A, ALLOC> {
     fn drop(&mut self) {
         debug_assert_ne!(self.ptr as usize, 0);
-
         unsafe {
             Chunk::gc(self.ptr);
         }
