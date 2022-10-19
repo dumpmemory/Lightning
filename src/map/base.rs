@@ -1622,6 +1622,7 @@ impl<
         meta.chunk.store(new_chunk_ptr, Release);
         meta.new_chunk.store(Shared::null(), Release);
         unsafe {
+            let guard = crossbeam_epoch::pin();
             guard.defer_destroy(old_chunk_ptr);
         }
         debug!(
