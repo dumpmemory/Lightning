@@ -1622,8 +1622,11 @@ impl<
         meta.chunk.store(new_chunk_ptr, Release);
         meta.new_chunk.store(Shared::null(), Release);
         unsafe {
-            let guard = crossbeam_epoch::pin();
-            guard.defer_destroy(old_chunk_ptr);
+            guard.defer_unchecked(move ||{
+                let chunk = old_chunk_ptr;
+                debug!("Deallocing chunk {} at epoch {}", chunk.deref().base, old_epoch);
+                chunk.into_owned();
+            })
         }
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
