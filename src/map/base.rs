@@ -1621,7 +1621,6 @@ impl<
         );
         meta.epoch.store(old_epoch + 2, Release);
         meta.chunk.store(new_chunk_ptr, Release);
-        meta.new_chunk.store(Shared::null(), Release);
         unsafe {
             guard.defer_unchecked(move || {
                 let chunk = old_chunk_ptr;
@@ -1638,6 +1637,7 @@ impl<
             new_chunk_ins.capacity,
             old_epoch, num_migrated
         );
+        meta.new_chunk.store(Shared::null(), Release);
         ResizeResult::InProgress
     }
 
