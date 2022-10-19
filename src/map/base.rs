@@ -1623,7 +1623,6 @@ impl<
         meta.new_chunk.store(Shared::null(), Release);
         unsafe {
             guard.defer_destroy(old_chunk_ptr);
-            guard.flush();
         }
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
