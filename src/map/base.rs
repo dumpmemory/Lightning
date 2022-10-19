@@ -842,12 +842,13 @@ impl<
         }
 
         delay_log!(
-            "Get got nothing due nothing found at {} for key {}, hash {}, val -, home {}, chunk {}",
+            "Get got nothing due nothing found at {} for key {}, hash {}, val -, home {}, chunk {}, epoch {}",
             idx,
             fkey,
             hash,
             home_idx,
-            chunk.base
+            chunk.base,
+            epoch
         );
         return None;
     }
