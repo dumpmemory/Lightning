@@ -1626,7 +1626,8 @@ impl<
                 let chunk = old_chunk_ptr;
                 debug!("+ Deallocing chunk {} at epoch {}", chunk.deref().base, old_epoch);
                 chunk.into_owned();
-            })
+            });
+            guard.flush();
         }
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
