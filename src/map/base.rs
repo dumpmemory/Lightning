@@ -1624,7 +1624,7 @@ impl<
         unsafe {
             guard.defer_unchecked(move ||{
                 let chunk = old_chunk_ptr;
-                debug!("Deallocing chunk {} at epoch {}", chunk.deref().base, old_epoch);
+                debug!("+ Deallocing chunk {} at epoch {}", chunk.deref().base, old_epoch);
                 chunk.into_owned();
             })
         }
