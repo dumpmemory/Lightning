@@ -1623,9 +1623,9 @@ impl<
         meta.chunk.store(new_chunk_ptr, Release);
         meta.new_chunk.store(Shared::null(), Release);
         unsafe {
-            guard.defer_unchecked(move ||{
+            guard.defer_unchecked(move || {
                 let chunk = old_chunk_ptr;
-                debug!("+ Deallocing chunk {} at epoch {}", chunk.deref().base, old_epoch);
+                debug!("+ Deallocing chunk {:?}, base {} at epoch {}", chunk, chunk.deref().base, old_epoch);
                 chunk.into_owned();
             });
             guard.flush();
@@ -1736,19 +1736,24 @@ impl<
             new_chunk_ins.occupation.fetch_add(delta, Relaxed);
             trace!(
                 "Occupation {}-{} offset {}",
-                effective_copy, old_occupation, delta
+                effective_copy,
+                old_occupation,
+                delta
             );
         } else if effective_copy < old_occupation {
             let delta = old_occupation - effective_copy;
             new_chunk_ins.occupation.fetch_sub(delta, Relaxed);
             trace!(
                 "Occupation {}-{} offset neg {}",
-                effective_copy, old_occupation, delta
+                effective_copy,
+                old_occupation,
+                delta
             );
         } else {
             trace!(
                 "Occupation {}-{} zero offset",
-                effective_copy, old_occupation
+                effective_copy,
+                old_occupation
             );
         }
         #[cfg(debug_assertions)]
