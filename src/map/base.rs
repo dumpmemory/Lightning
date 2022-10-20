@@ -304,7 +304,7 @@ impl<
                     continue;
                 }
             } else {
-                match self.check_migration(chunk_ptr, chunk, &guard) {
+                match self.check_migration(chunk_ptr, chunk, epoch, &guard) {
                     ResizeResult::InProgress | ResizeResult::SwapFailed => {
                         trace!("Retry insert due to resize");
                         backoff.spin();
@@ -368,10 +368,9 @@ impl<
                 ModResult::TableFull => {
                     reset_locked_old();
                     if new_chunk.is_none() {
-                        self.do_migration(chunk_ptr, &guard);
-                    } else {
-                        backoff.spin();
+                        self.do_migration(chunk_ptr, epoch, &guard);
                     }
+                    backoff.spin();
                     continue;
                 }
                 ModResult::Sentinel => {
@@ -1538,6 +1537,7 @@ impl<
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
         old_chunk_ref: &ChunkPtr<K, V, A, ALLOC>,
+        epoch: usize,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         let occupation = old_chunk_ref.occupation.load(Relaxed);
@@ -1545,12 +1545,13 @@ impl<
         if occupation < occu_limit {
             return ResizeResult::NoNeed;
         }
-        self.do_migration(old_chunk_ptr, guard)
+        self.do_migration(old_chunk_ptr, epoch, guard)
     }
 
     fn do_migration<'a>(
         &self,
         old_chunk_ptr: Shared<'a, ChunkPtr<K, V, A, ALLOC>>,
+        chunk_epoch: usize,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         // Swap in new chunk as placeholder for the lock
@@ -1566,6 +1567,11 @@ impl<
         }
         let old_epoch = self.meta.epoch.load(Acquire);
         debug_assert!(!Self::is_copying(old_epoch));
+        if chunk_epoch != old_epoch {
+            self.meta.new_chunk.store(Shared::null(), Release);
+            debug!("$ Epoch changed from {} to {} after migration lock", chunk_epoch, old_epoch);
+            return ResizeResult::SwapFailed;
+        }
         self.meta.epoch.store(old_epoch + 1, Release);
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
