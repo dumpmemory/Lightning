@@ -1812,10 +1812,15 @@ impl<
         effective_copy: &mut usize,
         #[cfg(debug_assertions)] migrated: &mut Vec<MigratedEntry>,
     ) -> bool {
+        if fkey == EMPTY_KEY {
+            #[cfg(debug_assertions)]
+            migrated.push(((fkey, fvalue), 0, 222, thread_id()));
+            return false;
+        }
         // Will not migrate meta keys
         if fkey <= MAX_META_KEY || fvalue.is_primed() {
             #[cfg(debug_assertions)]
-            migrated.push(((fkey, fvalue), 0, 888, thread_id()));
+            migrated.push(((fkey, fvalue), 0, 111, thread_id()));
             return true;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
