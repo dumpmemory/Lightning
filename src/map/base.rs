@@ -15,7 +15,7 @@ pub type HopTuple = (HopBits, HopVer);
 #[cfg(debug_assertions)]
 pub type MigratedEntry = ((usize, FastValue), usize, usize, u64);
 
-pub const ENABLE_HOPSOTCH: bool = false;
+pub const ENABLE_HOPSOTCH: bool = true;
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
