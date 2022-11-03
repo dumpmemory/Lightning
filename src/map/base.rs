@@ -36,6 +36,9 @@ pub const MAX_META_KEY: FKey = DISABLED_KEY;
 pub const PLACEHOLDER_VAL: FVal = MAX_META_VAL + 2;
 pub const RAW_START_IDX: usize = MAX_META_VAL + 1;
 
+pub const RAW_KV_OFFSET: usize = RAW_START_IDX;
+pub const PTR_KV_OFFSET: usize = 0;
+
 pub const HEADING_BIT: FVal = !(!0 << 1 >> 1);
 pub const VAL_BIT_MASK: FVal = VAL_PRIME_VAL_MASK & (!VAL_KEY_DIGEST_MASK);
 pub const VAL_PRIME_BIT: FVal = HEADING_BIT;
@@ -126,7 +129,15 @@ pub struct ChunkPtr<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     ptr: *mut Chunk<K, V, A, ALLOC>,
 }
 
-pub struct Table<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> {
+pub struct Table<
+    K,
+    V,
+    A: Attachment<K, V>,
+    ALLOC: GlobalAlloc + Default,
+    H: Hasher + Default,
+    const K_OFFSET: usize,
+    const V_OFFSET: usize,
+> {
     meta: Arc<ChunkMeta<K, V, A, ALLOC>>,
     attachment_init_meta: A::InitMeta,
     count: AtomicUsize,
@@ -159,7 +170,9 @@ impl<
         A: Attachment<K, V>,
         ALLOC: GlobalAlloc + Default,
         H: Hasher + Default,
-    > Table<K, V, A, ALLOC, H>
+        const K_OFFSET: usize,
+        const V_OFFSET: usize,
+    > Table<K, V, A, ALLOC, H, K_OFFSET, V_OFFSET>
 {
     const FAT_VAL: bool = mem::size_of::<V>() != 0;
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
@@ -1569,7 +1582,10 @@ impl<
         debug_assert!(!Self::is_copying(old_epoch));
         if chunk_epoch != old_epoch {
             self.meta.new_chunk.store(Shared::null(), Release);
-            debug!("$ Epoch changed from {} to {} after migration lock", chunk_epoch, old_epoch);
+            debug!(
+                "$ Epoch changed from {} to {} after migration lock",
+                chunk_epoch, old_epoch
+            );
             return ResizeResult::SwapFailed;
         }
         self.meta.epoch.store(old_epoch + 1, Release);
@@ -1630,7 +1646,12 @@ impl<
         unsafe {
             guard.defer_unchecked(move || {
                 let chunk = old_chunk_ptr;
-                debug!("+ Deallocing chunk {:?}, base {} at epoch {}", chunk, chunk.deref().base, old_epoch);
+                debug!(
+                    "+ Deallocing chunk {:?}, base {} at epoch {}",
+                    chunk,
+                    chunk.deref().base,
+                    old_epoch
+                );
                 chunk.into_owned();
             });
             guard.flush();
@@ -2232,8 +2253,15 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Clone
-    for Table<K, V, A, ALLOC, H>
+impl<
+        K,
+        V,
+        A: Attachment<K, V>,
+        ALLOC: GlobalAlloc + Default,
+        H: Hasher + Default,
+        const K_OFFSET: usize,
+        const V_OFFSET: usize,
+    > Clone for Table<K, V, A, ALLOC, H, K_OFFSET, V_OFFSET>
 {
     fn clone(&self) -> Self {
         let new_table = Table {
@@ -2287,8 +2315,15 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Defaul
     }
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
-    for Table<K, V, A, ALLOC, H>
+impl<
+        K,
+        V,
+        A: Attachment<K, V>,
+        ALLOC: GlobalAlloc + Default,
+        H: Hasher + Default,
+        const K_OFFSET: usize,
+        const V_OFFSET: usize,
+    > Drop for Table<K, V, A, ALLOC, H, K_OFFSET, V_OFFSET>
 {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
@@ -2490,6 +2525,16 @@ pub fn limit_key(fkey: FKey) {
     {
         assert!(fkey > MAX_META_KEY);
     }
+}
+
+#[inline(always)]
+pub fn offset_in(n: usize) -> usize {
+    n + RAW_START_IDX
+}
+
+#[inline(always)]
+pub fn offset_out(n: usize) -> usize {
+    n - RAW_START_IDX
 }
 
 #[cfg(test)]
