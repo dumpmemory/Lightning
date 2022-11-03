@@ -236,7 +236,7 @@ impl<
                                 continue 'SPIN;
                             }
                         }
-                        return Some((act_val, attachment, addr));
+                        return Some((Self::offset_v_out(act_val), attachment, addr));
                     } else if v == SENTINEL_VALUE {
                         if new_chunk.is_none() {
                             backoff.spin();
@@ -267,7 +267,7 @@ impl<
                                     continue 'SPIN_NEW;
                                 }
                             }
-                            return Some((act_val, attachment, addr));
+                            return Some((Self::offset_v_out(act_val), attachment, addr));
                         } else if v == SENTINEL_VALUE {
                             backoff.spin();
                             continue 'OUTER;
@@ -291,7 +291,6 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
-        limit_key(fkey);
         self.get_with_hash(key, fkey, hash, read_attachment, &guard, &backoff)
             .map(|(a, b, _)| (a, b))
     }
@@ -307,7 +306,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
         let (fkey, hash) = Self::hash(fkey, key);
-        limit_key_val(fkey, fvalue);
+        let fvalue = Self::offset_v_in(fvalue);
         loop {
             let (chunk, chunk_ptr, new_chunk, epoch) = self.chunk_refs(&guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
@@ -409,7 +408,7 @@ impl<
                 },
                 ModResult::Aborted => unreachable!("Should no abort"),
             }
-            let res;
+            let mut res;
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
@@ -475,7 +474,7 @@ impl<
                 (Some((fv, v)), Some(_)) => res = Some((fv, v.unwrap())),
                 (Some((fv, v)), None) => res = Some((fv, v.unwrap())),
             }
-            match &res {
+            match &mut res {
                 Some((fv, _)) => {
                     if *fv <= MAX_META_VAL {
                         delay_log!(
@@ -486,6 +485,8 @@ impl<
                             new_chunk.map(|c| c.base)
                         );
                         return None;
+                    } else {
+                        *fv = Self::offset_v_out(*fv);
                     }
                 }
                 None => {}
@@ -538,7 +539,6 @@ impl<
     ) -> SwapResult<K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
-        limit_key(fkey);
         loop {
             let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
@@ -592,14 +592,14 @@ impl<
                             ModResult::NotFound
                             | ModResult::Replaced(_, _, _)
                             | ModResult::Sentinel => {
-                                return SwapResult::Succeed(fval, idx, mod_chunk);
+                                return SwapResult::Succeed(Self::offset_v_out(fval), idx, mod_chunk);
                             }
                             _ => unreachable!("{:?}", sentinel_res),
                         }
                     }
                 }
                 (Some((fval, idx, mod_chunk_ptr)), false) => {
-                    return SwapResult::Succeed(fval, idx, mod_chunk_ptr);
+                    return SwapResult::Succeed(Self::offset_v_out(fval), idx, mod_chunk_ptr);
                 }
                 (None, false) => return SwapResult::NotFound,
                 (None, true) => {
@@ -628,7 +628,6 @@ impl<
         let guard = crossbeam_epoch::pin();
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
-        limit_key(fkey);
         'OUTER: loop {
             let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
@@ -662,7 +661,7 @@ impl<
                             chunk.base,
                             new_chunk.map(|c| c.base)
                         );
-                        return Some((fval, val.unwrap()));
+                        return Some((Self::offset_v_out(fval), val.unwrap()));
                     }
                     ModResult::Fail => {
                         backoff.spin();
@@ -686,7 +685,7 @@ impl<
                         idx,
                         chunk.base, new_chunk.map(|c| c.base)
                     );
-                    return Some((fval, val.unwrap()));
+                    return Some((Self::offset_v_out(fval), val.unwrap()));
                 }
                 Some(ModResult::Fail) | Some(ModResult::Sentinel) => {
                     backoff.spin();
@@ -791,7 +790,7 @@ impl<
         let home_idx = hash & cap_mask;
         let reiter = || chunk.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
-        let (mut idx, count) = iter.next().unwrap();
+        let (mut idx, _count) = iter.next().unwrap();
         let mut addr = chunk.entry_addr(idx);
         loop {
             let k = Self::get_fast_key(addr);
@@ -1035,8 +1034,8 @@ impl<
                                     if raw == TOMBSTONE_VALUE {
                                         return ModResult::NotFound;
                                     }
-                                    if let Some(sv) = swap(act_val) {
-                                        if Self::cas_value(addr, raw, sv).1 {
+                                    if let Some(sv) = swap(Self::offset_v_out(act_val)) {
+                                        if Self::cas_value(addr, raw, Self::offset_v_in(sv)).1 {
                                             // swap success
                                             return ModResult::Replaced(act_val, None, idx);
                                         } else {
@@ -1972,6 +1971,7 @@ impl<
 
     #[inline]
     pub fn hash(fkey: FKey, key: &K) -> (FKey, usize) {
+        let fkey = Self::offset_k_in(fkey);
         if Self::WORD_KEY {
             debug_assert!(fkey > 0);
             (fkey, hash_key::<_, H>(&fkey))
@@ -1998,6 +1998,26 @@ impl<
     pub fn capacity(&self) -> usize {
         let guard = crossbeam_epoch::pin();
         unsafe { self.meta.chunk.load(Acquire, &guard).deref().capacity }
+    }
+
+    #[inline(always)]
+    pub fn offset_k_in(fkey: usize) -> usize {
+        fkey + K_OFFSET
+    }
+
+    #[inline(always)]
+    pub fn offset_k_out(n: usize) -> usize {
+        n - K_OFFSET
+    }    
+    
+    #[inline(always)]
+    pub fn offset_v_in(n: usize) -> usize {
+        n + V_OFFSET
+    }
+
+    #[inline(always)]
+    pub fn offset_v_out(n: usize) -> usize {
+        n - V_OFFSET
     }
 }
 
@@ -2508,33 +2528,6 @@ pub fn dump_migration_log() {
             );
         });
     });
-}
-
-#[inline(always)]
-pub fn limit_key_val(fkey: FKey, fvalue: FVal) {
-    #[cfg(debug_assertions)]
-    {
-        assert!(fkey > MAX_META_KEY);
-        assert!(fvalue > MAX_META_VAL);
-    }
-}
-
-#[inline(always)]
-pub fn limit_key(fkey: FKey) {
-    #[cfg(debug_assertions)]
-    {
-        assert!(fkey > MAX_META_KEY);
-    }
-}
-
-#[inline(always)]
-pub fn offset_in(n: usize) -> usize {
-    n + RAW_START_IDX
-}
-
-#[inline(always)]
-pub fn offset_out(n: usize) -> usize {
-    n - RAW_START_IDX
 }
 
 #[cfg(test)]

@@ -426,7 +426,7 @@ mod test {
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..60 {
+                for j in START_IDX..60 {
                     map.insert(i * 10 + j, Obj::new(10));
                 }
             }));

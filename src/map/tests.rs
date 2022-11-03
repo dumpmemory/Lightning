@@ -40,7 +40,6 @@ impl Obj {
 }
 
 #[test]
-#[should_panic]
 fn insert_with_num_fixes() {
     let map = WordMap::<System, DefaultHasher>::with_capacity(32);
     assert_eq!(map.insert(24, 0), None);

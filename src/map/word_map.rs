@@ -148,7 +148,6 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                 }
             }
         }
-        debug_assert_ne!(value, 0);
         Some(Self { table, key, value })
     }
 
@@ -305,7 +304,7 @@ mod test {
         for i in 100..900 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..60 {
+                for j in START_IDX..60 {
                     map.insert(i * 100 + j, i * j);
                 }
             }));
@@ -320,8 +319,9 @@ mod test {
         }
         for i in 100..900 {
             for j in START_IDX..60 {
+                let get_res = map.get(&(i * 100 + j));
                 assert_eq!(
-                    map.get(&(i * 100 + j)),
+                    get_res,
                     Some(i * j),
                     "at epoch {}",
                     map.table.now_epoch()
