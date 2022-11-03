@@ -1,7 +1,7 @@
 use bustle::*;
 use chrono::prelude::*;
 use clap::{App, Arg};
-use humansize::{file_size_opts as options, FileSize};
+use humansize::{format_size, BINARY};
 use ipc_channel::ipc::{IpcOneShotServer, IpcSender};
 use libc::{c_int, sysconf};
 use perfcnt::linux::{HardwareEventType as Hardware, SoftwareEventType as Software};
@@ -484,7 +484,7 @@ fn run_and_measure_mix<T: Collection>(
             {
                 let max_mem = mem_recv.recv().unwrap();
                 calibrated_size = if max_mem < self_mem { 0 } else { max_mem - self_mem } * page_size;
-                size = calibrated_size.file_size(options::CONVENTIONAL).unwrap();
+                size = format_size(calibrated_size, BINARY);
             }
             let time = local.format("%Y-%m-%d %H:%M:%S").to_string();
             if proc_stat == 0 {

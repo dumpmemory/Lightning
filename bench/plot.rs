@@ -1,5 +1,5 @@
 use super::PerfPlotData;
-use humansize::{file_size_opts::CONVENTIONAL, FileSize};
+use humansize::{format_size, BINARY};
 use plotters::prelude::*;
 use std::collections::HashMap;
 
@@ -134,7 +134,7 @@ pub fn plot_max_mem(
         .configure_mesh()
         .x_desc("Threads")
         .y_desc("Max Memory")
-        .y_label_formatter(&|y| y.file_size(CONVENTIONAL).unwrap())
+        .y_label_formatter(&|y| format_size(*y, BINARY))
         .draw()?;
     for (i, (title, data)) in data.iter().enumerate() {
         let color = Palette99::pick(i).mix(0.9);
