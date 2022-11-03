@@ -1,7 +1,8 @@
 use super::base::*;
 use super::*;
 
-pub type HashTable<K, V, ALLOC, H> = Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, H>;
+pub type HashTable<K, V, ALLOC, H> =
+    Table<K, V, HashKVAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
 
 pub struct HashKVAttachment<K, V, A: GlobalAlloc + Default> {
     obj_chunk: usize,
@@ -664,18 +665,20 @@ mod test {
     use std::sync::Arc;
     use std::thread;
 
+    const START_IDX: usize = 0;
+
     #[test]
     fn parallel_hash_map_rwlock() {
         let _ = env_logger::try_init();
         let map_cont = super::LockingHashMap::<u32, Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(RAW_START_IDX as u32, Obj::new(RAW_START_IDX));
+        map.insert(START_IDX as u32, Obj::new(START_IDX));
         let mut threads = vec![];
         let num_threads = 16;
         for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let mut guard = map.write(&(RAW_START_IDX as u32)).unwrap();
+                let mut guard = map.write(&(START_IDX as u32)).unwrap();
                 let val = guard.get();
                 guard.set(val + 1);
                 trace!("Dealt with {}", i);
@@ -684,9 +687,9 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        map.get(&(RAW_START_IDX as u32))
+        map.get(&(START_IDX as u32))
             .unwrap()
-            .validate(RAW_START_IDX + num_threads);
+            .validate(START_IDX + num_threads);
     }
 
     #[test]

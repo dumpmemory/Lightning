@@ -1,7 +1,5 @@
 use chashmap::CHashMap;
-use itertools::Itertools;
 use std::collections::HashMap;
-use std::thread::JoinHandle;
 use std::{
     alloc::System,
     sync::{Mutex, RwLock},
@@ -9,8 +7,6 @@ use std::{
 use test::Bencher;
 
 use crate::map::*;
-
-use super::base::RAW_START_IDX;
 
 #[derive(Copy, Clone)]
 pub struct Obj {
@@ -44,7 +40,6 @@ impl Obj {
 }
 
 #[test]
-#[should_panic]
 fn insert_with_num_fixes() {
     let map = WordMap::<System, DefaultHasher>::with_capacity(32);
     assert_eq!(map.insert(24, 0), None);
@@ -57,7 +52,7 @@ fn insert_with_num_fixes() {
 fn lfmap(b: &mut Bencher) {
     let _ = env_logger::try_init();
     let map = WordMap::<System, DefaultHasher>::with_capacity(8);
-    let mut i = RAW_START_IDX;
+    let mut i = 0;
     b.iter(|| {
         map.insert(i, i);
         i += 1;
@@ -68,7 +63,7 @@ fn lfmap(b: &mut Bencher) {
 fn lite_lfmap(b: &mut Bencher) {
     let _ = env_logger::try_init();
     let map = LiteHashMap::<usize, usize, System, DefaultHasher>::with_capacity(8);
-    let mut i = RAW_START_IDX;
+    let mut i = 0;
     b.iter(|| {
         map.insert(i, i);
         i += 1;

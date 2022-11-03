@@ -5,7 +5,8 @@ use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 use super::base::*;
 use super::*;
 
-pub type PtrTable<K, V, ALLOC, H> = Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H>;
+pub type PtrTable<K, V, ALLOC, H> =
+    Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
 const ALLOC_BUFFER_SIZE: usize = 256;
 
 pub struct PtrHashMap<

@@ -8,7 +8,8 @@ struct AlignedLiteObj<T> {
     _marker: PhantomData<T>,
 }
 
-pub type LiteTable<V, H, ALLOC> = Table<(), (), LiteAttachment<V>, H, ALLOC>;
+pub type LiteTable<V, H, ALLOC> =
+    Table<(), (), LiteAttachment<V>, H, ALLOC, RAW_KV_OFFSET, RAW_KV_OFFSET>;
 
 pub struct LiteHashMap<
     K: Clone + Hash + Eq,
@@ -294,21 +295,23 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
 #[cfg(test)]
 mod lite_tests {
     use crate::map::{
-        base::{MAX_META_KEY, MAX_META_VAL, RAW_START_IDX},
+        base::{MAX_META_KEY, MAX_META_VAL},
         *,
     };
     use std::{alloc::System, sync::Arc};
+
+    const START_IDX: usize = 0;
 
     #[test]
     fn no_resize() {
         let _ = env_logger::try_init();
         let map = LiteHashMap::<usize, usize, System>::with_capacity(4096);
-        for i in RAW_START_IDX..2048 {
+        for i in START_IDX..2048 {
             let k = i;
             let v = i * 2;
             map.insert(k, v);
         }
-        for i in RAW_START_IDX..2048 {
+        for i in START_IDX..2048 {
             let k = i;
             let v = i * 2;
             match map.get(&k) {
@@ -344,13 +347,13 @@ mod lite_tests {
     fn no_resize_arc() {
         let _ = env_logger::try_init();
         let map = LiteHashMap::<usize, Arc<FatStruct>, System>::with_capacity(4096);
-        for i in RAW_START_IDX..2048 {
+        for i in START_IDX..2048 {
             let k = i;
             let v = i * 2;
             let d = Arc::new(FatStruct::new(v));
             map.insert(k, d);
         }
-        for i in RAW_START_IDX..2048 {
+        for i in START_IDX..2048 {
             let k = i;
             let v = i * 2;
             match map.get(&k) {

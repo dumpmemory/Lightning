@@ -1,7 +1,8 @@
 use super::base::*;
 use super::*;
 
-type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H>;
+type ObjectTable<V, ALLOC, H> =
+    Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H, RAW_KV_OFFSET, PTR_KV_OFFSET>;
 
 impl<T, A: GlobalAlloc + Default> WordObjectAttachment<T, A> {
     fn addr_by_index(&self, index: usize) -> usize {
@@ -372,18 +373,20 @@ mod test {
     use super::*;
     use std::{sync::Arc, thread};
 
+    const START_IDX: usize = 0;
+
     #[test]
     fn parallel_obj_map_rwlock() {
         let _ = env_logger::try_init();
         let map_cont = ObjectMap::<Obj, System, DefaultHasher>::with_capacity(4);
         let map = Arc::new(map_cont);
-        map.insert(RAW_START_IDX, Obj::new(RAW_START_IDX));
+        map.insert(START_IDX, Obj::new(START_IDX));
         let mut threads = vec![];
         let num_threads = 256;
         for i in 0..num_threads {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                let mut guard = map.write(RAW_START_IDX).unwrap();
+                let mut guard = map.write(START_IDX).unwrap();
                 let val = guard.get();
                 guard.set(val + 1);
                 trace!("Dealt with {}", i);
@@ -392,19 +395,19 @@ mod test {
         for thread in threads {
             thread.join().unwrap();
         }
-        map.get(&RAW_START_IDX)
+        map.get(&START_IDX)
             .unwrap()
-            .validate(RAW_START_IDX + num_threads);
+            .validate(START_IDX + num_threads);
     }
 
     #[test]
     fn obj_map() {
         let _ = env_logger::try_init();
         let map = ObjectMap::<Obj>::with_capacity(16);
-        for i in RAW_START_IDX..2048 {
+        for i in START_IDX..2048 {
             map.insert(i, Obj::new(i));
         }
-        for i in RAW_START_IDX..2048 {
+        for i in START_IDX..2048 {
             match map.get(&i) {
                 Some(r) => r.validate(i),
                 None => panic!("Got none for {}", i),
@@ -416,22 +419,22 @@ mod test {
     fn parallel_obj_hybrid() {
         let _ = env_logger::try_init();
         let map = Arc::new(ObjectMap::<Obj>::with_capacity(4));
-        for i in RAW_START_IDX..128 {
+        for i in START_IDX..128 {
             map.insert(i, Obj::new(i * 10));
         }
         let mut threads = vec![];
         for i in 256..265 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in 5..60 {
+                for j in START_IDX..60 {
                     map.insert(i * 10 + j, Obj::new(10));
                 }
             }));
         }
-        for i in RAW_START_IDX..8 {
+        for i in START_IDX..8 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
-                for j in RAW_START_IDX..8 {
+                for j in START_IDX..8 {
                     map.remove(&(i * j));
                 }
             }));
@@ -440,7 +443,7 @@ mod test {
             thread.join().unwrap();
         }
         for i in 256..265 {
-            for j in RAW_START_IDX..60 {
+            for j in START_IDX..60 {
                 match map.get(&(i * 10 + j)) {
                     Some(r) => r.validate(10),
                     None => panic!("Got none for {}", i),
