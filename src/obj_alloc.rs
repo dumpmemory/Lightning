@@ -1,12 +1,18 @@
+
+#[cfg(asan)]
 use libc::c_void;
+#[cfg(asan)]
 use parking_lot::Mutex;
+#[cfg(asan)]
+use std::collections::HashSet;
 
 // A supposed to be fast and lock-free object allocator without size class
 use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
-use std::{collections::HashSet, marker::PhantomData, mem};
+use std::{
+    marker::PhantomData, mem};
 
 use crate::stack::LinkedRingBufferStack;
 
@@ -14,6 +20,7 @@ pub struct Allocator<T, const B: usize> {
     shared: Arc<SharedAlloc<T, B>>,
     thread: ThreadLocal<TLAlloc<T, B>>,
     #[cfg(debug_assertions)]
+    #[cfg(asan)]
     asan: Arc<ASan>,
 }
 
@@ -44,6 +51,7 @@ impl<T, const B: usize> Allocator<T, B> {
             shared: Arc::new(SharedAlloc::new()),
             thread: ThreadLocal::new(),
             #[cfg(debug_assertions)]
+            #[cfg(asan)]
             asan: Arc::new(ASan::new()),
         }
     }
@@ -471,16 +479,20 @@ impl<const B: usize> ThreadLocalPage<B> {
 
 unsafe impl<T, const B: usize> Send for Allocator<T, B> {}
 
+
+#[cfg(asan)]
 pub(crate) struct ASan {
     inner: Mutex<ASanInner>,
 }
 
+#[cfg(asan)]
 pub(crate) struct ASanInner {
     created: HashSet<usize>,
     allocated: HashSet<usize>,
     reclaimed: HashSet<usize>,
 }
 
+#[cfg(asan)]
 impl ASanInner {
     pub fn new() -> Self {
         ASanInner {
@@ -523,6 +535,7 @@ impl ASanInner {
     }
 }
 
+#[cfg(asan)]
 impl ASan {
     pub fn new() -> Self {
         Self {
