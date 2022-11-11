@@ -31,6 +31,7 @@ name = "lightning"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["hopsotch"]
 exchange_backoff = []
 asan = []
+hopsotch = []
