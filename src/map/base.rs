@@ -2153,7 +2153,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         .sorted_by(|(x, _), (y, _)| x.cmp(y))
         .group_by(|(i, _)| *i)
         .into_iter()
-        .chunks(4)
+        .chunks(8)
         .into_iter()
         .map(|batch| {
             batch.map(|(cpu_id, group)| {
