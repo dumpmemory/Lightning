@@ -20,6 +20,7 @@ static_assertions = "1"
 lazy_static = "1.4.0"
 page_size = "0.4.2"
 affinity = "*"
+itertools = "0.10"
 
 [dev-dependencies]
 chashmap = "2.2.2"

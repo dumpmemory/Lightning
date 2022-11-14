@@ -3,6 +3,8 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc, cmp::min, thread};
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
 
+use itertools::Itertools;
+
 use crate::thread_id;
 
 use super::*;
@@ -2142,16 +2144,24 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             let cpu_id = ci % num_cpus;
             let next_data_base = data_base + page_fill_size;
             let next_hop_base = hop_base + hop_fill_size;
-            let th = thread::spawn(move ||{
-                affinity::set_thread_affinity(&vec![cpu_id]).unwrap();
-                fill_zeros(data_base, page_fill_size);
-                fill_zeros(hop_base, hop_fill_size);
-            });
+            let res = (cpu_id, (data_base, hop_base));
             data_base = next_data_base;
             hop_base = next_hop_base;
-            th
+            res
         })
-        .collect::<Vec<_>>();
+        .group_by(|(i, _)| *i)
+        .into_iter()
+        .map(|(cpu_id, group)| {
+            let pages = group.collect_vec();
+                thread::spawn(move ||{
+                affinity::set_thread_affinity(&vec![cpu_id]).unwrap();
+                for (_, (data_base, hop_base)) in pages {
+                    fill_zeros(data_base, page_fill_size);
+                    fill_zeros(hop_base, hop_fill_size);
+                }
+            })
+        })
+        .collect_vec();
         threads.into_iter().for_each(|t| {
             t.join().unwrap();
         });
