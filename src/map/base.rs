@@ -2138,6 +2138,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         if allocs == 0 {
             fill_zeros(data_base, ENTRY_SIZE * capacity);
             fill_zeros(hop_base, HOP_TUPLE_SIZE * capacity);
+            return;
         }
         let threads = (0..allocs).map(|ci| {
             // Fill zeros in roundrobin
@@ -2149,6 +2150,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             hop_base = next_hop_base;
             res
         })
+        .sorted_by(|(x, _), (y, _)| x.cmp(y))
         .group_by(|(i, _)| *i)
         .into_iter()
         .map(|(cpu_id, group)| {
@@ -2162,6 +2164,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             })
         })
         .collect_vec();
+        debug_assert!(threads.len() <= num_cpus, "{} vs {}", threads.len(), num_cpus);
         threads.into_iter().for_each(|t| {
             t.join().unwrap();
         });
