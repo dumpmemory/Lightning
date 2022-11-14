@@ -18,6 +18,8 @@ libc = "0.2.69"
 parking_lot = "*"
 static_assertions = "1"
 lazy_static = "1.4.0"
+page_size = "0.4.2"
+affinity = "*"
 
 [dev-dependencies]
 chashmap = "2.2.2"

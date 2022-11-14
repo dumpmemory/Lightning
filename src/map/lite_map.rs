@@ -268,7 +268,7 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
     type Item = WordAttachmentItem;
 
     #[inline(always)]
-    fn heap_size_of(_cap: usize) -> usize {
+    fn heap_entry_size() -> usize {
         0
     }
 

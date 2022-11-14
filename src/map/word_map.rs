@@ -199,7 +199,7 @@ impl Attachment<(), ()> for WordAttachment {
     type InitMeta = ();
 
     #[inline(always)]
-    fn heap_size_of(_cap: usize) -> usize {
+    fn heap_entry_size() -> usize {
         0
     }
 

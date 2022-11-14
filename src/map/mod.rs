@@ -90,7 +90,7 @@ pub trait Attachment<K, V> {
     type InitMeta: Clone;
     type Item: AttachmentItem<K, V> + Copy;
 
-    fn heap_size_of(cap: usize) -> usize;
+    fn heap_entry_size() -> usize;
     fn new(heap_ptr: usize, meta: &Self::InitMeta) -> Self;
     fn prefetch(&self, index: usize) -> Self::Item;
     fn manually_drop(&self, fvalue: usize);

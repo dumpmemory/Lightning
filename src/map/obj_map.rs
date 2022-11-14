@@ -104,9 +104,8 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
     type Item = WordObjectAttachmentItem<T>;
     type InitMeta = ();
 
-    fn heap_size_of(cap: usize) -> usize {
-        let obj_size = mem::size_of::<T>();
-        cap * obj_size
+    fn heap_entry_size() -> usize {
+        mem::size_of::<T>()
     }
 
     fn new(heap_ptr: usize, meta: &()) -> Self {

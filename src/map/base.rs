@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, sync::Arc};
+use std::{cell::RefCell, collections::VecDeque, sync::Arc, cmp::min, thread};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -11,6 +11,8 @@ pub struct EntryTemplate(FKey, FVal);
 pub type HopBits = u32;
 pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
+
+const HOP_TUPLE_SIZE: usize = mem::size_of::<HopTuple>();
 
 #[cfg(debug_assertions)]
 pub type MigratedEntry = ((usize, FastValue), usize, usize, u64);
@@ -2085,19 +2087,20 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let chunk_size = chunk_size_of(capacity);
         let chunk_align = align_padding(chunk_size, 8);
         let chunk_size_aligned = chunk_size + chunk_align;
-        let attachment_heap = A::heap_size_of(capacity);
-        let hop_size = mem::size_of::<HopTuple>() * capacity;
+        let attachment_heap_size = A::heap_entry_size() * capacity;
+        let hop_size = HOP_TUPLE_SIZE * capacity;
         let hop_align = align_padding(hop_size, 8);
         let hop_size_aligned = hop_size + hop_align;
         let total_size =
-            self_size_aligned + chunk_size_aligned + hop_size_aligned + attachment_heap;
+            self_size_aligned + chunk_size_aligned + hop_size_aligned + attachment_heap_size;
         let ptr = alloc_mem::<ALLOC>(total_size) as *mut Self;
         let addr = ptr as usize;
         let data_base = addr + self_size_aligned;
         let hop_base = data_base + chunk_size_aligned;
         let attachment_base = hop_base + hop_size_aligned;
         unsafe {
-            fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
+            Self::fill_zeros(data_base, hop_base, capacity);
+            // fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
             ptr::write(
                 ptr,
                 Self {
@@ -2115,6 +2118,44 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         };
         ptr
     }
+
+    unsafe fn fill_zeros(mut data_base: usize, mut hop_base: usize, capacity: usize) {
+        // Parallel fill zero in pinned threads in favour of ccNUMA
+        let num_cpus = num_cpus::get_physical();
+        let page_size = page_size::get_granularity();
+        let granularity = min(ENTRY_SIZE, HOP_TUPLE_SIZE);
+        let granularity_f = granularity as f32;
+        let num_page_obj = page_size / granularity;
+        let allocs = capacity / num_page_obj;
+        let entry_mult = ENTRY_SIZE as f32 / granularity_f;
+        let hop_mult = HOP_TUPLE_BYTES as f32 / granularity_f;
+        debug_assert!(entry_mult.fract() == 0.0);
+        debug_assert!(hop_mult.fract() == 0.0);
+        let page_fill_size = page_size * entry_mult as usize;
+        let hop_fill_size = page_size * hop_mult as usize;
+        if allocs == 0 {
+            fill_zeros(data_base, ENTRY_SIZE * capacity);
+            fill_zeros(hop_base, HOP_TUPLE_SIZE * capacity);
+        }
+        let threads = (0..allocs).map(|ci| {
+            // Fill zeros in roundrobin
+            let cpu_id = ci % num_cpus;
+            let next_data_base = data_base + page_fill_size;
+            let next_hop_base = hop_base + hop_fill_size;
+            let th = thread::spawn(move ||{
+                affinity::set_thread_affinity(&vec![cpu_id]).unwrap();
+                fill_zeros(data_base, page_fill_size);
+                fill_zeros(hop_base, hop_fill_size);
+            });
+            data_base = next_data_base;
+            hop_base = next_hop_base;
+            th
+        })
+        .collect::<Vec<_>>();
+        threads.into_iter().for_each(|t| {
+            t.join().unwrap();
+        });
+    } 
 
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);

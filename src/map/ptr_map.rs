@@ -266,7 +266,6 @@ pub struct PtrValAttachment<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Def
 #[derive(Clone)]
 pub struct PtrValAttachmentItem<K, V> {
     addr: usize,
-    alloc: *mut obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
     _marker: PhantomData<(K, V)>,
 }
 
@@ -293,8 +292,8 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
     type Item = PtrValAttachmentItem<K, V>;
     type InitMeta = PtrValAttachmentMeta<V>;
 
-    fn heap_size_of(cap: usize) -> usize {
-        cap * Self::KEY_SIZE // only keys on the heap
+    fn heap_entry_size() -> usize {
+        Self::KEY_SIZE // only keys on the heap
     }
 
     fn new(heap_ptr: usize, meta: &Self::InitMeta) -> Self {
@@ -313,7 +312,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         // }
         PtrValAttachmentItem {
             addr,
-            alloc: self.alloc,
             _marker: PhantomData,
         }
     }
