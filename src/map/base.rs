@@ -740,7 +740,7 @@ impl<
             let res = unsafe {
                 if is_copying && chunk != new_chunk {
                     (chunk.as_ref().unwrap(), chunk, new_chunk.as_ref(), epoch)
-                } else if !is_copying && new_chunk.is_null() {
+                } else if !is_copying && (new_chunk.is_null() || new_chunk == chunk) {
                     (chunk.as_ref().unwrap(), chunk, None, epoch)
                 } else {
                     continue;
@@ -1591,7 +1591,6 @@ impl<
             );
             return ResizeResult::SwapFailed;
         }
-        self.meta.epoch.store(old_epoch + 1, Release);
         let old_chunk_ins = unsafe { old_chunk_ptr.deref() };
         let empty_entries = old_chunk_ins.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ins.capacity;
@@ -1615,6 +1614,7 @@ impl<
         unsafe {
             (*new_chunk).occupation.store(old_occupation, Relaxed);
         }
+        self.meta.epoch.store(old_epoch + 1, Release);
         let new_chunk_ptr_wrap = ChunkPtr::new(new_chunk);
         let new_chunk_base = new_chunk_ptr_wrap.base;
         let new_chunk_ptr = Owned::new(new_chunk_ptr_wrap).into_shared(guard);
