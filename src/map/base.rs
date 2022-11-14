@@ -2140,7 +2140,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             fill_zeros(hop_base, HOP_TUPLE_SIZE * capacity);
             return;
         }
-        let threads = (0..allocs).map(|ci| {
+        (0..allocs).map(|ci| {
             // Fill zeros in roundrobin
             let cpu_id = ci % num_cpus;
             let next_data_base = data_base + page_fill_size;
@@ -2153,28 +2153,13 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         .sorted_by(|(x, _), (y, _)| x.cmp(y))
         .group_by(|(i, _)| *i)
         .into_iter()
-        .chunks(8)
-        .into_iter()
-        .map(|batch| {
-            batch.map(|(cpu_id, group)| {
-                let pages = group.collect_vec();
-                thread::spawn(move ||{
-                    affinity::set_thread_affinity(&vec![cpu_id]).unwrap();
-                    for (_, (data_base, hop_base)) in pages {
-                        fill_zeros(data_base, page_fill_size);
-                        fill_zeros(hop_base, hop_fill_size);
-                    }
-                })
+        .for_each(|(cpu_id, g)| {
+            g.into_iter().for_each(|(_, (data_base, hop_base))| {
+                affinity::set_thread_affinity(&vec![cpu_id]).unwrap();
+                fill_zeros(data_base, page_fill_size);
+                fill_zeros(hop_base, hop_fill_size);
             })
-            .collect_vec()
-            .into_iter()
-            .map(|t| t.join().unwrap())
-            .collect_vec()
-            .into_iter()
-        })
-        .flatten()
-        .collect_vec();
-        debug_assert!(threads.len() <= num_cpus, "{} vs {}", threads.len(), num_cpus);
+        });
     } 
 
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
