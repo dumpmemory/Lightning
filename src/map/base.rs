@@ -2156,7 +2156,11 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             .into_iter()
             .for_each(|(cpu_id, g)| {
                 g.into_iter().for_each(|(_, (data_base, hop_base))| {
-                    let _ = affinity::set_thread_affinity(&vec![cpu_id]);
+                    // Do not assert affinity
+                    // Some envorinment, like LXC does not allow affinity settings
+                    if let Err(e) = affinity::set_thread_affinity(&vec![cpu_id]) {
+                        warn!("Cannot set affinity on CPU {} during allocation, {:?}", cpu_id, e);
+                    }
                     fill_zeros(data_base, page_fill_size);
                     fill_zeros(hop_base, hop_fill_size);
                 })
