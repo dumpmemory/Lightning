@@ -2156,7 +2156,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             .into_iter()
             .for_each(|(cpu_id, g)| {
                 g.into_iter().for_each(|(_, (data_base, hop_base))| {
-                    affinity::set_thread_affinity(&vec![cpu_id]).unwrap();
+                    let _ = affinity::set_thread_affinity(&vec![cpu_id]);
                     fill_zeros(data_base, page_fill_size);
                     fill_zeros(hop_base, hop_fill_size);
                 })
