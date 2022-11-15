@@ -2135,39 +2135,37 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         debug_assert!(hop_mult.fract() == 0.0);
         let page_fill_size = page_size * entry_mult as usize;
         let hop_fill_size = page_size * hop_mult as usize;
-        if allocs == 0 {
+        let orig_affinity = affinity::get_thread_affinity();
+        if allocs == 0 || orig_affinity.is_err() {
             fill_zeros(data_base, ENTRY_SIZE * capacity);
             fill_zeros(hop_base, HOP_TUPLE_SIZE * capacity);
             return;
         }
-        thread::spawn(move || {
-            (0..allocs).map(|ci| {
-                // Fill zeros in roundrobin
-                let cpu_id = ci % num_cpus;
-                let next_data_base = data_base + page_fill_size;
-                let next_hop_base = hop_base + hop_fill_size;
-                let res = (cpu_id, (data_base, hop_base));
-                data_base = next_data_base;
-                hop_base = next_hop_base;
-                res
-            })
-            .sorted_by(|(x, _), (y, _)| x.cmp(y))
-            .group_by(|(i, _)| *i)
-            .into_iter()
-            .for_each(|(cpu_id, g)| {
-                g.into_iter().for_each(|(_, (data_base, hop_base))| {
-                    // Do not assert affinity
-                    // Some envorinment, like LXC does not allow affinity settings
-                    if let Err(e) = affinity::set_thread_affinity(&vec![cpu_id]) {
-                        warn!("Cannot set affinity on CPU {} during allocation, {:?}", cpu_id, e);
-                    }
-                    fill_zeros(data_base, page_fill_size);
-                    fill_zeros(hop_base, hop_fill_size);
-                })
-            });
+        (0..allocs).map(|ci| {
+            // Fill zeros in roundrobin
+            let cpu_id = ci % num_cpus;
+            let next_data_base = data_base + page_fill_size;
+            let next_hop_base = hop_base + hop_fill_size;
+            let res = (cpu_id, (data_base, hop_base));
+            data_base = next_data_base;
+            hop_base = next_hop_base;
+            res
         })
-        .join()
-        .unwrap();
+        .sorted_by(|(x, _), (y, _)| x.cmp(y))
+        .group_by(|(i, _)| *i)
+        .into_iter()
+        .for_each(|(cpu_id, g)| {
+            g.into_iter().for_each(|(_, (data_base, hop_base))| {
+                // Do not assert affinity
+                // Some envorinment, like LXC does not allow affinity settings
+                if let Err(e) = affinity::set_thread_affinity(&vec![cpu_id]) {
+                    warn!("Cannot set affinity on CPU {} during allocation, {:?}", cpu_id, e);
+                }
+                fill_zeros(data_base, page_fill_size);
+                fill_zeros(hop_base, hop_fill_size);
+            })
+        });
+        affinity::set_thread_affinity(orig_affinity.as_ref().unwrap()).unwrap();
     } 
 
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
