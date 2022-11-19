@@ -2083,15 +2083,18 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     const FAT_VAL: bool = mem::size_of::<V>() != 0;
 
     fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
+        let page_size = page_size::get_granularity();
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 8);
         let self_size_aligned = self_size + self_align;
         let chunk_size = chunk_size_of(capacity);
-        let chunk_align = align_padding(chunk_size, 8);
+        let chunk_alignment = if chunk_size >= page_size { page_size } else { 8 };
+        let chunk_align = align_padding(chunk_size, chunk_alignment);
         let chunk_size_aligned = chunk_size + chunk_align;
         let attachment_heap_size = A::heap_entry_size() * capacity;
         let hop_size = HOP_TUPLE_SIZE * capacity;
-        let hop_align = align_padding(hop_size, 8);
+        let hop_alignment = if hop_size >= page_size { page_size } else { 8 };
+        let hop_align = align_padding(hop_size, hop_alignment);
         let hop_size_aligned = hop_size + hop_align;
         let total_size =
             self_size_aligned + chunk_size_aligned + hop_size_aligned + attachment_heap_size;
@@ -2101,7 +2104,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_base = data_base + chunk_size_aligned;
         let attachment_base = hop_base + hop_size_aligned;
         unsafe {
-            Self::fill_zeros(data_base, hop_base, capacity);
+            Self::fill_zeros(data_base, hop_base, capacity, page_size);
             // fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
             ptr::write(
                 ptr,
@@ -2121,14 +2124,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         ptr
     }
 
-    unsafe fn fill_zeros(mut data_base: usize, mut hop_base: usize, capacity: usize) {
+    unsafe fn fill_zeros(mut data_base: usize, mut hop_base: usize, capacity: usize, page_size: usize) {
         // Parallel fill zero in pinned threads in favour of ccNUMA
         let num_cpus = num_cpus::get_physical();
-        let page_size = page_size::get_granularity();
         let granularity = min(ENTRY_SIZE, HOP_TUPLE_SIZE);
         let granularity_f = granularity as f32;
         let num_page_obj = page_size / granularity;
         let allocs = capacity / num_page_obj;
+        debug_assert!(if capacity > page_size { capacity % num_page_obj == 0 } else { true });
         let entry_mult = ENTRY_SIZE as f32 / granularity_f;
         let hop_mult = HOP_TUPLE_BYTES as f32 / granularity_f;
         debug_assert!(entry_mult.fract() == 0.0);
