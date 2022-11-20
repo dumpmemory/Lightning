@@ -89,9 +89,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let k_num = self.encode(key.clone()) as FKey;
         self.table
             .get(&(), k_num, false)
-            .map(|(fv, _)| {
-                self.decode::<V>(fv as usize)
-            })
+            .map(|(fv, _)| self.decode::<V>(fv as usize))
     }
 
     #[inline(always)]

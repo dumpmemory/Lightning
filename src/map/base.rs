@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, sync::Arc, cmp::min, thread};
+use std::{cell::RefCell, cmp::min, collections::VecDeque, sync::Arc, thread};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -596,7 +596,11 @@ impl<
                             ModResult::NotFound
                             | ModResult::Replaced(_, _, _)
                             | ModResult::Sentinel => {
-                                return SwapResult::Succeed(Self::offset_v_out(fval), idx, mod_chunk);
+                                return SwapResult::Succeed(
+                                    Self::offset_v_out(fval),
+                                    idx,
+                                    mod_chunk,
+                                );
                             }
                             _ => unreachable!("{:?}", sentinel_res),
                         }
@@ -2012,8 +2016,8 @@ impl<
     #[inline(always)]
     pub fn offset_k_out(n: usize) -> usize {
         n - K_OFFSET
-    }    
-    
+    }
+
     #[inline(always)]
     pub fn offset_v_in(n: usize) -> usize {
         n + V_OFFSET
@@ -2088,7 +2092,11 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let self_align = align_padding(self_size, 8);
         let self_size_aligned = self_size + self_align;
         let chunk_size = chunk_size_of(capacity);
-        let chunk_alignment = if chunk_size >= page_size { page_size } else { 8 };
+        let chunk_alignment = if chunk_size >= page_size {
+            page_size
+        } else {
+            8
+        };
         let chunk_align = align_padding(chunk_size, chunk_alignment);
         let chunk_size_aligned = chunk_size + chunk_align;
         let attachment_heap_size = A::heap_entry_size() * capacity;
@@ -2104,7 +2112,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_base = data_base + chunk_size_aligned;
         let attachment_base = hop_base + hop_size_aligned;
         unsafe {
-            Self::fill_zeros(data_base, hop_base, capacity, page_size);
+            Self::fill_zeros(data_base, hop_base, chunk_size_aligned, hop_size_aligned, page_size);
             // fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
             ptr::write(
                 ptr,
@@ -2124,52 +2132,60 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         ptr
     }
 
-    unsafe fn fill_zeros(mut data_base: usize, mut hop_base: usize, capacity: usize, page_size: usize) {
-        // Parallel fill zero in pinned threads in favour of ccNUMA
-        let num_cpus = num_cpus::get_physical();
-        let granularity = min(ENTRY_SIZE, HOP_TUPLE_SIZE);
-        let granularity_f = granularity as f32;
-        let num_page_obj = page_size / granularity;
-        let allocs = capacity / num_page_obj;
-        debug_assert!(if capacity > page_size { capacity % num_page_obj == 0 } else { true });
-        let entry_mult = ENTRY_SIZE as f32 / granularity_f;
-        let hop_mult = HOP_TUPLE_BYTES as f32 / granularity_f;
-        debug_assert!(entry_mult.fract() == 0.0);
-        debug_assert!(hop_mult.fract() == 0.0);
-        let page_fill_size = page_size * entry_mult as usize;
-        let hop_fill_size = page_size * hop_mult as usize;
-        let orig_affinity = affinity::get_thread_affinity();
-        if allocs == 0 || orig_affinity.is_err() {
-            fill_zeros(data_base, ENTRY_SIZE * capacity);
-            fill_zeros(hop_base, HOP_TUPLE_SIZE * capacity);
+    unsafe fn fill_zeros(
+        mut data_base: usize,
+        mut hop_base: usize,
+        data_size: usize,
+        hop_size: usize,
+        page_size: usize,
+    ) {
+        if hop_size <= page_size || data_size <= page_size {
+            fill_zeros(data_base, data_size);
+            fill_zeros(hop_base, hop_size);
             return;
         }
-        (0..allocs).map(|ci| {
-            // Fill zeros in roundrobin
-            let cpu_id = ci % num_cpus;
-            let next_data_base = data_base + page_fill_size;
-            let next_hop_base = hop_base + hop_fill_size;
-            let res = (cpu_id, (data_base, hop_base));
-            data_base = next_data_base;
-            hop_base = next_hop_base;
-            res
-        })
-        .sorted_by(|(x, _), (y, _)| x.cmp(y))
-        .group_by(|(i, _)| *i)
-        .into_iter()
-        .for_each(|(cpu_id, g)| {
-            g.into_iter().for_each(|(_, (data_base, hop_base))| {
-                // Do not assert affinity
-                // Some envorinment, like LXC does not allow affinity settings
-                if let Err(e) = affinity::set_thread_affinity(&vec![cpu_id]) {
-                    warn!("Cannot set affinity on CPU {} during allocation, {:?}", cpu_id, e);
-                }
-                fill_zeros(data_base, page_fill_size);
-                fill_zeros(hop_base, hop_fill_size);
+        let orig_affinity = affinity::get_thread_affinity();
+        if orig_affinity.is_err() {
+            fill_zeros(data_base, data_size);
+            fill_zeros(hop_base, hop_size);
+            return;
+        }
+        debug_assert_eq!(data_size % page_size, 0);
+        debug_assert_eq!(hop_size % page_size, 0);
+        let num_cpus = num_cpus::get_physical();
+        let allocs = min(data_size, hop_size) / page_size;
+        let data_fill_size = data_size / allocs;
+        let hop_fill_size = hop_size / allocs;
+        (0..allocs)
+            .map(|ci| {
+                // Fill zeros in roundrobin
+                let cpu_id = ci % num_cpus;
+                let next_data_base = data_base + data_fill_size;
+                let next_hop_base = hop_base + hop_fill_size;
+                let res = (cpu_id, (data_base, hop_base));
+                data_base = next_data_base;
+                hop_base = next_hop_base;
+                res
             })
-        });
+            .sorted_by(|(x, _), (y, _)| x.cmp(y))
+            .group_by(|(i, _)| *i)
+            .into_iter()
+            .for_each(|(cpu_id, g)| {
+                g.into_iter().for_each(|(_, (data_base, hop_base))| {
+                    // Do not assert affinity
+                    // Some envorinment, like LXC does not allow affinity settings
+                    if let Err(e) = affinity::set_thread_affinity(&vec![cpu_id]) {
+                        warn!(
+                            "Cannot set affinity on CPU {} during allocation, {:?}",
+                            cpu_id, e
+                        );
+                    }
+                    fill_zeros(data_base, data_fill_size);
+                    fill_zeros(hop_base, hop_fill_size);
+                })
+            });
         affinity::set_thread_affinity(orig_affinity.as_ref().unwrap()).unwrap();
-    } 
+    }
 
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);

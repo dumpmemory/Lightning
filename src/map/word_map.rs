@@ -320,12 +320,7 @@ mod test {
         for i in 100..900 {
             for j in START_IDX..60 {
                 let get_res = map.get(&(i * 100 + j));
-                assert_eq!(
-                    get_res,
-                    Some(i * j),
-                    "at epoch {}",
-                    map.table.now_epoch()
-                )
+                assert_eq!(get_res, Some(i * j), "at epoch {}", map.table.now_epoch())
             }
         }
         for i in START_IDX..9 {

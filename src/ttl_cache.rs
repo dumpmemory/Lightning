@@ -8,7 +8,8 @@ use std::{
 use crate::map::base::*;
 use crate::map::obj_map::WordObjectAttachment;
 
-type ObjectTable<V, ALLOC, H> = Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H, RAW_KV_OFFSET, PTR_KV_OFFSET>;
+type ObjectTable<V, ALLOC, H> =
+    Table<(), V, WordObjectAttachment<V, ALLOC>, ALLOC, H, RAW_KV_OFFSET, PTR_KV_OFFSET>;
 
 pub struct TTLCache<
     V: Clone,

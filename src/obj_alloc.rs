@@ -1,4 +1,3 @@
-
 #[cfg(asan)]
 use libc::c_void;
 #[cfg(asan)]
@@ -11,8 +10,7 @@ use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
-use std::{
-    marker::PhantomData, mem};
+use std::{marker::PhantomData, mem};
 
 use crate::stack::LinkedRingBufferStack;
 
@@ -478,7 +476,6 @@ impl<const B: usize> ThreadLocalPage<B> {
 }
 
 unsafe impl<T, const B: usize> Send for Allocator<T, B> {}
-
 
 #[cfg(asan)]
 pub(crate) struct ASan {
