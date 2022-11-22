@@ -879,9 +879,8 @@ mod ptr_map {
         });
     }
 
-    const VAL_SIZE: usize = 256;
     pub type Key = u128;
-    pub type Value = [char; 64];
+    pub type Value = Vec<char>;
     pub type FatHashMap = PtrHashMap<Key, Value, System>;
 
     fn key_from(num: usize) -> Key {
@@ -894,7 +893,7 @@ mod ptr_map {
         for (i, c) in str.chars().enumerate() {
             res[i] = c;
         }
-        res
+        Vec::from(res)
     }
 
     #[test]
