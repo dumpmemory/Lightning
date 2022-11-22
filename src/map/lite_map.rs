@@ -46,8 +46,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn encode<T>(&self, d: T) -> usize {
-        let mut num: u64 = 0;
-        let obj_ptr = &mut num as *mut u64 as *mut T;
+        let mut num: usize = 0;
+        let obj_ptr = &mut num as *mut usize as *mut T;
         unsafe {
             ptr::write(obj_ptr, d);
         }
@@ -56,8 +56,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn decode_cloned<T: Clone>(&self, num: usize) -> T {
-        let num = num as u64;
-        let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
+        let num = num & WORD_MUTEX_DATA_BIT_MASK;
+        let ptr = &num as *const usize as *const AlignedLiteObj<T>;
         let aligned = unsafe { &*ptr };
         let obj = aligned.data.clone();
         return obj;
@@ -65,8 +65,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
     #[inline(always)]
     fn decode_owned<T: Clone>(&self, num: usize) -> T {
-        let num = num as u64;
-        let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
+        let num = num  & WORD_MUTEX_DATA_BIT_MASK;
+        let ptr = &num as *const usize as *const AlignedLiteObj<T>;
         let aligned = unsafe { ptr::read(ptr) };
         return aligned.data;
     }
