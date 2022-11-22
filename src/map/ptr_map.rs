@@ -148,6 +148,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
 #[inline(always)]
 fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usize) {
+    let value = value  & WORD_MUTEX_DATA_BIT_MASK;
     (
         value & PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS,
         value & PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS,
@@ -179,7 +180,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if let Some(val) = self.deref_val(fv & WORD_MUTEX_DATA_BIT_MASK) {
+                if let Some(val) = self.deref_val(fv) {
                     return Some(val);
                 }
 
@@ -196,8 +197,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.insert_with_op(InsertOp::Insert, key, value)
             .map(|((ptr, node_addr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
+                let val = ptr::read(ptr);
                 guard.buffered_free(node_addr as *const PtrValueNode<V>);
-                ptr::read(ptr)
+                val
             })
     }
 
@@ -319,7 +321,7 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
     #[inline(always)]
     fn manually_drop(&self, fvalue: usize) {
         unsafe {
-            let (addr, _val_ver) = decompose_value::<K, V>(fvalue & WORD_MUTEX_DATA_BIT_MASK);
+            let (addr, _val_ver) = decompose_value::<K, V>(fvalue);
             let node_ptr = addr as *mut PtrValueNode<V>;
             let node_ref = &*node_ptr;
             let val_ptr = node_ref.value.as_ptr();
@@ -405,7 +407,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             );
             match swap_res {
                 SwapResult::Succeed(val, _idx, _chunk) => {
-                    value = if let Some(v) = map.deref_val(val & WORD_MUTEX_DATA_BIT_MASK) {
+                    value = if let Some(v) = map.deref_val(val) {
                         v
                     } else {
                         continue;
