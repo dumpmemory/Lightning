@@ -67,9 +67,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn decode_owned<T: Clone>(&self, num: usize) -> T {
         let num = num as u64;
         let ptr = &num as *const u64 as *const AlignedLiteObj<T>;
-        let aligned = unsafe {
-            ptr::read(ptr)
-        };
+        let aligned = unsafe { ptr::read(ptr) };
         return aligned.data;
     }
 }
@@ -117,7 +115,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.table
             .entries()
             .into_iter()
-            .map(|(fk, fv, _, _)| (self.decode_cloned(fk as usize), self.decode_cloned::<V>(fv as usize)))
+            .map(|(fk, fv, _, _)| {
+                (
+                    self.decode_cloned(fk as usize),
+                    self.decode_cloned::<V>(fv as usize),
+                )
+            })
             .collect()
     }
 
@@ -354,17 +357,19 @@ mod lite_tests {
             let d = Arc::new(struc);
             map.insert(k, d);
         }
-        // for i in START_IDX..2048 {
-        //     let k = i;
-        //     let v = i * 2;
-        //     match map.get(&k) {
-        //         Some(r) => {
-        //             assert_eq!(r.a as usize, v);
-        //             assert_eq!(r.b as usize, v * 2);
-        //         }
-        //         None => panic!("{}", i),
-        //     }
-        // }
+        for i in START_IDX..2048 {
+            let k = i;
+            let v = i * 2;
+            match map.get(&k) {
+                Some(r) => {
+                    assert_eq!(r.a as usize, v);
+                    assert_eq!(r.b as usize, v * 2);
+                }
+                None => panic!("{}", i),
+            }
+        }
+        let entries = map.entries();
+        assert_eq!(entries.len(), (2048 - START_IDX));
     }
 
     #[test]
@@ -415,7 +420,7 @@ mod lite_tests {
         let _ = env_logger::try_init();
         let num_threads = num_cpus::get();
         let test_load = 2048;
-        let repeat_load = 64;
+        let repeat_load = 32;
         let map = Arc::new(LiteHashMap::<Key, Arc<Value>, System>::with_capacity(32));
         let mut threads = vec![];
         for i in 0..num_threads {

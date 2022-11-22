@@ -1236,9 +1236,20 @@ impl<
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
         let (chunk, _, new_chunk, _epoch) = self.chunk_refs(&guard);
-        let mut res = self.all_from_chunk(chunk);
+        let res = self.all_from_chunk(chunk);
         if let Some(new_chunk) = new_chunk {
-            res.append(&mut self.all_from_chunk(&new_chunk));
+            let new_chunk_entries = self.all_from_chunk(&new_chunk);
+            let mut chunk_map = res
+                .into_iter()
+                .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
+                .collect::<std::collections::HashMap<_, _>>();
+            new_chunk_entries.into_iter().for_each(|(k, v, fk, fv)| {
+                chunk_map.insert((k, fk), (v, fv));
+            });
+            return chunk_map
+                .into_iter()
+                .map(|((k, fk), (v, fv))| (k, v, fk, fv))
+                .collect_vec();
         }
         return res;
     }
@@ -2112,7 +2123,13 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_base = data_base + chunk_size_aligned;
         let attachment_base = hop_base + hop_size_aligned;
         unsafe {
-            Self::fill_zeros(data_base, hop_base, chunk_size_aligned, hop_size_aligned, page_size);
+            Self::fill_zeros(
+                data_base,
+                hop_base,
+                chunk_size_aligned,
+                hop_size_aligned,
+                page_size,
+            );
             // fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
             ptr::write(
                 ptr,
