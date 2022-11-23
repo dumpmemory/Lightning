@@ -1199,7 +1199,9 @@ impl<
                     if Self::FAT_VAL && Self::get_fast_value(addr).val != val_res.val {
                         continue;
                     }
-                    res.push((k, act_val, key, value))
+                    let k = Self::offset_k_out(k);
+                    let v = Self::offset_v_out(act_val);
+                    res.push((k, v, key, value))
                 }
             }
             idx += 1; // reprobe
