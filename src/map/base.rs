@@ -669,6 +669,7 @@ impl<
                             chunk.base,
                             new_chunk.map(|c| c.base)
                         );
+                        self.count.fetch_sub(1, Relaxed);
                         return Some((Self::offset_v_out(fval), val.unwrap()));
                     }
                     ModResult::Fail => {
@@ -693,6 +694,7 @@ impl<
                         idx,
                         chunk.base, new_chunk.map(|c| c.base)
                     );
+                    self.count.fetch_sub(1, Relaxed);
                     return Some((Self::offset_v_out(fval), val.unwrap()));
                 }
                 Some(ModResult::Fail) | Some(ModResult::Sentinel) => {
