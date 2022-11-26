@@ -378,8 +378,8 @@ pub struct PtrMutexGuard<
     H: Hasher + Default,
 > {
     map: &'a PtrHashMap<K, V, ALLOC, H>,
-    key: K,
-    value: V,
+    key: Option<K>,
+    value: Option<V>,
 }
 
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
@@ -424,7 +424,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             }
         }
         let key = key.clone();
-        Some(Self { map, key, value })
+        Some(Self { map, key: Some(key), value: Some(value) })
     }
 
     fn create(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K, value: V) -> Option<Self> {
@@ -439,20 +439,24 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,
-                key: key.clone(),
-                value: value,
+                key: Some(key.clone()),
+                value: Some(value),
             }),
             _ => None,
         }
     }
 
-    pub fn remove(self) -> V {
+    pub fn remove(mut self) -> V {
         let guard = self.map.allocator.pin();
-        let fval = self.map.table.remove(&self.key, 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
+        let fval = self.map.table.remove(self.key.as_ref().unwrap(), 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
         let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
         let r = unsafe { ptr::read(val_ptr) };
+        // Free the memory for key and value
+        // To prevent them write back to the map on drop
+        // DO NOT FORGET self
+        self.key = None;
+        self.value = None;
         guard.buffered_free(node_addr as _);
-        mem::forget(self);
         return r;
     }
 }
@@ -462,7 +466,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
-        &self.value
+        self.value.as_ref().unwrap()
     }
 }
 
@@ -470,20 +474,20 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
+        self.value.as_mut().unwrap()
     }
 }
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
     for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
-        let guard = self.map.allocator.pin();
-        let val = self.value.clone();
-        let key = self.key.clone();
-        let fval = self.map.ref_val(val, &guard) & WORD_MUTEX_DATA_BIT_MASK;
-        self.map
-            .table
-            .insert(InsertOp::Insert, &key, Some(&()), 0, fval);
+        if let (Some(key), Some(val)) = (&self.key, &self.value) {
+            let guard = self.map.allocator.pin();
+            let fval = self.map.ref_val(val.clone(), &guard) & WORD_MUTEX_DATA_BIT_MASK;
+            self.map
+                .table
+                .insert(InsertOp::Insert, key, Some(&()), 0, fval);
+        }
     }
 }
 
