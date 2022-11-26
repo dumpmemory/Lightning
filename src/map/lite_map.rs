@@ -12,8 +12,8 @@ pub type LiteTable<V, H, ALLOC> =
     Table<(), (), LiteAttachment<V>, H, ALLOC, RAW_KV_OFFSET, RAW_KV_OFFSET>;
 
 pub struct LiteHashMap<
-    K: Clone + Hash + Eq,
-    V: Clone,
+    K: Copy + Hash + Eq,
+    V: Copy,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
@@ -21,7 +21,7 @@ pub struct LiteHashMap<
     shadow: PhantomData<(K, V, H)>,
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+impl<K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     LiteHashMap<K, V, ALLOC, H>
 {
     const K_SIZE: usize = mem::size_of::<AlignedLiteObj<K>>();
@@ -72,7 +72,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
+impl<K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
     for LiteHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
@@ -143,8 +143,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
 pub struct LiteMutexGuard<
     'a,
-    K: Clone + Hash + Eq,
-    V: Clone,
+    K: Copy + Hash + Eq,
+    V: Copy,
     ALLOC: GlobalAlloc + Default,
     H: Hasher + Default,
 > {
@@ -153,7 +153,7 @@ pub struct LiteMutexGuard<
     value: V,
 }
 
-impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+impl<'a, K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     LiteMutexGuard<'a, K, V, ALLOC, H>
 {
     fn new(map: &'a LiteHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
@@ -222,7 +222,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         return self.map.decode_owned(fval);
     }
 }
-impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+impl<'a, K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
     for LiteMutexGuard<'a, K, V, ALLOC, H>
 {
     type Target = V;
@@ -232,14 +232,14 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 }
 
-impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+impl<'a, K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
     for LiteMutexGuard<'a, K, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
-impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+impl<'a, K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
     for LiteMutexGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
@@ -250,7 +250,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     }
 }
 
-impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+impl<K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
     for LiteHashMap<K, V, ALLOC, H>
 {
     fn drop(&mut self) {
@@ -346,31 +346,31 @@ mod lite_tests {
         }
     }
 
-    #[test]
-    fn no_resize_arc() {
-        let _ = env_logger::try_init();
-        let map = LiteHashMap::<usize, Arc<FatStruct>, System>::with_capacity(4096);
-        for i in START_IDX..2048 {
-            let k = i;
-            let v = i * 2;
-            let struc = FatStruct::new(v);
-            let d = Arc::new(struc);
-            map.insert(k, d);
-        }
-        for i in START_IDX..2048 {
-            let k = i;
-            let v = i * 2;
-            match map.get(&k) {
-                Some(r) => {
-                    assert_eq!(r.a as usize, v);
-                    assert_eq!(r.b as usize, v * 2);
-                }
-                None => panic!("{}", i),
-            }
-        }
-        let entries = map.entries();
-        assert_eq!(entries.len(), (2048 - START_IDX));
-    }
+    // #[test]
+    // fn no_resize_arc() {
+    //     let _ = env_logger::try_init();
+    //     let map = LiteHashMap::<usize, Arc<FatStruct>, System>::with_capacity(4096);
+    //     for i in START_IDX..2048 {
+    //         let k = i;
+    //         let v = i * 2;
+    //         let struc = FatStruct::new(v);
+    //         let d = Arc::new(struc);
+    //         map.insert(k, d);
+    //     }
+    //     for i in START_IDX..2048 {
+    //         let k = i;
+    //         let v = i * 2;
+    //         match map.get(&k) {
+    //             Some(r) => {
+    //                 assert_eq!(r.a as usize, v);
+    //                 assert_eq!(r.b as usize, v * 2);
+    //             }
+    //             None => panic!("{}", i),
+    //         }
+    //     }
+    //     let entries = map.entries();
+    //     assert_eq!(entries.len(), (2048 - START_IDX));
+    // }
 
     #[test]
     fn no_resize_small_type() {
@@ -415,111 +415,111 @@ mod lite_tests {
         Vec::from(res)
     }
 
-    #[test]
-    fn parallel_with_arc_resize() {
-        let _ = env_logger::try_init();
-        let num_threads = num_cpus::get();
-        let test_load = 2048;
-        let repeat_load = 32;
-        let map = Arc::new(LiteHashMap::<Key, Arc<Value>, System>::with_capacity(32));
-        let mut threads = vec![];
-        for i in 0..num_threads {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-              for j in 0..test_load {
-                  let key = key_from(i * 10000000 + j);
-                  let value_prefix = i * j * 100;
-                  for k in 1..repeat_load {
-                      let value_num = value_prefix + k;
-                      if k != 1 {
-                          assert_eq!(&*map.get(&key).unwrap(), &val_from(key, value_num - 1));
-                      }
-                      let value = Arc::new(val_from(key, value_num));
-                      let pre_insert_epoch = map.table.now_epoch();
-                      map.insert(key, value.clone());
-                      let post_insert_epoch = map.table.now_epoch();
-                      for l in 1..32 {
-                          let pre_fail_get_epoch = map.table.now_epoch();
-                          let left = map.get(&key);
-                          let post_fail_get_epoch = map.table.now_epoch();
-                          let right = Some(&value);
-                          if left.as_ref() != right {
-                              error!("Discovered mismatch key {:?}, analyzing", &key);
-                              for m in 1..1024 {
-                                  let mleft = map.get(&key);
-                                  let mright = Some(&value);
-                                  if mleft.as_ref() == mright {
-                                      panic!(
-                                          "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
-                                          m, 
-                                          &key, 
-                                          map.table.map_is_copying(),
-                                          pre_fail_get_epoch,
-                                          post_fail_get_epoch,
-                                          map.table.now_epoch(),
-                                          pre_insert_epoch, 
-                                          post_insert_epoch,
-                                          right, left
-                                      );
-                                      // panic!("Late value change on {:?}", key);
-                                  }
-                              }
-                              panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
-                              // panic!("Unrecoverable value change for {:?}", key);
-                          }
-                      }
-                      if j % 7 == 0 {
-                          assert_eq!(
-                              map.remove(&key),
-                              Some(value.clone()),
-                              "Remove result, get {:?}, copying {}, round {}",
-                              map.get(&key),
-                              map.table.map_is_copying(),
-                              k
-                          );
-                        assert_eq!(map.get(&key), None, "Remove recursion");
-                        assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                        map.insert(key, value.clone());
-                      }
-                      if j % 3 == 0 {
-                          let new_value = val_from(key, value_num + 7);
-                          let pre_insert_epoch = map.table.now_epoch();
-                          map.insert(key, Arc::new(new_value.clone()));
-                          let post_insert_epoch = map.table.now_epoch();
-                          assert_eq!(
-                              &*map.get(&key).unwrap(), 
-                              &new_value, 
-                              "Checking immediate update, key {:?}, epoch {} to {}",
-                              key, pre_insert_epoch, post_insert_epoch
-                          );
-                          map.insert(key, value);
-                      }
-                  }
-              }
-          }));
-        }
-        info!("Waiting for intensive insertion to finish");
-        for thread in threads {
-            let _ = thread.join();
-        }
-        info!("Checking final value");
-        (0..num_threads).for_each(|i| {
-            for j in 0..test_load {
-                let k_num = i * 10000000 + j;
-                let v_num = i * j * 100 + repeat_load - 1;
-                let k = key_from(k_num);
-                let v = val_from(k, v_num);
-                let get_res = map.get(&k);
-                assert_eq!(
-                    &v,
-                    &*get_res.unwrap(),
-                    "Final val mismatch. k {:?}, i {}, j {}, epoch {}",
-                    k,
-                    i,
-                    j,
-                    map.table.now_epoch()
-                );
-            }
-        });
-    }
+    // #[test]
+    // fn parallel_with_arc_resize() {
+    //     let _ = env_logger::try_init();
+    //     let num_threads = num_cpus::get();
+    //     let test_load = 2048;
+    //     let repeat_load = 32;
+    //     let map = Arc::new(LiteHashMap::<Key, Arc<Value>, System>::with_capacity(32));
+    //     let mut threads = vec![];
+    //     for i in 0..num_threads {
+    //         let map = map.clone();
+    //         threads.push(thread::spawn(move || {
+    //           for j in 0..test_load {
+    //               let key = key_from(i * 10000000 + j);
+    //               let value_prefix = i * j * 100;
+    //               for k in 1..repeat_load {
+    //                   let value_num = value_prefix + k;
+    //                   if k != 1 {
+    //                       assert_eq!(&*map.get(&key).unwrap(), &val_from(key, value_num - 1));
+    //                   }
+    //                   let value = Arc::new(val_from(key, value_num));
+    //                   let pre_insert_epoch = map.table.now_epoch();
+    //                   map.insert(key, value.clone());
+    //                   let post_insert_epoch = map.table.now_epoch();
+    //                   for l in 1..32 {
+    //                       let pre_fail_get_epoch = map.table.now_epoch();
+    //                       let left = map.get(&key);
+    //                       let post_fail_get_epoch = map.table.now_epoch();
+    //                       let right = Some(&value);
+    //                       if left.as_ref() != right {
+    //                           error!("Discovered mismatch key {:?}, analyzing", &key);
+    //                           for m in 1..1024 {
+    //                               let mleft = map.get(&key);
+    //                               let mright = Some(&value);
+    //                               if mleft.as_ref() == mright {
+    //                                   panic!(
+    //                                       "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
+    //                                       m, 
+    //                                       &key, 
+    //                                       map.table.map_is_copying(),
+    //                                       pre_fail_get_epoch,
+    //                                       post_fail_get_epoch,
+    //                                       map.table.now_epoch(),
+    //                                       pre_insert_epoch, 
+    //                                       post_insert_epoch,
+    //                                       right, left
+    //                                   );
+    //                                   // panic!("Late value change on {:?}", key);
+    //                               }
+    //                           }
+    //                           panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
+    //                           // panic!("Unrecoverable value change for {:?}", key);
+    //                       }
+    //                   }
+    //                   if j % 7 == 0 {
+    //                       assert_eq!(
+    //                           map.remove(&key),
+    //                           Some(value.clone()),
+    //                           "Remove result, get {:?}, copying {}, round {}",
+    //                           map.get(&key),
+    //                           map.table.map_is_copying(),
+    //                           k
+    //                       );
+    //                     assert_eq!(map.get(&key), None, "Remove recursion");
+    //                     assert!(map.lock(&key).is_none(), "Remove recursion with lock");
+    //                     map.insert(key, value.clone());
+    //                   }
+    //                   if j % 3 == 0 {
+    //                       let new_value = val_from(key, value_num + 7);
+    //                       let pre_insert_epoch = map.table.now_epoch();
+    //                       map.insert(key, Arc::new(new_value.clone()));
+    //                       let post_insert_epoch = map.table.now_epoch();
+    //                       assert_eq!(
+    //                           &*map.get(&key).unwrap(), 
+    //                           &new_value, 
+    //                           "Checking immediate update, key {:?}, epoch {} to {}",
+    //                           key, pre_insert_epoch, post_insert_epoch
+    //                       );
+    //                       map.insert(key, value);
+    //                   }
+    //               }
+    //           }
+    //       }));
+    //     }
+    //     info!("Waiting for intensive insertion to finish");
+    //     for thread in threads {
+    //         let _ = thread.join();
+    //     }
+    //     info!("Checking final value");
+    //     (0..num_threads).for_each(|i| {
+    //         for j in 0..test_load {
+    //             let k_num = i * 10000000 + j;
+    //             let v_num = i * j * 100 + repeat_load - 1;
+    //             let k = key_from(k_num);
+    //             let v = val_from(k, v_num);
+    //             let get_res = map.get(&k);
+    //             assert_eq!(
+    //                 &v,
+    //                 &*get_res.unwrap(),
+    //                 "Final val mismatch. k {:?}, i {}, j {}, epoch {}",
+    //                 k,
+    //                 i,
+    //                 j,
+    //                 map.table.now_epoch()
+    //             );
+    //         }
+    //     });
+    // }
 }
