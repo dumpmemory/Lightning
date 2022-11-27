@@ -235,7 +235,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
     fn set_value(self, _value: (), _old_fval: FVal) {}
 
     #[inline(always)]
-    fn erase(self, _old_fval: FVal) {}
+    fn erase_value(self, _old_fval: FVal) {}
 
     #[inline(always)]
     fn probe(self, _value: &()) -> bool {
@@ -244,6 +244,8 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 
     #[inline(always)]
     fn prep_write(self) {}
+
+    fn erase_key(self) {}
 }
 
 #[cfg(test)]

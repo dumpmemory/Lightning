@@ -146,7 +146,7 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
     }
 
     #[inline(always)]
-    fn erase(self, _old_fval: FVal) {
+    fn erase_value(self, _old_fval: FVal) {
         drop(self.addr as *mut T)
     }
 
@@ -169,6 +169,8 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
             intrinsics::prefetch_write_data(self.addr as *const T, 2);
         }
     }
+
+    fn erase_key(self) {}
 }
 
 impl<T: Clone> Copy for WordObjectAttachmentItem<T> {}

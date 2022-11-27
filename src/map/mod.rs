@@ -101,7 +101,8 @@ pub trait AttachmentItem<K, V> {
     fn get_value(self) -> V;
     fn set_key(self, key: K);
     fn set_value(self, value: V, old_fval: FVal);
-    fn erase(self, old_fval: FVal);
+    fn erase_value(self, old_fval: FVal);
+    fn erase_key(self);
     fn probe(self, probe_key: &K) -> bool;
     fn prep_write(self);
 }

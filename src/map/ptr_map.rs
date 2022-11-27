@@ -358,7 +358,7 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
         // self.erase(old_fval)
     }
 
-    fn erase(self, _old_fval: FVal) {}
+    fn erase_value(self, _old_fval: FVal) {}
 
     fn probe(self, probe_key: &K) -> bool {
         let key = unsafe { &*(self.addr as *mut K) };
@@ -366,6 +366,12 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
     }
 
     fn prep_write(self) {}
+
+    fn erase_key(self) {
+        let addr = self.addr;
+        // drop(addr as *mut K);
+        drop(addr as *mut K);
+    }
 }
 
 impl<K: Clone, V: Clone> Copy for PtrValAttachmentItem<K, V> {}

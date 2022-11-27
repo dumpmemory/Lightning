@@ -969,7 +969,7 @@ impl<
                                     if Self::cas_sentinel(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        attachment.erase(raw);
+                                        attachment.erase_value(raw);
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
                                         } else {
@@ -984,7 +984,7 @@ impl<
                                     if Self::cas_tombstone(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        attachment.erase(raw);
+                                        attachment.erase_value(raw);
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
                                         } else {
@@ -2226,7 +2226,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             let val = fvalue.val;
             if fkey != EMPTY_KEY && val > MAX_META_VAL {
                 let attachment = self.attachment.prefetch(idx);
-                attachment.erase(val);
+                attachment.erase_key();
+                attachment.erase_value(val);
             }
             old_address += ENTRY_SIZE;
             idx += 1;
