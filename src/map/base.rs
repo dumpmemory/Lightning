@@ -969,6 +969,7 @@ impl<
                                     if Self::cas_sentinel(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
+                                        attachment.erase_key();
                                         attachment.erase_value(raw);
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
@@ -984,6 +985,7 @@ impl<
                                     if Self::cas_tombstone(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
+                                        attachment.erase_key();
                                         attachment.erase_value(raw);
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
