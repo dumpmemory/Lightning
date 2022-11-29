@@ -369,8 +369,8 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
     fn erase_key(self) {
         let addr = self.addr;
-        // drop(addr as *mut K);
-        drop(addr as *mut K);
+        debug!("Erasing key with addr {}", addr);
+        drop(unsafe { ptr::read(addr as *mut K) })
     }
 }
 
@@ -1098,5 +1098,59 @@ mod ptr_map {
         }
         assert_all_thread_passed(threads);
         assert_eq!(map.get(&key), Some(num_threads * num_rounds));
+    }
+
+    mod on_heap_key_map {
+
+        use super::*;
+
+        type Key = Vec<String>;
+        type Value = String;
+
+        fn key_from(num: usize) -> Key {
+            vec![format!("k_{}", num)]
+        }
+    
+        fn val_from(key: usize, num: usize) -> Value {
+            format!("k_{}_v_{}", key, num)
+        }
+
+        #[test]
+        fn no_resize() {
+            let _ = env_logger::try_init();
+            let map = PtrHashMap::<Key, Value, System>::with_capacity(4096);
+            for i in 5..2048 {
+                let k = i;
+                let v = i * 2;
+                map.insert(key_from(k), val_from(k, v));
+            }
+            for i in 5..2048 {
+                let k = i;
+                let v = i * 2;
+                match map.get(&key_from(k)) {
+                    Some(r) => assert_eq!(r, val_from(k, v)),
+                    None => panic!("{}", i),
+                }
+            }
+        }
+
+        #[test]
+        fn resize() {
+            let _ = env_logger::try_init();
+            let map = PtrHashMap::<Key, Value, System>::with_capacity(8);
+            for i in 0..2048 {
+                let k = i;
+                let v = i * 2;
+                map.insert(key_from(k), val_from(k, v));
+            }
+            for i in 0..2048 {
+                let k = i;
+                let v = i * 2;
+                match map.get(&key_from(k)) {
+                    Some(r) => assert_eq!(r, val_from(k, v)),
+                    None => panic!("{}", i),
+                }
+            }
+        }
     }
 }

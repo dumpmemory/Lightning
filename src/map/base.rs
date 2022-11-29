@@ -19,7 +19,7 @@ const HOP_TUPLE_SIZE: usize = mem::size_of::<HopTuple>();
 #[cfg(debug_assertions)]
 pub type MigratedEntry = ((usize, FastValue), usize, usize, u64);
 
-pub const ENABLE_HOPSOTCH: bool = cfg!(feature = "hopsotch");
+pub const ENABLE_HOPSOTCH: bool = false;// cfg!(feature = "hopsotch");
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -969,7 +969,8 @@ impl<
                                     if Self::cas_sentinel(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        attachment.erase_key();
+                                        // Do not erase key. Future insertion might rese it
+                                        // Memory will be reclaimed during migrtion
                                         attachment.erase_value(raw);
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
@@ -985,7 +986,8 @@ impl<
                                     if Self::cas_tombstone(addr, v.val) {
                                         let prev_val =
                                             read_attachment.then(|| attachment.get_value());
-                                        attachment.erase_key();
+                                        // Do not erase key. Future insertion might rese it
+                                        // Memory will be reclaimed during migrtion
                                         attachment.erase_value(raw);
                                         if raw == EMPTY_VALUE || raw == TOMBSTONE_VALUE {
                                             return ModResult::NotFound;
@@ -2213,11 +2215,10 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
         debug_assert_ne!(ptr as usize, 0);
         let chunk = &*ptr;
-        // chunk.gc_entries();
+        chunk.gc_entries();
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
     }
 
-    #[warn(dead_code)]
     fn gc_entries(&self) {
         let mut old_address = self.base as usize;
         let boundary = old_address + chunk_size_of(self.capacity);
@@ -2226,10 +2227,17 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             let fvalue = Self::get_fast_value(old_address);
             let fkey = Self::get_fast_key(old_address);
             let val = fvalue.val;
-            if fkey != EMPTY_KEY && val > MAX_META_VAL {
+            let has_key = fkey > MAX_META_KEY;
+            let has_val = val > MAX_META_VAL;
+            if has_key || has_val {
                 let attachment = self.attachment.prefetch(idx);
-                attachment.erase_key();
-                attachment.erase_value(val);
+                if has_key {
+                    debug!("Erase key with fkey {}, idx {}", fkey, idx);
+                    attachment.erase_key();
+                }
+                if has_val {
+                    attachment.erase_value(val);
+                }
             }
             old_address += ENTRY_SIZE;
             idx += 1;
