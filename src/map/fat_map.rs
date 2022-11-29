@@ -100,7 +100,9 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
     #[inline(always)]
     fn erase_value(self, _old_fval: FVal) {
         let addr = self.addr;
-        drop((addr + Self::VAL_OFFSET) as *mut V);
+        drop(unsafe {
+            ptr::read((addr + Self::VAL_OFFSET) as *mut V)
+        });
     }
 
     #[inline(always)]
@@ -118,7 +120,9 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
 
     fn erase_key(self) {
         let addr = self.addr;
-        drop(addr as *mut K);
+        drop(unsafe {
+            ptr::read(addr as *mut K)
+        });
     }
 }
 
