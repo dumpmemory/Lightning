@@ -1485,12 +1485,14 @@ impl<
                     let curr_attachment = chunk.attachment.prefetch(dest_idx);
                     // And the key object
                     // Then swap the key
+                    curr_attachment.erase_key();
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
                     chunk.unset_hop_bit(idx, candidate_distance);
 
                     // Enable probing on the candidate with inserting key
+                    candidate_attachment.erase_key();
                     candidate_attachment.set_key(key.clone());
                     Self::store_key(candidate_addr, fkey);
 
