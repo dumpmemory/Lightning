@@ -139,7 +139,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     // Need to keep prev and next reference for iterator
                     remains = head_node.buffer.pop_all();
                     unsafe {
-                        guard.defer_destroy(head_ptr);
+                        logged_defer_destory(&guard, head_ptr, "pop front with head ptr");
                     }
                 }
             }
@@ -184,7 +184,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     // Need to keep prev and next reference for iterator
                     remains = tail_node.buffer.pop_all();
                     unsafe {
-                        guard.defer_destroy(tail_ptr);
+                        logged_defer_destory(&guard, tail_ptr, "pop back with tail ptr");
                     }
                 }
             }
@@ -341,7 +341,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                             }
                         }
                         unsafe {
-                            guard.defer_destroy(node_ref);
+                            logged_defer_destory(guard, node_ref, "Remove list item ref");
                         }
                         break;
                     }
@@ -361,6 +361,13 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
             idx: self.obj_idx,
         }
     }
+}
+
+pub unsafe fn logged_defer_destory<T>(guard: &Guard, ptr: Shared<'_, T>, msg: &'_ str) {
+    guard.defer_unchecked(move || {
+        debug!("LOGGED_DEFER_DESTORY: {:?}, msg: {}", ptr, msg);
+        ptr.into_owned()
+    })
 }
 
 pub struct ListIter<'a, T: Clone, const N: usize> {
@@ -420,7 +427,7 @@ impl<T, const N: usize> Drop for LinkedRingBufferList<T, N> {
             unsafe {
                 let node_ins = node.deref();
                 let next = node_ins.next.load(Acquire, &guard);
-                guard.defer_destroy(node);
+                logged_defer_destory(&guard, node, "Drop liked buffer list");
                 node = next;
             }
         }
