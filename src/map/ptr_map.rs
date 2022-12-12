@@ -148,7 +148,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 
 #[inline(always)]
 fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usize) {
-    let value = value  & WORD_MUTEX_DATA_BIT_MASK;
+    let value = value & WORD_MUTEX_DATA_BIT_MASK;
     (
         value & PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS,
         value & PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS,
@@ -430,7 +430,11 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             }
         }
         let key = key.clone();
-        Some(Self { map, key: Some(key), value: Some(value) })
+        Some(Self {
+            map,
+            key: Some(key),
+            value: Some(value),
+        })
     }
 
     fn create(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K, value: V) -> Option<Self> {
@@ -454,7 +458,13 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
 
     pub fn remove(mut self) -> V {
         let guard = self.map.allocator.pin();
-        let fval = self.map.table.remove(self.key.as_ref().unwrap(), 0).unwrap().0 & WORD_MUTEX_DATA_BIT_MASK;
+        let fval = self
+            .map
+            .table
+            .remove(self.key.as_ref().unwrap(), 0)
+            .unwrap()
+            .0
+            & WORD_MUTEX_DATA_BIT_MASK;
         let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
         let r = unsafe { ptr::read(val_ptr) };
         // Free the memory for key and value
@@ -1110,7 +1120,7 @@ mod ptr_map {
         fn key_from(num: usize) -> Key {
             vec![format!("k_{}", num)]
         }
-    
+
         fn val_from(key: usize, num: usize) -> Value {
             format!("k_{}_v_{}", key, num)
         }

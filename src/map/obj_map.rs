@@ -147,9 +147,7 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
 
     #[inline(always)]
     fn erase_value(self, _old_fval: FVal) {
-        drop(unsafe {
-            ptr::read(self.addr as *mut T)
-        })
+        drop(unsafe { ptr::read(self.addr as *mut T) })
     }
 
     #[inline(always)]

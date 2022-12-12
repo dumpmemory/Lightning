@@ -65,7 +65,7 @@ impl<K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher + Def
 
     #[inline(always)]
     fn decode_owned<T: Clone>(&self, num: usize) -> T {
-        let num = num  & WORD_MUTEX_DATA_BIT_MASK;
+        let num = num & WORD_MUTEX_DATA_BIT_MASK;
         let ptr = &num as *const usize as *const AlignedLiteObj<T>;
         let aligned = unsafe { ptr::read(ptr) };
         return aligned.data;
@@ -450,14 +450,14 @@ mod lite_tests {
     //                               let mright = Some(&value);
     //                               if mleft.as_ref() == mright {
     //                                   panic!(
-    //                                       "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
-    //                                       m, 
-    //                                       &key, 
+    //                                       "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
+    //                                       m,
+    //                                       &key,
     //                                       map.table.map_is_copying(),
     //                                       pre_fail_get_epoch,
     //                                       post_fail_get_epoch,
     //                                       map.table.now_epoch(),
-    //                                       pre_insert_epoch, 
+    //                                       pre_insert_epoch,
     //                                       post_insert_epoch,
     //                                       right, left
     //                                   );
@@ -487,8 +487,8 @@ mod lite_tests {
     //                       map.insert(key, Arc::new(new_value.clone()));
     //                       let post_insert_epoch = map.table.now_epoch();
     //                       assert_eq!(
-    //                           &*map.get(&key).unwrap(), 
-    //                           &new_value, 
+    //                           &*map.get(&key).unwrap(),
+    //                           &new_value,
     //                           "Checking immediate update, key {:?}, epoch {} to {}",
     //                           key, pre_insert_epoch, post_insert_epoch
     //                       );
