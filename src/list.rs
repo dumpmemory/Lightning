@@ -80,6 +80,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     return r.to_ptr();
                 }
                 Err(v) => {
+                    debug!("Locking on tail ptr: {:?}", tail_ptr);
                     let tail_lock = tail_node.lock.try_lock();
                     if tail_lock.is_some() && tail_node.next.load(Acquire, &guard).is_null() {
                         let new_node = RingBufferNode::new();

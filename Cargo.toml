@@ -18,14 +18,14 @@ libc = "0.2.69"
 parking_lot = "*"
 static_assertions = "1"
 lazy_static = "1.4.0"
-page_size = "0.4.2"
+page_size = "0.5"
 affinity = "*"
 itertools = "0.10"
 
 [dev-dependencies]
 chashmap = "2.2.2"
-page_size = "0.4.2"
-env_logger = "0.9"
+page_size = "0.5"
+env_logger = "0.10"
 rayon = "1"
 itertools = "0.10"
 
