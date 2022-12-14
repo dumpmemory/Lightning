@@ -360,7 +360,7 @@ macro_rules! par_list_tests {
             let deque = Arc::new($list_init);
             let threshold = (num as f64 * 0.5) as usize;
             for i in 0..threshold {
-                deque.push_back(i);
+                let _ = deque.push_back(i);
             }
             let ths = (threshold..num)
                 .chunks(256)
@@ -372,7 +372,7 @@ macro_rules! par_list_tests {
                         nums.into_iter()
                             .map(|i| {
                                 if i % 2 == 0 {
-                                    deque.push_back(i);
+                                    let _ = deque.push_back(i);
                                     None
                                 } else {
                                     Some(deque.pop_back().unwrap())

@@ -49,7 +49,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         let new_node = RingBufferNode::new();
                         new_node.next.store(head_ptr, Relaxed);
                         let new_node_ptr = Owned::new(new_node).into_shared(&guard);
-                        let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
+                        let new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
                         if self
                             .head
                             .compare_exchange(head_ptr, new_node_ptr, AcqRel, Acquire, &guard)
@@ -58,6 +58,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                             head_node.prev.store(new_node_ptr, Release);
                         } else {
                             unsafe {
+                                drop(new_node_lock);
                                 new_node_ptr.into_owned();
                             }
                         }
@@ -86,7 +87,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         let new_node = RingBufferNode::new();
                         new_node.prev.store(tail_ptr, Relaxed);
                         let new_node_ptr = Owned::new(new_node).into_shared(&guard);
-                        let _new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
+                        let new_node_lock = unsafe { new_node_ptr.deref().lock.lock() };
                         if self
                             .tail
                             .compare_exchange(tail_ptr, new_node_ptr, AcqRel, Acquire, &guard)
@@ -95,6 +96,8 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                             tail_node.next.store(new_node_ptr, Release);
                         } else {
                             unsafe {
+                                // Must drop the lock it before reclaim the node
+                                drop(new_node_lock);
                                 new_node_ptr.into_owned();
                             }
                         }
