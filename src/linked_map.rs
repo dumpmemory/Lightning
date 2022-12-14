@@ -41,7 +41,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn get(&self, key: &K) -> Option<V> {
-        self.map.get(key).map(|l| unsafe { l.deref().clone().1 })
+        self.map.get(key).map(|l| unsafe { l.deref().unwrap().1.clone() })
     }
 
     pub fn get_to_front(&self, key: &K) -> Option<V> {
@@ -55,7 +55,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     #[inline(always)]
     pub fn get_to_general(&self, key: &K, forwarding: bool) -> Option<V> {
         self.map.lock(key).and_then(|mut l| {
-            let pair = unsafe { l.deref() }.clone();
+            let pair = unsafe { l.deref() }.unwrap();
             let new_ref = if forwarding {
                 self.list.push_front(pair)
             } else {

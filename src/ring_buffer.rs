@@ -482,9 +482,8 @@ pub struct ItemPtr<T: Clone, const N: usize> {
 }
 
 impl<T: Clone + Default, const N: usize> ItemPtr<T, N> {
-    pub unsafe fn deref(&self) -> &T {
-        let buffer = &*self.buffer;
-        &*buffer.elements[self.idx].as_ptr()
+    pub unsafe fn deref(&self) -> Option<T> {
+        self.to_ref().deref()
     }
 
     pub unsafe fn to_ref(&self) -> ItemRef<T, N> {
