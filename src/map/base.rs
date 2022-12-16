@@ -1485,14 +1485,14 @@ impl<
                     let curr_attachment = chunk.attachment.prefetch(dest_idx);
                     // And the key object
                     // Then swap the key
-                    curr_attachment.erase_key();
+                    let _old_curr_key = curr_attachment.moveout_key();
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
                     chunk.unset_hop_bit(idx, candidate_distance);
 
                     // Enable probing on the candidate with inserting key
-                    candidate_attachment.erase_key();
+                    let _old_candidate_key = candidate_attachment.moveout_key();
                     candidate_attachment.set_key(key.clone());
                     Self::store_key(candidate_addr, fkey);
 
@@ -2235,7 +2235,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                 let attachment = self.attachment.prefetch(idx);
                 if has_key {
                     debug!("Erase key with fkey {}, idx {}", fkey, idx);
-                    attachment.erase_key();
+                    attachment.moveout_key();
                 }
                 if has_val {
                     attachment.erase_value(val);

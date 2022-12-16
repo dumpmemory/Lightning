@@ -367,10 +367,10 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, ()> for PtrValAttachmentI
 
     fn prep_write(self) {}
 
-    fn erase_key(self) {
+    fn moveout_key(self) -> K {
         let addr = self.addr;
         debug!("Erasing key with addr {}", addr);
-        drop(unsafe { ptr::read(addr as *mut K) })
+        unsafe { ptr::read(addr as *mut K) }
     }
 }
 

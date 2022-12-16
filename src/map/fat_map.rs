@@ -116,9 +116,9 @@ impl<K: Clone + Hash + Eq, V: Clone> AttachmentItem<K, V> for HashKVAttachmentIt
         }
     }
 
-    fn erase_key(self) {
+    fn moveout_key(self) -> K {
         let addr = self.addr;
-        drop(unsafe { ptr::read(addr as *mut K) });
+        unsafe { ptr::read(addr as *mut K) }
     }
 }
 

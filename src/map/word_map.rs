@@ -245,7 +245,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
     #[inline(always)]
     fn prep_write(self) {}
 
-    fn erase_key(self) {}
+    fn moveout_key(self) {}
 }
 
 #[cfg(test)]
