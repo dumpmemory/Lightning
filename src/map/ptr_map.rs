@@ -532,18 +532,36 @@ mod ptr_map {
     };
     use std::{alloc::System, sync::Arc, thread};
 
+    pub type Key = u128;
+    pub type Value = Vec<char>;
+    pub type FatHashMap = PtrHashMap<Key, Value, System>;
+
+    fn key_from(num: usize) -> Key {
+        num as u128
+    }
+
+    fn val_from(key: Key, num: usize) -> Value {
+        let str = format!("{:>32}{:>32}", key, num);
+        let mut res = ['0'; 64];
+        for (i, c) in str.chars().enumerate() {
+            res[i] = c;
+        }
+        Vec::from(res)
+    }
+
+
     #[test]
     fn no_resize() {
         let _ = env_logger::try_init();
-        let map = PtrHashMap::<usize, usize, System>::with_capacity(4096);
+        let map = FatHashMap::with_capacity(4096);
         for i in 5..2048 {
-            let k = i;
-            let v = i * 2;
+            let k = key_from(i);
+            let v = val_from(k, i * 2);
             map.insert(k, v);
         }
         for i in 5..2048 {
-            let k = i;
-            let v = i * 2;
+            let k = key_from(i);
+            let v = val_from(k, i * 2);
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
                 None => panic!("{}", i),
@@ -554,15 +572,15 @@ mod ptr_map {
     #[test]
     fn resize() {
         let _ = env_logger::try_init();
-        let map = PtrHashMap::<usize, usize, System>::with_capacity(16);
+        let map = FatHashMap::with_capacity(16);
         for i in 5..2048 {
-            let k = i;
-            let v = i * 2;
+            let k = key_from(i);
+            let v = val_from(k, i * 2);
             map.insert(k, v);
         }
         for i in 5..2048 {
-            let k = i;
-            let v = i * 2;
+            let k = key_from(i);
+            let v = val_from(k, i * 2);
             match map.get(&k) {
                 Some(r) => assert_eq!(r, v),
                 None => panic!("{}", i),
@@ -615,173 +633,22 @@ mod ptr_map {
     }
 
     #[test]
-    fn parallel_arc_no_resize() {
-        let _ = env_logger::try_init();
-        let map = Arc::new(PtrHashMap::<Key, Arc<Value>, System>::with_capacity(65536));
-        let mut threads = vec![];
-        for i in 5..99 {
-            let k = key_from(i);
-            let v = Arc::new(val_from(k, i * 10));
-            map.insert(k, v);
-        }
-        let insert_term = 16;
-        for i in 100..200 {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-                for j in 5..256 {
-                    let key = key_from(i * 10000 + j);
-                    for k in 0..=insert_term {
-                        let v = Arc::new(val_from(key, i * j + k));
-                        map.insert(key, v);
-                    }
-                }
-            }));
-        }
-        for i in 5..9 {
-            for j in 1..10 {
-                let k = key_from(i * j);
-                map.remove(&k);
-            }
-        }
-        for thread in threads {
-            let _ = thread.join();
-        }
-        for i in 100..200 {
-            for j in 5..256 {
-                let k = key_from(i * 10000 + j);
-                let v = Arc::new(val_from(k, i * j + insert_term));
-                assert_eq!(map.get(&k), Some(v))
-            }
-        }
-        for i in 5..9 {
-            for j in 1..10 {
-                let k = key_from(i * j);
-                assert!(map.get(&k).is_none())
-            }
-        }
-    }
-
-    #[test]
-    fn parallel_with_arc_resize() {
-        let _ = env_logger::try_init();
-        let num_threads = num_cpus::get();
-        let test_load = 2048;
-        let repeat_load = 64;
-        let map = Arc::new(PtrHashMap::<Key, Arc<Value>, System>::with_capacity(32));
-        let mut threads = vec![];
-        for i in 0..num_threads {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-              for j in 5..test_load {
-                  let key = key_from(i * 10000000 + j);
-                  let value_prefix = i * j * 100;
-                  for k in 1..repeat_load {
-                      let value_num = value_prefix + k;
-                      if k != 1 {
-                          assert_eq!(&*map.get(&key).unwrap(), &val_from(key, value_num - 1));
-                      }
-                      let value = Arc::new(val_from(key, value_num));
-                      let pre_insert_epoch = map.table.now_epoch();
-                      map.insert(key, value.clone());
-                      let post_insert_epoch = map.table.now_epoch();
-                      for l in 1..32 {
-                          let pre_fail_get_epoch = map.table.now_epoch();
-                          let left = map.get(&key);
-                          let post_fail_get_epoch = map.table.now_epoch();
-                          let right = Some(&value);
-                          if left.as_ref() != right {
-                              error!("Discovered mismatch key {:?}, analyzing", &key);
-                              for m in 1..1024 {
-                                  let mleft = map.get(&key);
-                                  let mright = Some(&value);
-                                  if mleft.as_ref() == mright {
-                                      panic!(
-                                          "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
-                                          m, 
-                                          &key, 
-                                          map.table.map_is_copying(),
-                                          pre_fail_get_epoch,
-                                          post_fail_get_epoch,
-                                          map.table.now_epoch(),
-                                          pre_insert_epoch, 
-                                          post_insert_epoch,
-                                          right, left
-                                      );
-                                      // panic!("Late value change on {:?}", key);
-                                  }
-                              }
-                              panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
-                              // panic!("Unrecoverable value change for {:?}", key);
-                          }
-                      }
-                      if j % 7 == 0 {
-                          assert_eq!(
-                              map.remove(&key),
-                              Some(value.clone()),
-                              "Remove result, get {:?}, copying {}, round {}",
-                              map.get(&key),
-                              map.table.map_is_copying(),
-                              k
-                          );
-                        assert_eq!(map.get(&key), None, "Remove recursion");
-                        assert!(map.lock(&key).is_none(), "Remove recursion with lock");
-                        map.insert(key, value.clone());
-                      }
-                      if j % 3 == 0 {
-                          let new_value = val_from(key, value_num + 7);
-                          let pre_insert_epoch = map.table.now_epoch();
-                          map.insert(key, Arc::new(new_value.clone()));
-                          let post_insert_epoch = map.table.now_epoch();
-                          assert_eq!(
-                              &*map.get(&key).unwrap(), 
-                              &new_value, 
-                              "Checking immediate update, key {:?}, epoch {} to {}",
-                              key, pre_insert_epoch, post_insert_epoch
-                          );
-                          map.insert(key, value);
-                      }
-                  }
-              }
-          }));
-        }
-        info!("Waiting for intensive insertion to finish");
-        for thread in threads {
-            let _ = thread.join();
-        }
-        info!("Checking final value");
-        (0..num_threads).for_each(|i| {
-            for j in 5..test_load {
-                let k_num = i * 10000000 + j;
-                let v_num = i * j * 100 + repeat_load - 1;
-                let k = key_from(k_num);
-                let v = val_from(k, v_num);
-                let get_res = map.get(&k);
-                assert_eq!(
-                    &v,
-                    &*get_res.unwrap(),
-                    "Final val mismatch. k {:?}, i {}, j {}, epoch {}",
-                    k,
-                    i,
-                    j,
-                    map.table.now_epoch()
-                );
-            }
-        });
-    }
-
-    #[test]
     fn exaust_versions() {
-        let map = PtrHashMap::<usize, usize, System>::with_capacity(16);
+        let map = FatHashMap::with_capacity(16);
         for i in 0..255 {
             if i == 2 {
                 println!("watch out");
             }
-            map.insert(1, i);
-            debug_assert_eq!(map.get(&1).unwrap(), i);
+            let key = key_from(1);
+            let val = val_from(key, i);
+            map.insert(key.clone(), val.clone());
+            debug_assert_eq!(map.get(&key).unwrap(), val);
         }
         for i in 255..2096 {
-            map.insert(1, i);
-            debug_assert_eq!(map.get(&1).unwrap(), i);
+            let key = key_from(1);
+            let val = val_from(key, i);
+            map.insert(key.clone(), val.clone());
+            debug_assert_eq!(map.get(&key).unwrap(), val);
         }
     }
 
@@ -901,22 +768,149 @@ mod ptr_map {
         });
     }
 
-    pub type Key = u128;
-    pub type Value = Vec<char>;
-    pub type FatHashMap = PtrHashMap<Key, Value, System>;
-
-    fn key_from(num: usize) -> Key {
-        num as u128
-    }
-
-    fn val_from(key: Key, num: usize) -> Value {
-        let str = format!("{:>32}{:>32}", key, num);
-        let mut res = ['0'; 64];
-        for (i, c) in str.chars().enumerate() {
-            res[i] = c;
+    #[test]
+    fn ptr_checking_inserion_with_migrations() {
+        let _ = env_logger::try_init();
+        let repeats: usize = 20480;
+        let map = Arc::new(FatHashMap::with_capacity(8));
+        let mut threads = vec![];
+        for i in 1..64 {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for j in 0..repeats {
+                    let n = i * 100000 + j;
+                    let key = key_from(n);
+                    let value = val_from(key, n);
+                    let prev_epoch = map.table.now_epoch();
+                    assert_eq!(map.insert(key, value.clone()), None, "inserting at key {}", key);
+                    let post_insert_epoch = map.table.now_epoch();
+                    {
+                        let get_test_res = map.get(&key);
+                        let get_epoch = map.table.now_epoch();
+                        let expecting = Some(value.clone());
+                        if get_test_res != expecting {
+                            let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
+                            let dump_epoch = map.table.now_epoch();
+                            panic!(
+                                "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
+                                get_test_res, expecting,
+                                key, get_epoch, post_insert_epoch, prev_epoch,
+                                get_delayed_log(4),
+                                all_pairs.get(&key), dump_epoch
+                            );
+                        }
+                    }
+                    let post_insert_epoch = map.table.now_epoch();
+                    assert_eq!(
+                        map.insert(key.clone(), value.clone()),
+                        Some(value.clone()),
+                        "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
+                        key,
+                        map.get(&key),
+                        map.table.now_epoch(),
+                        post_insert_epoch,
+                        prev_epoch,
+                        get_delayed_log(3), i
+                    );
+                }
+                for j in 0..repeats {
+                    let n = i * 100000 + j;
+                    let key = key_from(n);
+                    let value = val_from(key, n);
+                    assert_eq!(
+                        map.insert(key, value.clone()),
+                        Some(value),
+                        "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
+                        key,
+                        map.get(&key),
+                        map.table.now_epoch(),
+                        get_delayed_log(3), i
+                    );
+                }
+                for j in 0..repeats {
+                    let n = i * 100000 + j;
+                    let key = key_from(n);
+                    let value = val_from(key, n);
+                    assert_eq!(
+                        map.get(&key),
+                        Some(value),
+                        "reading at key {}, epoch {}",
+                        key,
+                        map.table.now_epoch()
+                    );
+                }
+            }));
         }
-        Vec::from(res)
+        assert_all_thread_passed(threads);
     }
+
+
+
+
+
+
+    
+
+    #[test]
+    fn mutex_single_key() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+        let key = 10;
+        let num_threads = 256;
+        let num_rounds = 1024;
+        let mut threads = vec![];
+        assert_eq!(map.insert(key, 0), None);
+        for _ in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for _ in 0..num_rounds {
+                    let mut mutex = map.lock(&key).unwrap();
+                    *mutex += 1;
+                }
+            }));
+        }
+        assert_all_thread_passed(threads);
+        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
+    }
+
+    #[bench]
+    fn resizing_before(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(65536));
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
+    #[bench]
+    fn resizing_after(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let prefill = 1000000;
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+        for i in 0..prefill {
+            map.insert(i, i);
+        }
+        debug!("Len: {}, occ {:?}", map.len(), map.table.occupation());
+        let mut i = prefill;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
+    #[bench]
+    fn resizing_with(b: &mut Bencher) {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(2));
+        let mut i = 5;
+        b.iter(|| {
+            map.insert(i, i);
+            i += 1;
+        });
+    }
+
 
     #[test]
     fn parallel_ptr_map_multi_mutex() {
@@ -978,189 +972,5 @@ mod ptr_map {
             }));
         }
         assert_all_thread_passed(threads);
-    }
-
-    #[bench]
-    fn resizing_before(b: &mut Bencher) {
-        let _ = env_logger::try_init();
-        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(65536));
-        let mut i = 5;
-        b.iter(|| {
-            map.insert(i, i);
-            i += 1;
-        });
-    }
-
-    #[bench]
-    fn resizing_after(b: &mut Bencher) {
-        let _ = env_logger::try_init();
-        let prefill = 1000000;
-        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
-        for i in 0..prefill {
-            map.insert(i, i);
-        }
-        debug!("Len: {}, occ {:?}", map.len(), map.table.occupation());
-        let mut i = prefill;
-        b.iter(|| {
-            map.insert(i, i);
-            i += 1;
-        });
-    }
-
-    #[bench]
-    fn resizing_with(b: &mut Bencher) {
-        let _ = env_logger::try_init();
-        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(2));
-        let mut i = 5;
-        b.iter(|| {
-            map.insert(i, i);
-            i += 1;
-        });
-    }
-
-    #[test]
-    fn ptr_checking_inserion_with_migrations() {
-        let _ = env_logger::try_init();
-        let repeats: usize = 20480;
-        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
-        let mut threads = vec![];
-        for i in 1..64 {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    let prev_epoch = map.table.now_epoch();
-                    assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                    let post_insert_epoch = map.table.now_epoch();
-                    {
-                        let get_test_res = map.get(&key);
-                        let get_epoch = map.table.now_epoch();
-                        let expecting = Some(key);
-                        if get_test_res != expecting {
-                            let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
-                            let dump_epoch = map.table.now_epoch();
-                            panic!(
-                                "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
-                                get_test_res, expecting,
-                                key, get_epoch, post_insert_epoch, prev_epoch,
-                                get_delayed_log(4),
-                                all_pairs.get(&key), dump_epoch
-                            );
-                        }
-                    }
-                    let post_insert_epoch = map.table.now_epoch();
-                    assert_eq!(
-                        map.insert(key, key),
-                        Some(key),
-                        "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
-                        key,
-                        map.get(&key),
-                        map.table.now_epoch(),
-                        post_insert_epoch,
-                        prev_epoch,
-                        get_delayed_log(3), i
-                    );
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(
-                        map.insert(key, key),
-                        Some(key),
-                        "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
-                        key,
-                        map.get(&key),
-                        map.table.now_epoch(),
-                        get_delayed_log(3), i
-                    );
-                }
-                for j in 0..repeats {
-                    let key = i * 100000 + j;
-                    assert_eq!(
-                        map.get(&key),
-                        Some(key),
-                        "reading at key {}, epoch {}",
-                        key,
-                        map.table.now_epoch()
-                    );
-                }
-            }));
-        }
-        assert_all_thread_passed(threads);
-    }
-
-    #[test]
-    fn mutex_single_key() {
-        let _ = env_logger::try_init();
-        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
-        let key = 10;
-        let num_threads = 256;
-        let num_rounds = 1024;
-        let mut threads = vec![];
-        assert_eq!(map.insert(key, 0), None);
-        for _ in 0..num_threads {
-            let map = map.clone();
-            threads.push(thread::spawn(move || {
-                for _ in 0..num_rounds {
-                    let mut mutex = map.lock(&key).unwrap();
-                    *mutex += 1;
-                }
-            }));
-        }
-        assert_all_thread_passed(threads);
-        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
-    }
-
-    mod on_heap_key_map {
-
-        use super::*;
-
-        type Key = Vec<String>;
-        type Value = String;
-
-        fn key_from(num: usize) -> Key {
-            vec![format!("k_{}", num)]
-        }
-
-        fn val_from(key: usize, num: usize) -> Value {
-            format!("k_{}_v_{}", key, num)
-        }
-
-        #[test]
-        fn no_resize() {
-            let _ = env_logger::try_init();
-            let map = PtrHashMap::<Key, Value, System>::with_capacity(4096);
-            for i in 5..2048 {
-                let k = i;
-                let v = i * 2;
-                map.insert(key_from(k), val_from(k, v));
-            }
-            for i in 5..2048 {
-                let k = i;
-                let v = i * 2;
-                match map.get(&key_from(k)) {
-                    Some(r) => assert_eq!(r, val_from(k, v)),
-                    None => panic!("{}", i),
-                }
-            }
-        }
-
-        #[test]
-        fn resize() {
-            let _ = env_logger::try_init();
-            let map = PtrHashMap::<Key, Value, System>::with_capacity(8);
-            for i in 0..2048 {
-                let k = i;
-                let v = i * 2;
-                map.insert(key_from(k), val_from(k, v));
-            }
-            for i in 0..2048 {
-                let k = i;
-                let v = i * 2;
-                match map.get(&key_from(k)) {
-                    Some(r) => assert_eq!(r, val_from(k, v)),
-                    None => panic!("{}", i),
-                }
-            }
-        }
     }
 }
