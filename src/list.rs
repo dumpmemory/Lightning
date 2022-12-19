@@ -542,5 +542,15 @@ mod test {
     const NUM: usize = 409600;
     const CAP: usize = 128;
 
-    par_list_tests!({ LinkedRingBufferList::<_, CAP>::new() }, NUM);
+    par_list_tests!(
+        usize_test, 
+        usize, 
+        {
+            |n| n as usize
+        }, 
+        { 
+            LinkedRingBufferList::<usize, CAP>::new() 
+        }, 
+        NUM
+    );
 }
