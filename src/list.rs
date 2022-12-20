@@ -540,7 +540,7 @@ mod test {
     }
 
     const NUM: usize = 409600;
-    const CAP: usize = 128;
+    const CAP: usize = 32;
 
     par_list_tests!(
         usize_test, 
