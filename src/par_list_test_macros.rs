@@ -348,7 +348,7 @@ macro_rules! par_list_tests {
                 let threshold = (num as f64 * 0.5) as usize;
                 for i in 0..threshold {
                     let item = item_from(i);
-                    deque.push_front(item);
+                    let _ = deque.push_front(item);
                 }
                 let ths = (threshold..num)
                     .chunks(256)
@@ -361,7 +361,7 @@ macro_rules! par_list_tests {
                                 .map(|i| {
                                     let item = item_from(i);
                                     if i % 2 == 0 {
-                                        deque.push_front(item);
+                                        let _ = deque.push_front(item);
                                         None
                                     } else {
                                         Some(deque.pop_front().unwrap())

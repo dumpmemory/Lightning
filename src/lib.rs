@@ -4,6 +4,7 @@
 #![feature(once_cell)]
 #![feature(atomic_mut_ptr)]
 #![feature(thread_id_value)]
+#![feature(maybe_uninit_uninit_array)]
 
 #[macro_use]
 extern crate log;

@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::cell::UnsafeCell;
 use std::mem::{MaybeUninit, ManuallyDrop};
 use std::ptr;
 use std::sync::atomic::Ordering::*;
@@ -18,29 +18,15 @@ pub struct RingBuffer<T, const N: usize> {
     pub head: AtomicUsize,
     pub tail: AtomicUsize,
     pub flags: [AtomicU8; N],
-    elements: [Placeholder<T>; N],
-}
-
-struct Placeholder<T> {
-    data: ManuallyDrop<T>,
-}
-
-impl <T> Deref for Placeholder<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.data
-    }
+    elements: [ManuallyDrop<UnsafeCell<T>>; N],
 }
 
 impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
     
     pub fn new() -> Self {
-        let ele_ptr = unsafe {
-            let p = libc::malloc(mem::size_of::<[T; N]>());
-            p as *const [T; N] as *const [Placeholder<T>; N]
+        let elements = unsafe {
+            MaybeUninit::uninit().assume_init()
         };
-        let elements = unsafe { ptr::read(ele_ptr) };
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
@@ -179,7 +165,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
                 if flag_val != SENTINEL {
                     let res;
                     unsafe {
-                        res = ptr::read(as_ptr::<T>(obj));
+                        res = ptr::read(obj.get());
                     }
                     change_target();
                     return Some(res);
@@ -218,7 +204,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
             if flag_val != SENTINEL {
                 let res;
                 unsafe {
-                    res = ptr::read::<T>(as_ptr(obj));
+                    res = ptr::read(obj.get());
                 }
                 target.store(new_target_val, Relaxed);
                 return Some(res);
@@ -359,9 +345,9 @@ impl<T, const N: usize> Drop for RingBuffer<T, N> {
     fn drop(&mut self) {
         for (i, f) in self.flags.iter().enumerate() {
             if f.load(Relaxed) == ACQUIRED {
-                let ele = &mut self.elements[i];
+                let ele = &self.elements[i];
                 unsafe {
-                    ptr::read(as_ptr(ele));
+                    ptr::read(ele.get());
                 }
             }
         }
@@ -379,7 +365,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
         let ele = &buffer.elements[idx];
-        let obj = unsafe { (&*as_ptr::<T>(ele)).clone() };
+        let obj = unsafe { (&*ele.get()).clone() };
         let flag_val = flag.load(Acquire);
         if flag_val == ACQUIRED {
             return Some(obj);
@@ -393,7 +379,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
         let ele = &buffer.elements[idx];
-        let obj = unsafe { (&*as_ptr::<T>(ele)).clone() };
+        let obj = unsafe { (&*ele.get()).clone() };
         let flag_val = flag.load(Acquire);
         if flag_val == ACQUIRED
             && flag
@@ -650,8 +636,8 @@ mod tests {
         assert_eq!(*ring.pop_front().unwrap(), 42);
     }
 
-    const NUM: usize = 20480;
-    const CAP: usize = 20480 * 2;
+    const NUM: usize = 4096;
+    const CAP: usize = 4096 * 2;
 
     par_list_tests!(
         usize_test,
