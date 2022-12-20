@@ -553,4 +553,16 @@ mod test {
         }, 
         NUM
     );
+
+    par_list_tests!(
+        on_heap_test,
+        Vec<usize>,
+        {
+            |n| vec![n as usize]
+        },
+        { 
+            LinkedRingBufferList::<Vec<usize>, CAP>::new() 
+        },
+        NUM
+    );
 }
