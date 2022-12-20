@@ -563,6 +563,6 @@ mod test {
         { 
             LinkedRingBufferList::<Vec<usize>, CAP>::new() 
         },
-        NUM
+        NUM / 10
     );
 }
