@@ -520,7 +520,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 }
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use test::Bencher;
 
     use crate::{
@@ -532,11 +532,14 @@ mod tests {
     };
     use std::{alloc::System, sync::Arc, thread};
 
+    #[macro_export]
     macro_rules! ptr_map_tests {
         (
             $name: ident,
+            $mty: ty,
             $kty: ty,
             $vty: ty,
+            $minit: block,
             $kinit: block,
             $vinit: block
         ) => {
@@ -545,7 +548,6 @@ mod tests {
 
                 pub type Key = $kty;
                 pub type Value = $vty;
-                pub type FatHashMap = PtrHashMap<Key, Value, System>;
             
                 fn key_from(num: usize) -> Key {
                     ($kinit)(num)
@@ -555,11 +557,14 @@ mod tests {
                     ($vinit)(key, num)
                 }
             
-            
+                fn map_init(cap: usize) -> $mty {
+                    ($minit)(cap)
+                }
+
                 #[test]
                 fn no_resize() {
                     let _ = env_logger::try_init();
-                    let map = FatHashMap::with_capacity(4096);
+                    let map = map_init(4096);
                     for i in 5..2048 {
                         let k = key_from(i);
                         let v = val_from(&k, i * 2);
@@ -578,7 +583,7 @@ mod tests {
                 #[test]
                 fn resize() {
                     let _ = env_logger::try_init();
-                    let map = FatHashMap::with_capacity(16);
+                    let map = map_init(16);
                     for i in 5..2048 {
                         let k = key_from(i);
                         let v = val_from(&k, i * 2);
@@ -597,7 +602,7 @@ mod tests {
                 #[test]
                 fn parallel_no_resize() {
                     let _ = env_logger::try_init();
-                    let map = Arc::new(FatHashMap::with_capacity(65536));
+                    let map = Arc::new(map_init(65536));
                     let mut threads = vec![];
                     for i in 5..99 {
                         let k = key_from(i);
@@ -640,7 +645,7 @@ mod tests {
             
                 #[test]
                 fn exaust_versions() {
-                    let map = FatHashMap::with_capacity(16);
+                    let map = map_init(16);
                     for i in 0..255 {
                         if i == 2 {
                             println!("watch out");
@@ -664,7 +669,7 @@ mod tests {
                     let num_threads = num_cpus::get();
                     let test_load = 1024;
                     let repeat_load = 32;
-                    let map = Arc::new(FatHashMap::with_capacity(32));
+                    let map = Arc::new(map_init(32));
                     let mut threads = vec![];
                     for i in 0..num_threads {
                         let map = map.clone();
@@ -778,7 +783,7 @@ mod tests {
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
                     let repeats: usize = 20480;
-                    let map = Arc::new(FatHashMap::with_capacity(8));
+                    let map = Arc::new(map_init(8));
                     let mut threads = vec![];
                     for i in 1..64 {
                         let map = map.clone();
@@ -855,7 +860,11 @@ mod tests {
 
     ptr_map_tests!(
         usize_test, 
+        PtrHashMap<usize, usize>,
         usize, usize, 
+        {
+            |cap| PtrHashMap::with_capacity(cap)
+        },
         { 
             |k| k as usize
         }, { 
@@ -865,7 +874,11 @@ mod tests {
 
     ptr_map_tests!(
         string_val_test, 
+        PtrHashMap<usize, Vec<char>>,
         usize, Vec<char>, 
+        {
+            |cap| PtrHashMap::with_capacity(cap)
+        },
         { 
             |k| k as usize
         }, { 
@@ -882,7 +895,11 @@ mod tests {
 
     ptr_map_tests!(
         string_key_val_test, 
+        PtrHashMap<String, Vec<char>>,
         String, Vec<char>, 
+        {
+            |cap| PtrHashMap::with_capacity(cap)
+        },
         { 
             |k| format!("{}", k)
         }, { 
