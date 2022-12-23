@@ -204,7 +204,7 @@ mod test {
 
     use super::*;
     use std::{collections::HashSet, sync::Arc, thread};
-
+    use crate::tests_misc::assert_all_thread_passed;
     const CAP: usize = 16;
 
     #[test]
@@ -277,4 +277,428 @@ mod test {
         }
         assert_eq!(num_set.len(), num_threads * num_data);
     }
+
+    macro_rules! linked_map_tests {
+        (
+            $name: ident,
+            $insert: ident,
+            $mty: ty,
+            $kty: ty,
+            $vty: ty,
+            $minit: block,
+            $kinit: block,
+            $vinit: block
+        ) => {
+            mod $name {
+                use super::*;
+
+                pub type Key = $kty;
+                pub type Value = $vty;
+            
+                fn key_from(num: usize) -> Key {
+                    ($kinit)(num)
+                }
+            
+                fn val_from(key: &Key, num: usize) -> Value {
+                    ($vinit)(key, num)
+                }
+            
+                fn map_init(cap: usize) -> $mty {
+                    ($minit)(cap)
+                }
+
+                #[test]
+                fn no_resize() {
+                    let _ = env_logger::try_init();
+                    let map = map_init(4096);
+                    for i in 5..2048 {
+                        let k = key_from(i);
+                        let v = val_from(&k, i * 2);
+                        map.$insert(k, v);
+                    }
+                    for i in 5..2048 {
+                        let k = key_from(i);
+                        let v = val_from(&k, i * 2);
+                        match map.get(&k) {
+                            Some(r) => assert_eq!(r, v),
+                            None => panic!("{}", i),
+                        }
+                    }
+                }
+            
+                #[test]
+                fn resize() {
+                    let _ = env_logger::try_init();
+                    let map = map_init(16);
+                    for i in 5..2048 {
+                        let k = key_from(i);
+                        let v = val_from(&k, i * 2);
+                        map.$insert(k, v);
+                    }
+                    for i in 5..2048 {
+                        let k = key_from(i);
+                        let v = val_from(&k, i * 2);
+                        match map.get(&k) {
+                            Some(r) => assert_eq!(r, v),
+                            None => panic!("{}", i),
+                        }
+                    }
+                }
+            
+                #[test]
+                fn parallel_no_resize() {
+                    let _ = env_logger::try_init();
+                    let map = Arc::new(map_init(65536));
+                    let mut threads = vec![];
+                    for i in 5..99 {
+                        let k = key_from(i);
+                        let v = val_from(&k, i * 10);
+                        map.$insert(k, v);
+                    }
+                    for i in 100..900 {
+                        let map = map.clone();
+                        threads.push(thread::spawn(move || {
+                            for j in 5..60 {
+                                let k = key_from(i * 100 + j);
+                                let v = val_from(&k, i * j);
+                                map.$insert(k, v);
+                            }
+                        }));
+                    }
+                    for i in 5..9 {
+                        for j in 1..10 {
+                            let k = key_from(i * j);
+                            map.remove(&k);
+                        }
+                    }
+                    for thread in threads {
+                        let _ = thread.join();
+                    }
+                    for i in 100..900 {
+                        for j in 5..60 {
+                            let k = key_from(i * 100 + j);
+                            let v = val_from(&k, i * j);
+                            assert_eq!(map.get(&k), Some(v))
+                        }
+                    }
+                    for i in 5..9 {
+                        for j in 1..10 {
+                            let k = key_from(i * j);
+                            assert!(map.get(&k).is_none())
+                        }
+                    }
+                }
+            
+                #[test]
+                fn exaust_versions() {
+                    let map = map_init(16);
+                    for i in 0..255 {
+                        if i == 2 {
+                            println!("watch out");
+                        }
+                        let key = key_from(1);
+                        let val = val_from(&key, i);
+                        map.$insert(key.clone(), val.clone());
+                        debug_assert_eq!(map.get(&key).unwrap(), val);
+                    }
+                    for i in 255..2096 {
+                        let key = key_from(1);
+                        let val = val_from(&key, i);
+                        map.$insert(key.clone(), val.clone());
+                        debug_assert_eq!(map.get(&key).unwrap(), val);
+                    }
+                }
+            
+                #[test]
+                fn parallel_with_resize() {
+                    let _ = env_logger::try_init();
+                    let num_threads = num_cpus::get();
+                    let test_load = 1024;
+                    let repeat_load = 32;
+                    let map = Arc::new(map_init(32));
+                    let mut threads = vec![];
+                    for i in 0..num_threads {
+                        let map = map.clone();
+                        threads.push(thread::spawn(move || {
+                          for j in 5..test_load {
+                              let key = key_from(i * 10000000 + j);
+                              let value_prefix = i * j * 100;
+                              for k in 1..repeat_load {
+                                  let value_num = value_prefix + k;
+                                  if k != 1 {
+                                      assert_eq!(map.get(&key), Some(val_from(&key, value_num - 1)));
+                                  }
+                                  let value = val_from(&key, value_num);
+                                  let pre_insert_epoch = map.map.table.now_epoch();
+                                  map.$insert(key.clone(), value.clone());
+                                  let post_insert_epoch = map.map.table.now_epoch();
+                                  for l in 1..128 {
+                                      let pre_fail_get_epoch = map.map.table.now_epoch();
+                                      let left = map.get(&key);
+                                      let post_fail_get_epoch = map.map.table.now_epoch();
+                                      let right = Some(&value);
+                                      if left.as_ref() != right {
+                                          error!("Discovered mismatch key {:?}, analyzing", &key);
+                                          let error_checking = || {
+                                            for m in 1..1024 {
+                                                let mleft = map.get(&key);
+                                                let mright = Some(&value);
+                                                if mleft.as_ref() == mright {
+                                                    panic!(
+                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
+                                                        m, 
+                                                        &key, 
+                                                        map.map.table.map_is_copying(),
+                                                        pre_fail_get_epoch,
+                                                        post_fail_get_epoch,
+                                                        map.map.table.now_epoch(),
+                                                        pre_insert_epoch, 
+                                                        post_insert_epoch,
+                                                        right, left
+                                                     );
+                                                    // panic!("Late value change on {:?}", key);
+                                                }
+                                            }
+                                          };
+                                          error_checking();
+                                          panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.map.table.map_is_copying(), right, left);
+                                          // panic!("Unrecoverable value change for {:?}", key);
+                                      }
+                                  }
+                                  if j % 8 == 0 {
+                                    let pre_rm_epoch = map.map.table.now_epoch();
+                                    assert_eq!(
+                                        map.remove(&key).as_ref(),
+                                        Some(&value),
+                                        "Remove result, get {:?}, copying {}, round {}",
+                                        map.get(&key),
+                                        map.map.table.map_is_copying(),
+                                        k
+                                    );
+                                    let post_rm_epoch = map.map.table.now_epoch();
+                                    assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}", value, pre_rm_epoch, post_rm_epoch, map.map.table.now_epoch());
+                                    map.$insert(key.clone(), value.clone());
+                                  }
+                                  if j % 4 == 0 {
+                                      let updating = || {
+                                        let new_value = val_from(&key, value_num + 7);
+                                        let pre_insert_epoch = map.map.table.now_epoch();
+                                        map.$insert(key.clone(), new_value.clone());
+                                        let post_insert_epoch = map.map.table.now_epoch();
+                                        assert_eq!(
+                                            map.get(&key).as_ref(), 
+                                            Some(&new_value), 
+                                            "Checking immediate update, key {:?}, epoch {} to {}",
+                                            key, pre_insert_epoch, post_insert_epoch
+                                        );
+                                        map.$insert(key.clone(), value.clone());
+                                      };
+                                      updating();
+                                  }
+                              }
+                          }
+                      }));
+                    }
+                    info!("Waiting for intensive insertion to finish");
+                    for thread in threads {
+                        let _ = thread.join();
+                    }
+                    info!("Checking final value");
+                    (0..num_threads).for_each(|i| {
+                        for j in 5..test_load {
+                            let k_num = i * 10000000 + j;
+                            let v_num = i * j * 100 + repeat_load - 1;
+                            let k = key_from(k_num);
+                            let v = val_from(&k, v_num);
+                            let get_res = map.get(&k);
+                            assert_eq!(
+                                Some(v),
+                                get_res,
+                                "Final val mismatch. k {:?}, i {}, j {}, epoch {}",
+                                k,
+                                i,
+                                j,
+                                map.map.table.now_epoch()
+                            );
+                        }
+                    });
+                }
+            
+                #[test]
+                fn ptr_checking_inserion_with_migrations() {
+                    let _ = env_logger::try_init();
+                    let repeats: usize = 20480;
+                    let map = Arc::new(map_init(8));
+                    let mut threads = vec![];
+                    for i in 1..64 {
+                        let map = map.clone();
+                        threads.push(thread::spawn(move || {
+                            for j in 0..repeats {
+                                let n = i * 100000 + j;
+                                let key = key_from(n);
+                                let value = val_from(&key, n);
+                                let prev_epoch = map.map.table.now_epoch();
+                                assert_eq!(map.$insert(key.clone(), value.clone()), None, "inserting at key {}", key);
+                                let post_insert_epoch = map.map.table.now_epoch();
+                                {
+                                    let get_test_res = map.get(&key);
+                                    let get_epoch = map.map.table.now_epoch();
+                                    let expecting = Some(value.clone());
+                                    if get_test_res != expecting {
+                                        panic!(
+                                            "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}.",
+                                            get_test_res, expecting,
+                                            key, get_epoch, post_insert_epoch, prev_epoch,
+                                        );
+                                    }
+                                }
+                                let post_insert_epoch = map.map.table.now_epoch();
+                                assert_eq!(
+                                    map.$insert(key.clone(), value.clone()),
+                                    Some(value.clone()),
+                                    "reinserting at key {}, get {:?}, epoch {}/{}/{}, i {}",
+                                    key,
+                                    map.get(&key),
+                                    map.map.table.now_epoch(),
+                                    post_insert_epoch,
+                                    prev_epoch, i
+                                );
+                            }
+                            for j in 0..repeats {
+                                let n = i * 100000 + j;
+                                let key = key_from(n);
+                                let value = val_from(&key, n);
+                                assert_eq!(
+                                    map.$insert(key.clone(), value.clone()),
+                                    Some(value),
+                                    "reinserting at key {}, get {:?}, epoch {}, i {}",
+                                    key,
+                                    map.get(&key),
+                                    map.map.table.now_epoch(),  i
+                                );
+                            }
+                            for j in 0..repeats {
+                                let n = i * 100000 + j;
+                                let key = key_from(n);
+                                let value = val_from(&key, n);
+                                assert_eq!(
+                                    map.get(&key),
+                                    Some(value),
+                                    "reading at key {}, epoch {}",
+                                    key,
+                                    map.map.table.now_epoch()
+                                );
+                            }
+                        }));
+                    }
+                    assert_all_thread_passed(threads);
+                }
+            }  
+        };
+    }
+
+    linked_map_tests!(
+        usize_front_test, 
+        insert_front,
+        LinkedHashMap<usize, usize, CAP>,
+        usize, usize,
+        {
+            |cap| LinkedHashMap::with_capacity(cap)
+        },
+        { 
+            |k| k as usize
+        }, { 
+            |_k, v| v as usize
+        }
+    );
+
+    linked_map_tests!(
+        usize_back_test, 
+        insert_back,
+        LinkedHashMap<usize, usize, CAP>,
+        usize, usize,
+        {
+            |cap| LinkedHashMap::with_capacity(cap)
+        },
+        { 
+            |k| k as usize
+        }, { 
+            |_k, v| v as usize
+        }
+    );
+
+    linked_map_tests!(
+        string_key_back_test, 
+        insert_back,
+        LinkedHashMap<String, usize, CAP>,
+        String, usize,
+        {
+            |cap| LinkedHashMap::with_capacity(cap)
+        },
+        { 
+            |k| format!("{}", k)
+        }, { 
+            |_k, v| v as usize
+        }
+    );
+
+    linked_map_tests!(
+        string_key_front_test, 
+        insert_front,
+        LinkedHashMap<String, usize, CAP>,
+        String, usize,
+        {
+            |cap| LinkedHashMap::with_capacity(cap)
+        },
+        { 
+            |k| format!("{}", k)
+        }, { 
+            |_k, v| v as usize
+        }
+    );
+
+    linked_map_tests!(
+        string_kv_back_test, 
+        insert_back,
+        LinkedHashMap<String, Vec<char>, CAP>,
+        String, Vec<char>,
+        {
+            |cap| LinkedHashMap::with_capacity(cap)
+        },
+        { 
+            |k| format!("{}", k)
+        }, { 
+            |k, v| {
+                let str = format!("{:>32}{:>32}", k, v);
+                let mut res = ['0'; 64];
+                for (i, c) in str.chars().enumerate() {
+                    res[i] = c;
+                }
+                Vec::from(res)
+            }
+        }
+    );
+
+    linked_map_tests!(
+        string_kv_front_test, 
+        insert_front,
+        LinkedHashMap<String, Vec<char>, CAP>,
+        String, Vec<char>,
+        {
+            |cap| LinkedHashMap::with_capacity(cap)
+        },
+        { 
+            |k| format!("{}", k)
+        }, { 
+            |k, v| {
+                let str = format!("{:>32}{:>32}", k, v);
+                let mut res = ['0'; 64];
+                for (i, c) in str.chars().enumerate() {
+                    res[i] = c;
+                }
+                Vec::from(res)
+            }
+        }
+    );
+
 }

@@ -532,7 +532,6 @@ pub mod tests {
     };
     use std::{alloc::System, sync::Arc, thread};
 
-    #[macro_export]
     macro_rules! ptr_map_tests {
         (
             $name: ident,
