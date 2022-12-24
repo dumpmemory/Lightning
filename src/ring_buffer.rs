@@ -94,7 +94,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
                 let flag = &self.flags[pos];
                 let obj = &self.elements[pos];
                 unsafe {
-                    ptr::write(as_ptr(obj) as *mut T, data);
+                    ptr::write(obj.get(), data);
                 }
                 flag.store(ACQUIRED, Release);
                 return Ok(ItemRef {
@@ -238,7 +238,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
         let flag = &self.flags[pos];
         let obj = &self.elements[pos];
         unsafe {
-            ptr::write(as_ptr(obj) as *mut T, data);
+            ptr::write(obj.get(), data);
         }
         flag.store(ACQUIRED, Relaxed);
         return Ok(ItemRef {
@@ -379,7 +379,6 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
         let ele = &buffer.elements[idx];
-        let obj = unsafe { (&*ele.get()).clone() };
         let flag_val = flag.load(Acquire);
         if flag_val == ACQUIRED
             && flag
@@ -409,9 +408,8 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
                 }
             }
             unsafe {
-                ptr::read(as_ptr(ele));
+                return Some(ptr::read(ele.get()));
             }
-            return Some(obj);
         } else {
             return None;
         }
@@ -428,7 +426,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
             return Err(());
         } else {
             unsafe {
-                let old = mem::replace(&mut *(as_ptr(ele) as *mut T), value);
+                let old = mem::replace(&mut*ele.get(), value);
                 if flag
                     .compare_exchange(SENTINEL, ACQUIRED, AcqRel, Acquire)
                     .is_err()
@@ -508,10 +506,6 @@ impl<T: Clone + Default, const N: usize> ItemPtr<T, N> {
 }
 
 unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
-
-fn as_ptr<T>(item: &T) -> *const T {
-    item as *const _ as *const T
-}
 
 #[cfg(test)]
 mod tests {

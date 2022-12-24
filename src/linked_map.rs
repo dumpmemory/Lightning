@@ -398,14 +398,18 @@ mod test {
                         }
                         let key = key_from(1);
                         let val = val_from(&key, i);
-                        map.$insert(key.clone(), val.clone());
-                        debug_assert_eq!(map.get(&key).unwrap(), val);
+                        let orig_key = key.clone();
+                        let orig_val = val.clone();
+                        map.$insert(key, val);
+                        debug_assert_eq!(map.get(&orig_key).unwrap(), orig_val);
                     }
                     for i in 255..2096 {
                         let key = key_from(1);
                         let val = val_from(&key, i);
-                        map.$insert(key.clone(), val.clone());
-                        debug_assert_eq!(map.get(&key).unwrap(), val);
+                        let orig_key = key.clone();
+                        let orig_val = val.clone();
+                        map.$insert(key, val);
+                        debug_assert_eq!(map.get(&orig_key).unwrap(), orig_val);
                     }
                 }
             
