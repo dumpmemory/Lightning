@@ -55,8 +55,23 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         PtrMutexGuard::new(&self, key)
     }
 
-    pub fn insert_locked(&self, key: &K, value: V) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
-        PtrMutexGuard::create(&self, key, value)
+    pub fn locked_with_upsert(&self, key: &K, value: V) 
+        -> Result<(PtrMutexGuard<K, V, ALLOC, H>, V), PtrMutexGuard<K, V, ALLOC, H>> 
+    {
+        loop {
+            match self.lock(key) {
+                Some(mut guard) => {
+                    let old_value = mem::replace(&mut*guard, value);
+                    return Ok((guard, old_value));
+                }
+                None => {
+                    let new_guard = PtrMutexGuard::create(&self, key, value.clone());
+                    if let Some(guard) = new_guard {
+                        return Err(guard);
+                    }
+                }
+            }
+        }
     }
 
     #[inline(always)]
@@ -547,15 +562,15 @@ pub mod tests {
 
                 pub type Key = $kty;
                 pub type Value = $vty;
-            
+
                 fn key_from(num: usize) -> Key {
                     ($kinit)(num)
                 }
-            
+
                 fn val_from(key: &Key, num: usize) -> Value {
                     ($vinit)(key, num)
                 }
-            
+
                 fn map_init(cap: usize) -> $mty {
                     ($minit)(cap)
                 }
@@ -578,7 +593,7 @@ pub mod tests {
                         }
                     }
                 }
-            
+
                 #[test]
                 fn resize() {
                     let _ = env_logger::try_init();
@@ -597,7 +612,7 @@ pub mod tests {
                         }
                     }
                 }
-            
+
                 #[test]
                 fn parallel_no_resize() {
                     let _ = env_logger::try_init();
@@ -641,7 +656,7 @@ pub mod tests {
                         }
                     }
                 }
-            
+
                 #[test]
                 fn exaust_versions() {
                     let map = map_init(16);
@@ -661,7 +676,7 @@ pub mod tests {
                         debug_assert_eq!(map.get(&key).unwrap(), val);
                     }
                 }
-            
+
                 #[test]
                 fn parallel_with_resize() {
                     let _ = env_logger::try_init();
@@ -698,14 +713,14 @@ pub mod tests {
                                                 let mright = Some(&value);
                                                 if mleft.as_ref() == mright {
                                                     panic!(
-                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
-                                                        m, 
-                                                        &key, 
+                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
+                                                        m,
+                                                        &key,
                                                         map.table.map_is_copying(),
                                                         pre_fail_get_epoch,
                                                         post_fail_get_epoch,
                                                         map.table.now_epoch(),
-                                                        pre_insert_epoch, 
+                                                        pre_insert_epoch,
                                                         post_insert_epoch,
                                                         right, left
                                                      );
@@ -740,8 +755,8 @@ pub mod tests {
                                         map.insert(key.clone(), new_value.clone());
                                         let post_insert_epoch = map.table.now_epoch();
                                         assert_eq!(
-                                            map.get(&key).as_ref(), 
-                                            Some(&new_value), 
+                                            map.get(&key).as_ref(),
+                                            Some(&new_value),
                                             "Checking immediate update, key {:?}, epoch {} to {}",
                                             key, pre_insert_epoch, post_insert_epoch
                                         );
@@ -777,7 +792,7 @@ pub mod tests {
                         }
                     });
                 }
-            
+
                 #[test]
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
@@ -853,34 +868,34 @@ pub mod tests {
                     }
                     assert_all_thread_passed(threads);
                 }
-            }  
+            }
         };
     }
 
     ptr_map_tests!(
-        usize_test, 
+        usize_test,
         PtrHashMap<usize, usize>,
-        usize, usize, 
+        usize, usize,
         {
             |cap| PtrHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| k as usize
-        }, { 
+        }, {
             |_k, v| v as usize
         }
     );
 
     ptr_map_tests!(
-        string_val_test, 
+        string_val_test,
         PtrHashMap<usize, Vec<char>>,
-        usize, Vec<char>, 
+        usize, Vec<char>,
         {
             |cap| PtrHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| k as usize
-        }, { 
+        }, {
             |k, v| {
                 let str = format!("{:>32}{:>32}", k, v);
                 let mut res = ['0'; 64];
@@ -893,15 +908,15 @@ pub mod tests {
     );
 
     ptr_map_tests!(
-        string_key_val_test, 
+        string_key_val_test,
         PtrHashMap<String, Vec<char>>,
-        String, Vec<char>, 
+        String, Vec<char>,
         {
             |cap| PtrHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| format!("{}", k)
-        }, { 
+        }, {
             |k, v| {
                 let str = format!("{:>32}{:>32}", k, v);
                 let mut res = ['0'; 64];
@@ -973,7 +988,6 @@ pub mod tests {
         });
     }
 
-
     #[test]
     fn parallel_ptr_map_multi_mutex() {
         let _ = env_logger::try_init();
@@ -989,7 +1003,7 @@ pub mod tests {
                 for i in 0..test_load {
                     let key = target * 1000000 + i;
                     {
-                        let mut mutex = map.insert_locked(&key, 0).unwrap();
+                        let mut mutex = map.locked_with_upsert(&key, 0).err().unwrap();
                         *mutex = 1;
                     }
                     for j in 1..update_load {
@@ -1026,7 +1040,7 @@ pub mod tests {
                                 mutex.remove();
                             }
                             assert!(map.lock(&key).is_none());
-                            *map.insert_locked(&key, 0).unwrap() = val;
+                            *map.locked_with_upsert(&key, 0).err().unwrap() = val;
                         }
                     }
                     assert_eq!(*map.lock(&key).unwrap(), update_load);

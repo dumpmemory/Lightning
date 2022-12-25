@@ -1,9 +1,8 @@
 use std::cell::UnsafeCell;
-use std::mem::{MaybeUninit, ManuallyDrop};
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr;
 use std::sync::atomic::Ordering::*;
 use std::{mem, sync::atomic::*};
-use std::ops::Deref;
 
 use crossbeam_utils::Backoff;
 
@@ -22,11 +21,8 @@ pub struct RingBuffer<T, const N: usize> {
 }
 
 impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
-    
     pub fn new() -> Self {
-        let elements = unsafe {
-            MaybeUninit::uninit().assume_init()
-        };
+        let elements = unsafe { MaybeUninit::uninit().assume_init() };
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
@@ -382,16 +378,16 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         let flag_val = flag.load(Acquire);
         if flag_val == ACQUIRED
             && flag
-                .compare_exchange(flag_val, SENTINEL, AcqRel, Acquire)
+                .compare_exchange(ACQUIRED, SENTINEL, AcqRel, Acquire)
                 .is_ok()
         {
             let head = buffer.head.load(Acquire);
             let tail = buffer.tail.load(Acquire);
-            if RingBuffer::<T, N>::decr(tail) == idx {
-                let new_tail = RingBuffer::<T, N>::decr(tail);
+            let tail_decr = RingBuffer::<T, N>::decr(tail);
+            if tail_decr == idx {
                 if buffer
                     .tail
-                    .compare_exchange(tail, new_tail, AcqRel, Acquire)
+                    .compare_exchange(tail, tail_decr, AcqRel, Acquire)
                     .is_ok()
                 {
                     let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
@@ -426,7 +422,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
             return Err(());
         } else {
             unsafe {
-                let old = mem::replace(&mut*ele.get(), value);
+                let old = mem::replace(&mut *ele.get(), value);
                 if flag
                     .compare_exchange(SENTINEL, ACQUIRED, AcqRel, Acquire)
                     .is_err()
@@ -482,6 +478,12 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
 pub struct ItemPtr<T: Clone, const N: usize> {
     buffer: *const RingBuffer<T, N>,
     idx: usize,
+}
+
+impl<T: Clone, const N: usize> PartialEq for ItemPtr<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.buffer as usize == other.buffer as usize && self.idx == other.idx
+    }
 }
 
 impl<T: Clone + Default, const N: usize> ItemPtr<T, N> {
@@ -636,24 +638,16 @@ mod tests {
     par_list_tests!(
         usize_test,
         usize,
-        {
-           |n| n as usize
-        },
-        { 
-          RingBuffer::<_, CAP>::new() 
-        },
+        { |n| n as usize },
+        { RingBuffer::<_, CAP>::new() },
         NUM
     );
 
     par_list_tests!(
         on_heap_test,
         Vec<usize>,
-        {
-           |n| vec![n as usize]
-        },
-        { 
-          RingBuffer::<_, CAP>::new() 
-        },
+        { |n| vec![n as usize] },
+        { RingBuffer::<_, CAP>::new() },
         NUM
     );
 }

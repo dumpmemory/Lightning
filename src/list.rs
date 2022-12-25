@@ -543,26 +543,18 @@ mod test {
     const CAP: usize = 32;
 
     par_list_tests!(
-        usize_test, 
-        usize, 
-        {
-            |n| n as usize
-        }, 
-        { 
-            LinkedRingBufferList::<usize, CAP>::new() 
-        }, 
+        usize_test,
+        usize,
+        { |n| n as usize },
+        { LinkedRingBufferList::<usize, CAP>::new() },
         NUM
     );
 
     par_list_tests!(
         on_heap_test,
         Vec<usize>,
-        {
-            |n| vec![n as usize]
-        },
-        { 
-            LinkedRingBufferList::<Vec<usize>, CAP>::new() 
-        },
+        { |n| vec![n as usize] },
+        { LinkedRingBufferList::<Vec<usize>, CAP>::new() },
         NUM / 10
     );
 }

@@ -23,25 +23,38 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     pub fn insert_front(&self, key: K, value: V) -> Option<V> {
         let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_front(pair);
-        if let Some(old) = self.map.insert(key, list_ref) {
-            unsafe { old.remove().map(|KVPair(_, v)| v) }
-        } else {
-            None
+        match self.map.locked_with_upsert(&key, list_ref) {
+            Ok((_guard, old_ref)) => {
+                return unsafe {
+                    old_ref.remove().map(|KVPair(_, v)| v)
+                };
+            },
+            Err(_guard) => {
+                return None;
+            }
         }
     }
 
     pub fn insert_back(&self, key: K, value: V) -> Option<V> {
         let pair = KVPair(key.clone(), value);
         let list_ref = self.list.push_back(pair);
-        if let Some(old) = self.map.insert(key, list_ref) {
-            unsafe { old.remove().map(|KVPair(_, v)| v) }
-        } else {
-            None
+        match self.map.locked_with_upsert(&key, list_ref) {
+            Ok((_guard, old_ref)) => {
+                return unsafe {
+                    old_ref.remove().map(|KVPair(_, v)| v)
+                };
+            },
+            Err(_guard) => {
+                return None;
+            }
         }
     }
 
     pub fn get(&self, key: &K) -> Option<V> {
-        self.map.get(key).map(|l| unsafe { l.deref().unwrap().1.clone() })
+        self.map
+            .get(key)
+            .and_then(|l| unsafe { l.deref() })
+            .map(|pair| pair.1)
     }
 
     pub fn get_to_front(&self, key: &K) -> Option<V> {
@@ -70,7 +83,9 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map
             .lock(key)
-            .and_then(|l| unsafe { PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v) })
+            .and_then(|l| unsafe { 
+                PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v) 
+            })
     }
 
     pub fn pop_front(&self) -> Option<KVPair<K, V>> {
@@ -203,8 +218,8 @@ mod test {
     use itertools::Itertools;
 
     use super::*;
-    use std::{collections::HashSet, sync::Arc, thread};
     use crate::tests_misc::assert_all_thread_passed;
+    use std::{collections::HashSet, sync::Arc, thread};
     const CAP: usize = 16;
 
     #[test]
@@ -294,15 +309,15 @@ mod test {
 
                 pub type Key = $kty;
                 pub type Value = $vty;
-            
+
                 fn key_from(num: usize) -> Key {
                     ($kinit)(num)
                 }
-            
+
                 fn val_from(key: &Key, num: usize) -> Value {
                     ($vinit)(key, num)
                 }
-            
+
                 fn map_init(cap: usize) -> $mty {
                     ($minit)(cap)
                 }
@@ -325,7 +340,7 @@ mod test {
                         }
                     }
                 }
-            
+
                 #[test]
                 fn resize() {
                     let _ = env_logger::try_init();
@@ -344,7 +359,7 @@ mod test {
                         }
                     }
                 }
-            
+
                 #[test]
                 fn parallel_no_resize() {
                     let _ = env_logger::try_init();
@@ -388,7 +403,7 @@ mod test {
                         }
                     }
                 }
-            
+
                 #[test]
                 fn exaust_versions() {
                     let map = map_init(16);
@@ -412,7 +427,7 @@ mod test {
                         debug_assert_eq!(map.get(&orig_key).unwrap(), orig_val);
                     }
                 }
-            
+
                 #[test]
                 fn parallel_with_resize() {
                     let _ = env_logger::try_init();
@@ -449,14 +464,14 @@ mod test {
                                                 let mright = Some(&value);
                                                 if mleft.as_ref() == mright {
                                                     panic!(
-                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
-                                                        m, 
-                                                        &key, 
+                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
+                                                        m,
+                                                        &key,
                                                         map.map.table.map_is_copying(),
                                                         pre_fail_get_epoch,
                                                         post_fail_get_epoch,
                                                         map.map.table.now_epoch(),
-                                                        pre_insert_epoch, 
+                                                        pre_insert_epoch,
                                                         post_insert_epoch,
                                                         right, left
                                                      );
@@ -490,8 +505,8 @@ mod test {
                                         map.$insert(key.clone(), new_value.clone());
                                         let post_insert_epoch = map.map.table.now_epoch();
                                         assert_eq!(
-                                            map.get(&key).as_ref(), 
-                                            Some(&new_value), 
+                                            map.get(&key).as_ref(),
+                                            Some(&new_value),
                                             "Checking immediate update, key {:?}, epoch {} to {}",
                                             key, pre_insert_epoch, post_insert_epoch
                                         );
@@ -527,7 +542,7 @@ mod test {
                         }
                     });
                 }
-            
+
                 #[test]
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
@@ -597,81 +612,81 @@ mod test {
                     }
                     assert_all_thread_passed(threads);
                 }
-            }  
+            }
         };
     }
 
     linked_map_tests!(
-        usize_front_test, 
+        usize_front_test,
         insert_front,
         LinkedHashMap<usize, usize, CAP>,
         usize, usize,
         {
             |cap| LinkedHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| k as usize
-        }, { 
+        }, {
             |_k, v| v as usize
         }
     );
 
     linked_map_tests!(
-        usize_back_test, 
+        usize_back_test,
         insert_back,
         LinkedHashMap<usize, usize, CAP>,
         usize, usize,
         {
             |cap| LinkedHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| k as usize
-        }, { 
+        }, {
             |_k, v| v as usize
         }
     );
 
     linked_map_tests!(
-        string_key_back_test, 
+        string_key_back_test,
         insert_back,
         LinkedHashMap<String, usize, CAP>,
         String, usize,
         {
             |cap| LinkedHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| format!("{}", k)
-        }, { 
+        }, {
             |_k, v| v as usize
         }
     );
 
     linked_map_tests!(
-        string_key_front_test, 
+        string_key_front_test,
         insert_front,
         LinkedHashMap<String, usize, CAP>,
         String, usize,
         {
             |cap| LinkedHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| format!("{}", k)
-        }, { 
+        }, {
             |_k, v| v as usize
         }
     );
 
     linked_map_tests!(
-        string_kv_back_test, 
+        string_kv_back_test,
         insert_back,
         LinkedHashMap<String, Vec<char>, CAP>,
         String, Vec<char>,
         {
             |cap| LinkedHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| format!("{}", k)
-        }, { 
+        }, {
             |k, v| {
                 let str = format!("{:>32}{:>32}", k, v);
                 let mut res = ['0'; 64];
@@ -684,16 +699,16 @@ mod test {
     );
 
     linked_map_tests!(
-        string_kv_front_test, 
+        string_kv_front_test,
         insert_front,
         LinkedHashMap<String, Vec<char>, CAP>,
         String, Vec<char>,
         {
             |cap| LinkedHashMap::with_capacity(cap)
         },
-        { 
+        {
             |k| format!("{}", k)
-        }, { 
+        }, {
             |k, v| {
                 let str = format!("{:>32}{:>32}", k, v);
                 let mut res = ['0'; 64];
@@ -704,5 +719,4 @@ mod test {
             }
         }
     );
-
 }

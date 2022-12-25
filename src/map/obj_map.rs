@@ -170,7 +170,9 @@ impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {
         }
     }
 
-    fn moveout_key(self) -> () { () }
+    fn moveout_key(self) -> () {
+        ()
+    }
 }
 
 impl<T: Clone> Copy for WordObjectAttachmentItem<T> {}

@@ -11,11 +11,11 @@ macro_rules! par_list_tests {
             use super::*;
             use itertools::Itertools;
             use std::{collections::HashSet, sync::Arc, thread};
-    
+
             fn item_from(num: usize) -> $ity {
                 ($iinit)(num)
             }
-    
+
             #[test]
             pub fn multithread_push_front_single_thread_pop_front() {
                 let num: usize = $num;
@@ -47,7 +47,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_push_front_single_thread_pop_back() {
                 let num: usize = $num;
@@ -79,7 +79,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_push_back_single_thread_pop_front() {
                 let num: usize = $num;
@@ -111,7 +111,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_push_back_single_thread_pop_back() {
                 let num: usize = $num;
@@ -143,7 +143,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_pop_front() {
                 let _ = env_logger::try_init();
@@ -181,7 +181,7 @@ macro_rules! par_list_tests {
                 assert!(deque.pop_front().is_none());
                 assert!(deque.pop_back().is_none());
             }
-    
+
             #[test]
             pub fn multithread_pop_back() {
                 let num: usize = $num;
@@ -225,7 +225,7 @@ macro_rules! par_list_tests {
                 assert_eq!(deque.pop_back().unwrap(), item_from(1));
                 assert!(deque.pop_back().is_none());
             }
-    
+
             #[test]
             pub fn multithread_push_front_and_back_single_thread_pop_front() {
                 let num: usize = $num;
@@ -261,7 +261,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_push_front_and_back_single_thread_pop_back() {
                 let num: usize = $num;
@@ -297,7 +297,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_pop_back_front() {
                 let num: usize = $num;
@@ -340,7 +340,7 @@ macro_rules! par_list_tests {
                     assert!(all_nums.contains(&item));
                 }
             }
-    
+
             #[test]
             pub fn multithread_push_pop_front() {
                 let num: usize = $num;
@@ -382,7 +382,7 @@ macro_rules! par_list_tests {
                 let set = results.into_iter().collect::<HashSet<_>>();
                 assert_eq!(results_len, set.len());
             }
-    
+
             #[test]
             pub fn multithread_push_pop_back() {
                 let _ = env_logger::try_init();
