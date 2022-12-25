@@ -375,12 +375,13 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
         let ele = &buffer.elements[idx];
-        let flag_val = flag.load(Acquire);
-        if flag_val == ACQUIRED
-            && flag
-                .compare_exchange(ACQUIRED, SENTINEL, AcqRel, Acquire)
-                .is_ok()
+        if flag
+            .compare_exchange(ACQUIRED, SENTINEL, AcqRel, Acquire)
+            .is_ok()
         {
+            let val = unsafe {
+                ptr::read(ele.get())
+            };
             let head = buffer.head.load(Acquire);
             let tail = buffer.tail.load(Acquire);
             let tail_decr = RingBuffer::<T, N>::decr(tail);
@@ -403,9 +404,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
                     let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
                 }
             }
-            unsafe {
-                return Some(ptr::read(ele.get()));
-            }
+            return Some(val);
         } else {
             return None;
         }
