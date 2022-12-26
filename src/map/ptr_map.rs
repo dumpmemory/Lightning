@@ -117,7 +117,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn deref_val(&self, val: usize) -> Option<V> {
+    pub fn deref_val(&self, val: usize) -> Option<V> {
         unsafe {
             let pre_ver = self.epoch.load(Relaxed);
             let (addr, val_ver) = decompose_value::<K, V>(val);
@@ -195,10 +195,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if let Some(val) = self.deref_val(fv) {
+                if fv | VAL_MUTEX_BIT == fv {
+                    // If the value is locked, spin
+                } else if let Some(val) = self.deref_val(fv) {
                     return Some(val);
                 }
-
                 backoff.spin();
                 // None would be value changed
             } else {
