@@ -457,7 +457,7 @@ mod test {
                                       let post_fail_get_epoch = map.map.table.now_epoch();
                                       let right = Some(&value);
                                       if left.as_ref() != right {
-                                          error!("Discovered mismatch key {:?}, analyzing", &key);
+                                          error!("Discovered mismatch key {:?}, expecting {:?}, got {:?}, analyzing", &key, right, left);
                                           let error_checking = || {
                                             for m in 1..1024 {
                                                 let mleft = map.get(&key);
