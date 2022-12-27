@@ -433,7 +433,7 @@ mod test {
                     let _ = env_logger::try_init();
                     let num_threads = num_cpus::get();
                     let test_load = 1024;
-                    let repeat_load = 32;
+                    let repeat_load = 16;
                     let map = Arc::new(map_init(32));
                     let mut threads = vec![];
                     for i in 0..num_threads {
