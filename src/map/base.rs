@@ -1111,7 +1111,6 @@ impl<
                                         chunk,
                                         fkey,
                                         fval,
-                                        key,
                                         home_idx,
                                         idx,
                                         count,
@@ -1334,7 +1333,6 @@ impl<
         chunk: &Chunk<K, V, A, ALLOC>,
         fkey: usize,
         fval: usize,
-        key: &K,
         home_idx: usize,
         mut dest_idx: usize,
         hops: usize,
@@ -1480,20 +1478,20 @@ impl<
                     debug_assert_eq!(Self::get_fast_value(curr_addr).val, BACKWARD_SWAPPING_VALUE);
 
                     // Start from key object in the attachment
+                    // All key should be moved out to prevent cloning
                     let candidate_attachment = chunk.attachment.prefetch(candidate_idx);
-                    let candidate_key = candidate_attachment.get_key();
+                    let candidate_key = candidate_attachment.moveout_key();
                     let curr_attachment = chunk.attachment.prefetch(dest_idx);
+                    let current_key = curr_attachment.moveout_key();
                     // And the key object
                     // Then swap the key
-                    let _old_curr_key = curr_attachment.moveout_key();
                     curr_attachment.set_key(candidate_key);
                     Self::store_key(curr_addr, candidate_fkey);
 
                     chunk.unset_hop_bit(idx, candidate_distance);
 
                     // Enable probing on the candidate with inserting key
-                    let _old_candidate_key = candidate_attachment.moveout_key();
-                    candidate_attachment.set_key(key.clone());
+                    candidate_attachment.set_key(current_key);
                     Self::store_key(candidate_addr, fkey);
 
                     // Set the target bit only after keys are setted
@@ -1940,7 +1938,6 @@ impl<
                         new_chunk_ins,
                         fkey,
                         act_val,
-                        &key,
                         home_idx,
                         idx,
                         count,
