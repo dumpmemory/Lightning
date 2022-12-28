@@ -805,14 +805,8 @@ impl<
         loop {
             let k = Self::get_fast_key(addr);
             if k == fkey {
-                let attachment = chunk.attachment.prefetch(idx);
-                let probe = attachment.probe(key);
                 let val_res = Self::get_fast_value(addr);
                 let raw = val_res.val;
-                if Self::get_fast_key(addr) != k {
-                    backoff.spin();
-                    continue;
-                }
                 if raw == FORWARD_SWAPPING_VALUE {
                     Self::wait_entry(addr, k, raw, backoff);
                     iter.refresh_following(chunk);
@@ -821,6 +815,12 @@ impl<
                     // Do NOT use probe here
                     Self::wait_entry(addr, k, raw, backoff);
                     iter = reiter();
+                    continue;
+                }
+                let attachment = chunk.attachment.prefetch(idx);
+                let probe = attachment.probe(key);
+                if Self::get_fast_key(addr) != k {
+                    backoff.spin();
                     continue;
                 }
                 if probe {
