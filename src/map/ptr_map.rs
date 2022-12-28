@@ -127,15 +127,14 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
-            if node_ver != val_ver {
+            if node_ver != val_ver || self.epoch.load(Acquire) != pre_ver {
+                // Free v_shadow when node_ver != val_ver?
+                mem::forget(v_shadow);
                 return None;
             }
             let v = v_shadow.clone();
             mem::forget(v_shadow);
-            if self.epoch.load(Acquire) != pre_ver {
-                return None;
-            }
-            Some(v)
+            return Some(v);
         }
     }
 
