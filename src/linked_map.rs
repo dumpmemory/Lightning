@@ -56,8 +56,10 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
                 Some(l) => {
                     unsafe {
                         match l.deref() {
-                            Some(pair) => { 
-                                return Some(pair.1);
+                            Some(KVPair(k, v)) => {
+                                if &k == key {
+                                    return Some(v);
+                                }
                             },
                             _ => {}
                         }
