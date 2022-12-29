@@ -515,9 +515,17 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         if let (Some(key), Some(val)) = (&self.key, &self.value) {
             let guard = self.map.allocator.pin();
             let fval = self.map.ref_val(val.clone(), &guard) & WORD_MUTEX_DATA_BIT_MASK;
-            self.map
+            if let Some((fv, _)) = self.map
                 .table
-                .insert(InsertOp::Insert, key, Some(&()), 0, fval);
+                .insert(InsertOp::Insert, key, Some(&()), 0, fval) 
+            {
+                let (val_ptr, node_addr) = self.map.ptr_of_val(fv);
+                unsafe {
+                    let value = ptr::read(val_ptr);
+                    self.map.allocator.buffered_free(node_addr as _);
+                    drop(value)
+                }
+            }
         }
     }
 }

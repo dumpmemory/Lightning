@@ -4,12 +4,9 @@ use crate::map::{Map, PtrHashMap, PtrMutexGuard};
 use crate::ring_buffer::ItemPtr;
 use std::hash::Hash;
 
-#[derive(Clone, Default)]
-pub struct KVPair<K: Clone + Default, V: Clone + Default>(pub K, pub V);
-
 pub struct LinkedHashMap<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
-    map: PtrHashMap<K, ItemPtr<KVPair<K, V>, N>>,
-    list: LinkedRingBufferList<KVPair<K, V>, N>,
+    map: PtrHashMap<K, (V, ItemPtr<K, N>)>,
+    list: LinkedRingBufferList<K, N>,
 }
 
 impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedHashMap<K, V, N> {
@@ -21,27 +18,24 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn insert_front(&self, key: K, value: V) -> Option<V> {
-        let pair = KVPair(key.clone(), value);
-        let list_ref = self.list.push_front(pair);
-        match self.map.locked_with_upsert(&key, list_ref) {
-            Ok((_guard, old_ref)) => {
-                return unsafe {
-                    old_ref.remove().map(|KVPair(_, v)| v)
-                };
-            },
-            Err(_guard) => {
-                return None;
-            }
-        }
+        self.insert_general(key, value, true)
     }
 
     pub fn insert_back(&self, key: K, value: V) -> Option<V> {
-        let pair = KVPair(key.clone(), value);
-        let list_ref = self.list.push_back(pair);
-        match self.map.locked_with_upsert(&key, list_ref) {
-            Ok((_guard, old_ref)) => {
+        self.insert_general(key, value, false)
+    }
+
+    fn insert_general(&self, key: K, value: V, at_front: bool) -> Option<V> {
+        let list_ref = if at_front {
+            self.list.push_front(key.clone())
+        } else {
+            self.list.push_back(key.clone())
+        };
+        match self.map.locked_with_upsert(&key, (value, list_ref)) {
+            Ok((_guard, (val, list_ptr))) => {
                 return unsafe {
-                    old_ref.remove().map(|KVPair(_, v)| v)
+                    list_ptr.remove();
+                    Some(val)
                 };
             },
             Err(_guard) => {
@@ -51,23 +45,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn get(&self, key: &K) -> Option<V> {
-        loop {
-            match self.map.get(key) {
-                Some(l) => {
-                    unsafe {
-                        match l.deref() {
-                            Some(KVPair(k, v)) => {
-                                if &k == key {
-                                    return Some(v);
-                                }
-                            },
-                            _ => {}
-                        }
-                    }
-                },
-                None => return None,
-            }
-        }
+        self.map.get(key).map(|(v, _)| v)
     }
 
     pub fn get_to_front(&self, key: &K) -> Option<V> {
@@ -80,49 +58,53 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     #[inline(always)]
     pub fn get_to_general(&self, key: &K, forwarding: bool) -> Option<V> {
-        self.map.lock(key).and_then(|mut l| {
-            let pair = unsafe { l.deref() }.unwrap();
+        self.map.lock(key).map(|mut l| {
             let new_ref = if forwarding {
-                self.list.push_front(pair)
+                self.list.push_front(key.clone())
             } else {
-                self.list.push_back(pair)
+                self.list.push_back(key.clone())
             };
-            let old_ref = l.clone();
-            *l = new_ref;
-            unsafe { old_ref.remove().map(|KVPair(_, v)| v) }
+            unsafe {
+                l.1.remove();
+            }
+            l.1 = new_ref;
+            l.0.clone()
         })
     }
 
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map
             .lock(key)
-            .and_then(|l| unsafe { 
-                PtrMutexGuard::remove(l).remove().map(|KVPair(_, v)| v) 
+            .map(|p| unsafe { 
+                let (v, l) = PtrMutexGuard::remove(p);
+                l.remove();
+                return v;  
             })
     }
 
-    pub fn pop_front(&self) -> Option<KVPair<K, V>> {
+    pub fn pop_front(&self) -> Option<(K, V)> {
         self.pop_general(true)
     }
 
-    pub fn pop_back(&self) -> Option<KVPair<K, V>> {
+    pub fn pop_back(&self) -> Option<(K, V)> {
         self.pop_general(false)
     }
 
     #[inline(always)]
-    fn pop_general(&self, forwarding: bool) -> Option<KVPair<K, V>> {
+    fn pop_general(&self, forwarding: bool) -> Option<(K, V)> {
         loop {
             let list_item = if forwarding {
                 self.list.peek_front()
             } else {
                 self.list.peek_back()
             };
-            if let Some(pair) = list_item {
-                if let Some(KVPair(k, v)) = pair.deref() {
+            if let Some(list_ref) = list_item {
+                if let Some(k) = list_ref.deref() {
                     if let Some(l) = self.map.lock(&k) {
                         unsafe {
-                            PtrMutexGuard::remove(l).remove();
-                            return Some(KVPair(k, v));
+                            let (v, mf) = PtrMutexGuard::remove(l);
+                            mf.remove(); // only remove list ref recorded in the map
+                            return Some((k, v));
                         }
                     }
                 }
@@ -140,58 +122,58 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
         self.map.contains_key(key)
     }
 
-    pub fn iter_front(&self) -> ListIter<KVPair<K, V>, N> {
-        self.list.iter_front()
+    pub fn iter_front(&self) -> impl Iterator<Item = (K, V)> + '_ {
+        self.list
+            .iter_front()
+            .filter_map(move |k| {
+                let k = k.deref()?;
+                let (v, _) = self.map.get(&k)?;
+                Some((k, v))
+            })
     }
 
-    pub fn iter_back(&self) -> ListIter<KVPair<K, V>, N> {
-        self.list.iter_back()
+    pub fn iter_back(&self) -> impl Iterator<Item = (K, V)> + '_ {
+        self.list
+        .iter_back()
+        .filter_map(move |k| {
+            let k = k.deref()?;
+            let (v, _) = self.map.get(&k)?;
+            Some((k, v))
+        })
     }
 
-    pub fn iter_front_keys(&self) -> KeyIter<K, V, N> {
-        KeyIter {
-            iter: self.iter_front(),
-        }
+    pub fn iter_front_keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.list.iter_front().filter_map(|r| r.deref())
     }
 
-    pub fn iter_back_keys(&self) -> KeyIter<K, V, N> {
-        KeyIter {
-            iter: self.iter_back(),
-        }
+    pub fn iter_back_keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.list.iter_back().filter_map(|r| r.deref())
     }
 
-    pub fn iter_front_values(&self) -> ValueIter<K, V, N> {
-        ValueIter {
-            iter: self.iter_front(),
-        }
+    pub fn iter_front_values(&self) -> impl Iterator<Item = V> + '_ {
+        self.list
+            .iter_front()
+            .filter_map(move |k| {
+                let k = k.deref()?;
+                let (v, _) = self.map.get(&k)?;
+                Some(v)
+            })
     }
 
-    pub fn iter_back_values(&self) -> ValueIter<K, V, N> {
-        ValueIter {
-            iter: self.iter_back(),
-        }
+    pub fn iter_back_values(&self) -> impl Iterator<Item = V> + '_ {
+        self.list
+            .iter_back()
+            .filter_map(move |k| {
+                let k = k.deref()?;
+                let (v, _) = self.map.get(&k)?;
+                Some(v)
+            })
     }
 }
 
-pub struct KeyIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
-    iter: ListIter<'a, KVPair<K, V>, N>,
-}
-
-impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
-    for KeyIter<'a, K, V, N>
-{
-    type Item = K;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter
-            .next()
-            .and_then(|i| i.deref())
-            .map(|KVPair(k, _)| k)
-    }
-}
 
 pub struct ValueIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
-    iter: ListIter<'a, KVPair<K, V>, N>,
+    iter: ListIter<'a, (K, V), N>,
 }
 
 impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
@@ -203,21 +185,7 @@ impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
         self.iter
             .next()
             .and_then(|i| i.deref())
-            .map(|KVPair(_, v)| v)
-    }
-}
-
-impl<K: Clone + Default, V: Clone + Default> KVPair<K, V> {
-    pub fn key(&self) -> &K {
-        &self.0
-    }
-
-    pub fn value(&self) -> &V {
-        &self.1
-    }
-
-    pub fn pair(&self) -> (&K, &V) {
-        (&self.0, &self.1)
+            .map(|(_, v)| v)
     }
 }
 
@@ -297,8 +265,7 @@ mod test {
             }
         }
         let mut num_set = HashSet::new();
-        for pair in linked_map.iter_front() {
-            let KVPair(key, node) = pair.deref().unwrap();
+        for (key, node) in linked_map.iter_front() {
             let value = node;
             assert_eq!(key, *value);
             num_set.insert(key);

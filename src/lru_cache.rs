@@ -1,5 +1,5 @@
 use crate::{
-    linked_map::{KVPair, LinkedHashMap},
+    linked_map::LinkedHashMap,
     list::ListIter,
 };
 use std::hash::Hash;
@@ -44,7 +44,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LRUCach
         self.map.remove(key)
     }
 
-    pub fn iter(&self) -> ListIter<KVPair<K, V>, N> {
+    pub fn iter(&self) -> impl Iterator<Item = (K, V)> + '_ {
         self.map.iter_front()
     }
 }
