@@ -18,7 +18,6 @@ pub struct PtrHashMap<
     pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
     epoch: AtomicUsize, // Global epoch for VBR
-    shadow: PhantomData<(K, V, H)>,
 }
 
 #[repr(align(8))]
@@ -83,14 +82,16 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let mut current_ver = self.epoch.load(Relaxed);
             loop {
                 if node_ver >= current_ver {
-                    // Bump global apoch
+                    // Bump global apoch when the reclaimed node version is higher than current version
                     let new_ver = current_ver + 1;
                     if let Err(actual_ver) =
                         self.epoch
                             .compare_exchange(current_ver, new_ver, Relaxed, Relaxed)
                     {
-                        current_ver = actual_ver;
-                        continue;
+                        if actual_ver >= new_ver {
+                            current_ver = actual_ver;
+                            continue;
+                        }
                     } else {
                         current_ver = new_ver;
                         break;
@@ -108,6 +109,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             node_ref.retire_ver.store(0, Release);
             let obj_ptr = node_ref.value.as_ptr();
             if node_ver > 0 {
+                debug_assert!(node_ver < current_ver - 2);
                 // Free existing object
                 ptr::read(obj_ptr);
             }
@@ -180,7 +182,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             table: PtrTable::with_capacity(cap, attachment_init_meta),
             allocator: alloc,
             epoch: AtomicUsize::new(1),
-            shadow: PhantomData,
         }
     }
 
