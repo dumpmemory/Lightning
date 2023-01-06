@@ -109,7 +109,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             node_ref.retire_ver.store(0, Release);
             let obj_ptr = node_ref.value.as_ptr();
             if node_ver > 0 {
-                debug_assert!(node_ver < current_ver - 2);
                 // Free existing object
                 ptr::read(obj_ptr);
             }
