@@ -286,13 +286,6 @@ impl<V> Attachment<(), ()> for LiteAttachment<V> {
     fn prefetch(&self, _index: usize) -> Self::Item {
         WordAttachmentItem
     }
-
-    #[inline(always)]
-    fn manually_drop(&self, fval: usize) {
-        let num = fval as u64;
-        let ptr = &num as *const u64 as *const AlignedLiteObj<V>;
-        unsafe { mem::drop(ptr::read(ptr)) }
-    }
 }
 
 #[cfg(test)]

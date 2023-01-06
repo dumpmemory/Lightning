@@ -1907,11 +1907,6 @@ impl<
                     continue;
                 }
                 if probe {
-                    // New value existed, skip with None result
-                    // We also need to drop the fvalue we obtained because it does not fit any where
-                    // old_chunk_ins
-                    //     .attachment
-                    //     .manually_drop(fvalue.act_val::<V>());
                     // New value in the new chunk, just put a sentinel and abort migration on this slot
                     Self::store_sentinel(old_address);
                     #[cfg(debug_assertions)]

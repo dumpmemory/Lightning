@@ -126,9 +126,6 @@ impl<T: Clone, A: GlobalAlloc + Default> Attachment<(), T> for WordObjectAttachm
             _makrer: PhantomData,
         }
     }
-
-    #[inline(always)]
-    fn manually_drop(&self, _: usize) {}
 }
 
 impl<T: Clone> AttachmentItem<(), T> for WordObjectAttachmentItem<T> {

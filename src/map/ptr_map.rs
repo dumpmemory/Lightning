@@ -159,6 +159,19 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let val = ptr_part | ver_part;
         val
     }
+
+    fn free_node(&self, node_addr: usize, guard: AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
+        let node_ptr = node_addr as *const PtrValueNode<V>;
+        let node_ref = unsafe {
+            node_ptr.as_ref().unwrap()
+        };
+        node_ref.retire_ver.store(self.epoch.load(Acquire), Relaxed);
+        guard.buffered_free(node_ptr);
+    }
+}
+
+fn free_node_mut<V>(node_addr: usize, guard: AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
+
 }
 
 #[inline(always)]
@@ -174,11 +187,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     for PtrHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
-        let mut alloc = Box::new(obj_alloc::Allocator::new());
-        let alloc_ptr: *mut Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE> = &mut *alloc.as_mut();
-        let attachment_init_meta = PtrValAttachmentMeta { alloc: alloc_ptr };
+        let alloc = Box::new(obj_alloc::Allocator::new());
         Self {
-            table: PtrTable::with_capacity(cap, attachment_init_meta),
+            table: PtrTable::with_capacity(cap, ()),
             allocator: alloc,
             epoch: AtomicUsize::new(1),
         }
@@ -213,7 +224,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .map(|((ptr, node_addr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
                 let val = ptr::read(ptr);
-                guard.buffered_free(node_addr as *const PtrValueNode<V>);
+                self.free_node(node_addr, guard);
                 val
             })
     }
@@ -228,9 +239,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn remove(&self, key: &K) -> Option<V> {
         self.table.remove(key, 0).map(|(fv, _)| {
             let (val_ptr, node_addr) = self.ptr_of_val(fv);
+            let guard = self.allocator.pin();
             unsafe {
                 let value = ptr::read(val_ptr);
-                self.allocator.buffered_free(node_addr as _);
+                self.free_node(node_addr, guard);
                 value
             }
         })
@@ -276,7 +288,6 @@ unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Has
 #[derive(Clone)]
 pub struct PtrValAttachment<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> {
     key_chunk: usize,
-    alloc: *mut obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
     _marker: PhantomData<(K, V, A)>,
 }
 
@@ -285,14 +296,6 @@ pub struct PtrValAttachmentItem<K, V> {
     addr: usize,
     _marker: PhantomData<(K, V)>,
 }
-
-#[derive(Clone)]
-pub struct PtrValAttachmentMeta<V> {
-    alloc: *mut obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>,
-}
-
-unsafe impl<V> Send for PtrValAttachmentMeta<V> {}
-unsafe impl<V> Sync for PtrValAttachmentMeta<V> {}
 
 impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> PtrValAttachment<K, V, A> {
     const KEY_SIZE: usize = mem::size_of::<Aligned<K>>();
@@ -307,16 +310,15 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
     for PtrValAttachment<K, V, A>
 {
     type Item = PtrValAttachmentItem<K, V>;
-    type InitMeta = PtrValAttachmentMeta<V>;
+    type InitMeta = ();
 
     fn heap_entry_size() -> usize {
         Self::KEY_SIZE // only keys on the heap
     }
 
-    fn new(heap_ptr: usize, meta: &Self::InitMeta) -> Self {
+    fn new(heap_ptr: usize, _meta: &Self::InitMeta) -> Self {
         Self {
             key_chunk: heap_ptr,
-            alloc: meta.alloc,
             _marker: PhantomData,
         }
     }
@@ -330,20 +332,6 @@ impl<K: Clone + Hash + Eq, V: Clone, A: GlobalAlloc + Default> Attachment<K, ()>
         PtrValAttachmentItem {
             addr,
             _marker: PhantomData,
-        }
-    }
-
-    #[inline(always)]
-    fn manually_drop(&self, fvalue: usize) {
-        unsafe {
-            let (addr, _val_ver) = decompose_value::<K, V>(fvalue);
-            let node_ptr = addr as *mut PtrValueNode<V>;
-            let node_ref = &*node_ptr;
-            let val_ptr = node_ref.value.as_ptr();
-            debug_assert!(!node_ptr.is_null(), "fval is {}", fvalue);
-            debug_assert!(!val_ptr.is_null());
-            mem::drop(ptr::read(val_ptr));
-            (&*self.alloc).buffered_free(node_ptr);
         }
     }
 }
@@ -542,6 +530,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         }
     }
 }
+
 #[cfg(test)]
 pub mod tests {
     use test::Bencher;
