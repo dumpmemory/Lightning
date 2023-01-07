@@ -1,3 +1,4 @@
+use itertools::Itertools;
 #[cfg(asan)]
 use libc::c_void;
 #[cfg(asan)]
@@ -85,6 +86,26 @@ impl<T, const B: usize> Allocator<T, B> {
     fn tl_alloc(&self) -> &mut TLAlloc<T, B> {
         self.thread.get_or(|| TLAlloc::new(0, 0, &self))
     }
+
+    pub fn all_freed_ptr(&self) -> Vec<*mut T> {
+        let mut res = vec![];
+        let thread_locals = self.thread.all_threads();
+        let threed_local_ptrs = thread_locals
+            .into_iter()
+            .map(|thread| {
+                let mut thread_res = vec![];
+                thread_res.append(&mut thread.buffered_free.all());
+                thread_res.append(&mut thread.defer_free.clone());
+                thread_res.append(&mut thread.free_list.all());
+                return thread_res;
+            })
+            .flatten()
+            .collect_vec();
+        let shared_ptrs = self.shared.all_shared_free();
+        res.append(&mut threed_local_ptrs.into_iter().map(|p| p as _).collect_vec());
+        res.append(&mut shared_ptrs.into_iter().map(|p| p as _).collect_vec());
+        return res;
+    }
 }
 
 #[repr(align(8))]
@@ -147,6 +168,26 @@ impl<T, const B: usize> SharedAlloc<T, B> {
             }
             backoff.spin();
         }
+    }
+
+    pub fn all_shared_free(&self) -> Vec<usize> {
+        let mut res = Vec::new();
+        unsafe {
+            // return free list
+            let head = &self.free_obj;
+            if !head.is_null() {
+                res.append(&mut head.as_mut().all());
+                let mut next = &head.as_mut().next;
+                while !next.is_null() {
+                    let next_next = &next.as_mut().next;
+                    res.append(&mut next.as_mut().all());
+                    next = next_next;
+                }
+            }
+        }
+        res.sort();
+        res.dedup();
+        return res;
     }
 }
 
@@ -382,6 +423,26 @@ impl<const B: usize> TLBufferedStack<B> {
             }
         }
     }
+
+    pub fn all(&self) -> Vec<usize> {
+        let mut res = Vec::new();
+        unsafe {
+            // return free list
+            let head = &self.head;
+            if !head.is_null() {
+                res.append(&mut head.all());
+                let mut next = &head.next;
+                while !next.is_null() {
+                    let next_next = &next.as_mut().next;
+                    res.append(&mut next.as_mut().all());
+                    next = next_next;
+                }
+            }
+        }
+        res.sort();
+        res.dedup();
+        return res;
+    }
 }
 
 pub struct AllocGuard<T, const B: usize> {
@@ -472,6 +533,10 @@ impl<const B: usize> ThreadLocalPage<B> {
         }
         self.pos -= 1;
         Some(self.buffer[self.pos])
+    }
+
+    fn all(&self) -> Vec<usize> {
+        self.buffer[..self.pos].to_vec()
     }
 }
 

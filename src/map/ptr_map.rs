@@ -165,10 +165,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 }
 
-fn free_node_mut<V>(node_addr: usize, guard: AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
-
-}
-
 #[inline(always)]
 fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usize) {
     let value = value & WORD_MUTEX_DATA_BIT_MASK;
@@ -522,6 +518,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             unsafe {
                 ptr::read(val_ptr);
             }
+        }
+        for node_ptr in self.allocator.all_freed_ptr() {
+            // Here we need to drop all objects in free lists
+            unsafe { ptr::drop_in_place(node_ptr) };
         }
     }
 }
