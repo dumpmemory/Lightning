@@ -110,7 +110,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let obj_ptr = node_ref.value.as_ptr();
             if node_ver > 0 {
                 // Free existing object
-                ptr::read(obj_ptr);
+                drop(ptr::read(obj_ptr));
             }
             ptr::write(obj_ptr, d);
             Self::compose_value(node_ptr as usize, current_ver)
@@ -124,18 +124,13 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let (addr, val_ver) = decompose_value::<K, V>(val);
             let node_ptr = addr as *mut PtrValueNode<V>;
             let node_ref = &*node_ptr;
-            let val_ptr = node_ref.value.as_ptr();
-            let v_shadow = ptr::read(val_ptr); // Use a shadow data to cope with impl Clone data types
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver || self.epoch.load(Acquire) != pre_ver {
                 // Free v_shadow when node_ver != val_ver?
-                mem::forget(v_shadow);
                 return None;
             }
-            let v = v_shadow.clone();
-            mem::forget(v_shadow);
-            return Some(v);
+            return Some(node_ref.value.as_ptr().as_ref().unwrap().clone());
         }
     }
 
@@ -223,7 +218,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         self.insert_with_op(InsertOp::Insert, key, value)
             .map(|((ptr, node_addr), guard)| unsafe {
                 debug_assert!(!ptr.is_null());
-                let val = ptr::read(ptr);
+                let val = (*ptr).clone();
                 self.free_node(node_addr, guard);
                 val
             })
@@ -238,12 +233,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     #[inline(always)]
     fn remove(&self, key: &K) -> Option<V> {
         self.table.remove(key, 0).map(|(fv, _)| {
-            let (val_ptr, node_addr) = self.ptr_of_val(fv);
+            let (ptr, node_addr) = self.ptr_of_val(fv);
             let guard = self.allocator.pin();
             unsafe {
-                let value = ptr::read(val_ptr);
+                let val = (*ptr).clone();
                 self.free_node(node_addr, guard);
-                value
+                val
             }
         })
     }
@@ -469,7 +464,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             .0
             & WORD_MUTEX_DATA_BIT_MASK;
         let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
-        let r = unsafe { ptr::read(val_ptr) };
+        let r = unsafe { (*val_ptr).clone() };
         // Free the memory for key and value
         // To prevent them write back to the map on drop
         // DO NOT FORGET self
@@ -509,7 +504,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             {
                 let (val_ptr, node_addr) = self.map.ptr_of_val(fv);
                 unsafe {
-                    let value = ptr::read(val_ptr);
+                    let value = (*val_ptr).clone();
                     self.map.allocator.buffered_free(node_addr as _);
                     drop(value)
                 }

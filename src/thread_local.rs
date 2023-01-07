@@ -56,6 +56,29 @@ impl<T> ThreadLocal<T> {
             }
         }
     }
+
+    pub fn all_threads(&self) -> Vec<&T> {
+        let mut res = vec![];
+        for (_, v) in self.reserve_map.entries() {
+            if v.is_null() {
+                continue;
+            }
+            unsafe {
+                let ptr = v as *mut T;
+                ptr.as_ref().map(|r| res.push(r));
+            }
+        }
+        for cell in self.fast_map.iter() {
+            let ptr = cell.get();
+            if ptr.is_null() {
+                continue;
+            }
+            unsafe {
+                ptr.as_ref().map(|r| res.push(r));
+            }
+        }
+        return res;
+    }
 }
 
 impl ThreadMeta {
