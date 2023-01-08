@@ -706,7 +706,7 @@ pub mod tests {
                                                 let mright = Some(&value);
                                                 if mleft.as_ref() == mright {
                                                     panic!(
-                                                        ll_pairs     "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
+                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
                                                         m,
                                                         &key,
                                                         map.table.map_is_copying(),
