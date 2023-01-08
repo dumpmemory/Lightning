@@ -312,9 +312,6 @@ impl<T, const B: usize> TLAlloc<T, B> {
             let head = mem::replace(&mut self.free_list.head, Arc::null());
             if !head.is_null() {
                 if head.pos > 0 {
-                    head.all().into_iter().for_each(|addr| {
-                        ptr::drop_in_place(addr as *mut T);
-                    });
                     (&*self.shared).attach_objs(&head);
                 }
                 let mut next = mem::replace(&mut head.as_mut().next, AtomicArc::null()).into_arc();
@@ -322,9 +319,6 @@ impl<T, const B: usize> TLAlloc<T, B> {
                     let next_next =
                         mem::replace(&mut next.as_mut().next, AtomicArc::null()).into_arc();
                     if next.pos > 0 {
-                        next.all().into_iter().for_each(|addr| {
-                            ptr::drop_in_place(addr as *mut T);
-                        });
                         (&*self.shared).attach_objs(&next);
                     }
                     next = next_next;

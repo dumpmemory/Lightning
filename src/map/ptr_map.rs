@@ -467,7 +467,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         // DO NOT FORGET self
         self.key = None;
         self.value = None;
-        guard.buffered_free(node_addr as _);
+        self.map.free_node(node_addr, guard);
         return r;
     }
 }
@@ -502,7 +502,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 let (val_ptr, node_addr) = self.map.ptr_of_val(fv);
                 unsafe {
                     let value = (*val_ptr).clone();
-                    self.map.allocator.buffered_free(node_addr as _);
+                    self.map.free_node(node_addr, guard);
                     drop(value)
                 }
             }
