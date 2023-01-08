@@ -126,8 +126,9 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
-            if node_ver != val_ver || self.epoch.load(Acquire) != pre_ver {
-                // Free v_shadow when node_ver != val_ver?
+            if node_ver != val_ver || // checking node version for consistency
+                self.epoch.load(Acquire) != pre_ver // Checking on epoch changing to avoid ABA and other problems
+            {
                 return None;
             }
             return Some(node_ref.value.as_ptr().as_ref().unwrap().clone());
@@ -705,7 +706,7 @@ pub mod tests {
                                                 let mright = Some(&value);
                                                 if mleft.as_ref() == mright {
                                                     panic!(
-                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
+                                                        ll_pairs     "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
                                                         m,
                                                         &key,
                                                         map.table.map_is_copying(),

@@ -1667,8 +1667,8 @@ impl<
             old_epoch,
             &guard,
         );
-        meta.epoch.store(old_epoch + 2, Release);
         meta.chunk.store(new_chunk_ptr, Release);
+        meta.epoch.store(old_epoch + 2, Release);
         unsafe {
             guard.defer_unchecked(move || {
                 let chunk = old_chunk_ptr;
