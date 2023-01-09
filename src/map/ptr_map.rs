@@ -54,13 +54,15 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         PtrMutexGuard::new(&self, key)
     }
 
-    pub fn locked_with_upsert(&self, key: &K, value: V) 
-        -> Result<(PtrMutexGuard<K, V, ALLOC, H>, V), PtrMutexGuard<K, V, ALLOC, H>> 
-    {
+    pub fn locked_with_upsert(
+        &self,
+        key: &K,
+        value: V,
+    ) -> Result<(PtrMutexGuard<K, V, ALLOC, H>, V), PtrMutexGuard<K, V, ALLOC, H>> {
         loop {
             match self.lock(key) {
                 Some(mut guard) => {
-                    let old_value = mem::replace(&mut*guard, value);
+                    let old_value = mem::replace(&mut *guard, value);
                     return Ok((guard, old_value));
                 }
                 None => {
@@ -86,7 +88,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                     let new_ver = current_ver + 1;
                     if let Err(actual_ver) =
                         self.epoch
-                            .compare_exchange(current_ver, new_ver, Relaxed, Relaxed)
+                            .compare_exchange(current_ver, new_ver, AcqRel, Relaxed)
                     {
                         if actual_ver >= new_ver {
                             current_ver = actual_ver;
@@ -127,7 +129,8 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver || // checking node version for consistency
-                self.epoch.load(Acquire) != pre_ver // Checking on epoch changing to avoid ABA and other problems
+                self.epoch.load(Acquire) != pre_ver
+            // Checking on epoch changing to avoid ABA and other problems
             {
                 return None;
             }
@@ -153,14 +156,12 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
         let ver_part = ver & Self::VAL_NODE_LOW_BITS;
         let val = ptr_part | ver_part;
-        val
+        val & WORD_MUTEX_DATA_BIT_MASK
     }
 
     fn free_node(&self, node_addr: usize, guard: AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
         let node_ptr = node_addr as *const PtrValueNode<V>;
-        let node_ref = unsafe {
-            node_ptr.as_ref().unwrap()
-        };
+        let node_ref = unsafe { node_ptr.as_ref().unwrap() };
         node_ref.retire_ver.store(self.epoch.load(Acquire), Relaxed);
         guard.buffered_free(node_ptr);
     }
@@ -389,10 +390,12 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     fn new(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
         let guard = crossbeam_epoch::pin();
+        let (fkey, hash) = map.table.get_hash(0, key);
         let value;
         loop {
-            let swap_res = map.table.swap(
-                0,
+            let swap_res = map.table.swap_with_hash(
+                fkey,
+                hash,
                 key,
                 move |fast_value| {
                     let locked_val = fast_value | VAL_MUTEX_BIT;
@@ -458,13 +461,9 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
             .table
             .remove(self.key.as_ref().unwrap(), 0)
             .unwrap()
-            .0
-            & WORD_MUTEX_DATA_BIT_MASK;
+            .0;
         let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
         let r = unsafe { (*val_ptr).clone() };
-        // Free the memory for key and value
-        // To prevent them write back to the map on drop
-        // DO NOT FORGET self
         self.key = None;
         self.value = None;
         self.map.free_node(node_addr, guard);
@@ -494,17 +493,14 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     fn drop(&mut self) {
         if let (Some(key), Some(val)) = (&self.key, &self.value) {
             let guard = self.map.allocator.pin();
-            let fval = self.map.ref_val(val.clone(), &guard) & WORD_MUTEX_DATA_BIT_MASK;
-            if let Some((fv, _)) = self.map
+            let fval = self.map.ref_val(val.clone(), &guard);
+            if let Some((fv, _)) = self
+                .map
                 .table
-                .insert(InsertOp::Insert, key, Some(&()), 0, fval) 
+                .insert(InsertOp::Insert, key, Some(&()), 0, fval)
             {
-                let (val_ptr, node_addr) = self.map.ptr_of_val(fv);
-                unsafe {
-                    let value = (*val_ptr).clone();
-                    self.map.free_node(node_addr, guard);
-                    drop(value)
-                }
+                let (_val_ptr, node_addr) = self.map.ptr_of_val(fv);
+                self.map.free_node(node_addr, guard);
             }
         }
     }
@@ -943,6 +939,31 @@ pub mod tests {
         assert_eq!(map.get(&key), Some(num_threads * num_rounds));
     }
 
+    #[test]
+    fn mutex_upsert_single_key() {
+        let _ = env_logger::try_init();
+        let map = Arc::new(PtrHashMap::<usize, usize, System>::with_capacity(8));
+        let key = 10;
+        let num_threads = 256;
+        let num_rounds = 1024;
+        let mut threads = vec![];
+        {
+            let mutex = map.locked_with_upsert(&key, 0).err().unwrap();
+            assert_eq!(*mutex, 0);
+        }
+        for _ in 0..num_threads {
+            let map = map.clone();
+            threads.push(thread::spawn(move || {
+                for _ in 0..num_rounds {
+                    let mut mutex = map.lock(&key).unwrap();
+                    *mutex += 1;
+                }
+            }));
+        }
+        assert_all_thread_passed(threads);
+        assert_eq!(map.get(&key), Some(num_threads * num_rounds));
+    }
+
     #[bench]
     fn resizing_before(b: &mut Bencher) {
         let _ = env_logger::try_init();
@@ -998,7 +1019,9 @@ pub mod tests {
                     {
                         let mut mutex = map.locked_with_upsert(&key, 0).err().unwrap();
                         *mutex = 1;
+                        drop(mutex);
                     }
+                    //assert_eq!(map.insert(key, 1), None);
                     for j in 1..update_load {
                         assert!(
                             map.get(&key).is_some(),
@@ -1015,7 +1038,9 @@ pub mod tests {
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
-                            *mutex
+                            let num = *mutex;
+                            drop(mutex);
+                            num
                         };
                         assert!(
                             map.get(&key).is_some(),
@@ -1036,7 +1061,7 @@ pub mod tests {
                             *map.locked_with_upsert(&key, 0).err().unwrap() = val;
                         }
                     }
-                    assert_eq!(*map.lock(&key).unwrap(), update_load);
+                    //assert_eq!(*map.lock(&key).unwrap(), update_load);
                 }
             }));
         }

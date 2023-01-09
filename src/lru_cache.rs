@@ -1,7 +1,4 @@
-use crate::{
-    linked_map::LinkedHashMap,
-    list::ListIter,
-};
+use crate::{linked_map::LinkedHashMap, list::ListIter};
 use std::hash::Hash;
 
 pub struct LRUCache<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {

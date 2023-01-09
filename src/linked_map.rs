@@ -37,7 +37,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
                     list_ptr.remove();
                     Some(val)
                 };
-            },
+            }
             Err(_guard) => {
                 return None;
             }
@@ -73,13 +73,11 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn remove(&self, key: &K) -> Option<V> {
-        self.map
-            .lock(key)
-            .map(|p| unsafe { 
-                let (v, l) = PtrMutexGuard::remove(p);
-                l.remove();
-                return v;  
-            })
+        self.map.lock(key).map(|p| unsafe {
+            let (v, l) = PtrMutexGuard::remove(p);
+            l.remove();
+            return v;
+        })
     }
 
     pub fn pop_front(&self) -> Option<(K, V)> {
@@ -123,19 +121,15 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn iter_front(&self) -> impl Iterator<Item = (K, V)> + '_ {
-        self.list
-            .iter_front()
-            .filter_map(move |k| {
-                let k = k.deref()?;
-                let (v, _) = self.map.get(&k)?;
-                Some((k, v))
-            })
+        self.list.iter_front().filter_map(move |k| {
+            let k = k.deref()?;
+            let (v, _) = self.map.get(&k)?;
+            Some((k, v))
+        })
     }
 
     pub fn iter_back(&self) -> impl Iterator<Item = (K, V)> + '_ {
-        self.list
-        .iter_back()
-        .filter_map(move |k| {
+        self.list.iter_back().filter_map(move |k| {
             let k = k.deref()?;
             let (v, _) = self.map.get(&k)?;
             Some((k, v))
@@ -151,26 +145,21 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     }
 
     pub fn iter_front_values(&self) -> impl Iterator<Item = V> + '_ {
-        self.list
-            .iter_front()
-            .filter_map(move |k| {
-                let k = k.deref()?;
-                let (v, _) = self.map.get(&k)?;
-                Some(v)
-            })
+        self.list.iter_front().filter_map(move |k| {
+            let k = k.deref()?;
+            let (v, _) = self.map.get(&k)?;
+            Some(v)
+        })
     }
 
     pub fn iter_back_values(&self) -> impl Iterator<Item = V> + '_ {
-        self.list
-            .iter_back()
-            .filter_map(move |k| {
-                let k = k.deref()?;
-                let (v, _) = self.map.get(&k)?;
-                Some(v)
-            })
+        self.list.iter_back().filter_map(move |k| {
+            let k = k.deref()?;
+            let (v, _) = self.map.get(&k)?;
+            Some(v)
+        })
     }
 }
-
 
 pub struct ValueIter<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> {
     iter: ListIter<'a, (K, V), N>,
@@ -182,10 +171,7 @@ impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
     type Item = V;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter
-            .next()
-            .and_then(|i| i.deref())
-            .map(|(_, v)| v)
+        self.iter.next().and_then(|i| i.deref()).map(|(_, v)| v)
     }
 }
 

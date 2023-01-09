@@ -541,8 +541,19 @@ impl<
         func: F,
         guard: &'a Guard,
     ) -> SwapResult<K, V, A, ALLOC> {
-        let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
+        self.swap_with_hash(fkey, hash, key, func, guard)
+    }
+
+    pub fn swap_with_hash<'a, F: Fn(FVal) -> Option<FVal> + Copy + 'static>(
+        &'a self,
+        fkey: FKey,
+        hash: usize,
+        key: &K,
+        func: F,
+        guard: &'a Guard,
+    ) -> SwapResult<K, V, A, ALLOC> {
+        let backoff = crossbeam_utils::Backoff::new();
         loop {
             let (chunk, _, new_chunk, epoch) = self.chunk_refs(guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
@@ -1010,7 +1021,7 @@ impl<
                                     }
                                 }
                                 ModOp::AttemptInsert(fval, oval) => {
-                                    if act_val == TOMBSTONE_VALUE {
+                                    if act_val == TOMBSTONE_VALUE || act_val == EMPTY_VALUE {
                                         let primed_fval =
                                             Self::if_fat_val_then_val(LOCKED_VALUE, fval);
                                         let prev_val =
@@ -1025,12 +1036,9 @@ impl<
                                             }
                                             return ModResult::Replaced(act_val, prev_val, idx);
                                         } else {
-                                            if Self::FAT_VAL && read_attachment {
-                                                // Fast value changed, cannot obtain stable fat value
-                                                backoff.spin();
-                                                continue;
-                                            }
-                                            return ModResult::Existed(act_val, prev_val, idx);
+                                            // Fast value changed
+                                            backoff.spin();
+                                            continue;
                                         }
                                     } else {
                                         if Self::FAT_VAL

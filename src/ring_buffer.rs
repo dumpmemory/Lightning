@@ -379,9 +379,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
             .compare_exchange(ACQUIRED, SENTINEL, AcqRel, Acquire)
             .is_ok()
         {
-            let val = unsafe {
-                ptr::read(ele.get())
-            };
+            let val = unsafe { ptr::read(ele.get()) };
             let head = buffer.head.load(Acquire);
             let tail = buffer.tail.load(Acquire);
             let tail_decr = RingBuffer::<T, N>::decr(tail);
