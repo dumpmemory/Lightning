@@ -416,12 +416,16 @@ impl<
             match (result, lock_old) {
                 (Some((0, _)), Some(ModResult::Sentinel)) => {
                     delay_log!(
-                        "Insert have Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        "SHOULD NOT REACHABLE!!! Insert have Some((0, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}, epoch {}",
                         fkey, chunk.base, new_chunk.map(|c| c.base), epoch
                     ); // Should not reachable
                     res = None;
                 }
                 (Some((fv, v)), Some(ModResult::Sentinel)) => {
+                    delay_log!(
+                        "Insert have Some(({}, _)), Some(ModResult::Sentinel) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        fv, fkey, chunk.base, new_chunk.map(|c| c.base), epoch
+                    );
                     res = Some((fv, v.unwrap()));
                 }
                 (None, Some(ModResult::Sentinel)) => {
@@ -438,6 +442,10 @@ impl<
                     continue;
                 }
                 (Some((0, _)), Some(ModResult::Replaced(fv, v, addr))) => {
+                    delay_log!(
+                        "Insert have Some((0, _)), Some(ModResult::Replaced({}, _, {})) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        fv, addr, fkey, chunk.base, new_chunk.map(|c| c.base), epoch
+                    );
                     // New insertion in new chunk and have stuff in old chunk
                     Self::store_sentinel(addr);
                     res = Some((fv, v.unwrap()))
@@ -470,19 +478,28 @@ impl<
                 (None, None) => {
                     unreachable!();
                 }
-                (Some((fv, v)), Some(ModResult::Replaced(_fv, _v, addr))) => {
+                (Some((fv, v)), Some(ModResult::Replaced(lfv, _v, addr))) => {
+                    delay_log!(
+                        "Insert have Some(({}, _)), Some(ModResult::Replaced({}, _, {})) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        fv, lfv, addr, fkey, chunk.base, new_chunk.map(|c| c.base), epoch
+                    );
                     // Replaced new chunk, should put sentinel in old chunk
                     Self::store_sentinel(addr);
                     res = Some((fv, v.unwrap()))
                 }
-                (Some((fv, v)), Some(_)) => res = Some((fv, v.unwrap())),
-                (Some((fv, v)), None) => res = Some((fv, v.unwrap())),
+                (Some((fv, v)), _) => {
+                    delay_log!(
+                        "Insert have Some(({}, _)), Some(_) key {}, old chunk {}, new chunk {:?}, epoch {}",
+                        fv, fkey, chunk.base, new_chunk.map(|c| c.base), epoch
+                    );
+                    res = Some((fv, v.unwrap()))
+                },
             }
             match &mut res {
                 Some((fv, _)) => {
                     if *fv <= MAX_META_VAL {
                         delay_log!(
-                            "*fv <= NUM_FIX_V {} key {}, old chunk {}, new chunk {:?}",
+                            "*fv <= NUM_FIX_V. Key {} Val {}, old chunk {}, new chunk {:?}",
                             fkey,
                             fv,
                             chunk.base,

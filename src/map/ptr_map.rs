@@ -1021,7 +1021,6 @@ pub mod tests {
                         *mutex = 1;
                         drop(mutex);
                     }
-                    //assert_eq!(map.insert(key, 1), None);
                     for j in 1..update_load {
                         assert!(
                             map.get(&key).is_some(),
@@ -1061,7 +1060,7 @@ pub mod tests {
                             *map.locked_with_upsert(&key, 0).err().unwrap() = val;
                         }
                     }
-                    //assert_eq!(*map.lock(&key).unwrap(), update_load);
+                    assert_eq!(*map.lock(&key).unwrap(), update_load);
                 }
             }));
         }

@@ -756,7 +756,7 @@ mod test {
                         map.table.now_epoch(),
                         post_insert_epoch,
                         prev_epoch,
-                        get_delayed_log(3),
+                        get_delayed_log(5),
                         {
                             dump_migration_log();
                             i
