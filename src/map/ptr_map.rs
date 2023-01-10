@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::intrinsics::forget;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
@@ -82,6 +83,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             let node_ver = node_ref.retire_ver.load(Relaxed);
             let mut current_ver = self.epoch.load(Relaxed);
+            debug_assert_ne!(node_ptr as usize & Self::VAL_NODE_LOW_BITS, node_ptr as usize);
             loop {
                 if node_ver >= current_ver {
                     // Bump global apoch when the reclaimed node version is higher than current version
@@ -160,6 +162,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     fn free_node(&self, node_addr: usize, guard: AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) {
+        debug_assert_eq!(node_addr & WORD_MUTEX_DATA_BIT_MASK, node_addr);
         let node_ptr = node_addr as *const PtrValueNode<V>;
         let node_ref = unsafe { node_ptr.as_ref().unwrap() };
         node_ref.retire_ver.store(self.epoch.load(Acquire), Relaxed);
@@ -380,8 +383,8 @@ pub struct PtrMutexGuard<
     H: Hasher + Default,
 > {
     map: &'a PtrHashMap<K, V, ALLOC, H>,
-    key: Option<K>,
-    value: Option<V>,
+    key: K,
+    value: V,
 }
 
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
@@ -430,8 +433,8 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         let key = key.clone();
         Some(Self {
             map,
-            key: Some(key),
-            value: Some(value),
+            key,
+            value,
         })
     }
 
@@ -447,26 +450,32 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
         ) {
             None | Some((TOMBSTONE_VALUE, ())) | Some((EMPTY_VALUE, ())) => Some(Self {
                 map,
-                key: Some(key.clone()),
-                value: Some(value),
+                key: key.clone(),
+                value,
             }),
             _ => None,
         }
     }
 
     pub fn remove(mut self) -> V {
+        let (key, value) = unsafe {
+            (
+                mem::replace(&mut self.key, mem::zeroed()),
+                mem::replace(&mut self.value, mem::zeroed())
+            )
+        };
         let guard = self.map.allocator.pin();
         let fval = self
             .map
             .table
-            .remove(self.key.as_ref().unwrap(), 0)
+            .remove(&key, 0)
             .unwrap()
             .0;
         let (val_ptr, node_addr) = self.map.ptr_of_val(fval);
         let r = unsafe { (*val_ptr).clone() };
-        self.key = None;
-        self.value = None;
         self.map.free_node(node_addr, guard);
+        forget(self);
+        drop(value);
         return r;
     }
 }
@@ -476,7 +485,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     type Target = V;
 
     fn deref(&self) -> &Self::Target {
-        self.value.as_ref().unwrap()
+        &self.value
     }
 }
 
@@ -484,24 +493,23 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
     for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.value.as_mut().unwrap()
+        &mut self.value
     }
 }
 impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
     for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
-        if let (Some(key), Some(val)) = (&self.key, &self.value) {
-            let guard = self.map.allocator.pin();
-            let fval = self.map.ref_val(val.clone(), &guard);
-            if let Some((fv, _)) = self
-                .map
-                .table
-                .insert(InsertOp::Insert, key, Some(&()), 0, fval)
-            {
-                let (_val_ptr, node_addr) = self.map.ptr_of_val(fv);
-                self.map.free_node(node_addr, guard);
-            }
+        let guard = self.map.allocator.pin();
+        let fval = self.map.ref_val(self.value.clone(), &guard);
+        debug_assert_ne!(fval | VAL_MUTEX_BIT, fval); // Assert not locked
+        if let Some((fv, _)) = self
+            .map
+            .table
+            .insert(InsertOp::Insert, &self.key, Some(&()), 0, fval)
+        {
+            let (_val_ptr, node_addr) = self.map.ptr_of_val(fv);
+            self.map.free_node(node_addr, guard);
         }
     }
 }
