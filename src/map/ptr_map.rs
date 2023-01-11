@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::intrinsics::forget;
+use std::mem::MaybeUninit;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
 
@@ -499,8 +500,8 @@ impl<
     pub fn remove(mut self) -> V {
         let (key, value) = unsafe {
             (
-                mem::replace(&mut self.key, mem::zeroed()),
-                mem::replace(&mut self.value, mem::zeroed()),
+                mem::replace(&mut self.key, MaybeUninit::zeroed().assume_init()),
+                mem::replace(&mut self.value, MaybeUninit::zeroed().assume_init()),
             )
         };
         let guard = self.map.allocator.pin();
