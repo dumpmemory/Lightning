@@ -87,7 +87,7 @@ enum ModResult<V> {
     NotFound,
     Done(FVal, Option<V>, usize), // _, value, index
     TableFull,
-    Aborted,
+    Aborted(FVal),
 }
 
 enum ModOp<'a, V> {
@@ -112,9 +112,9 @@ enum ResizeResult {
 
 pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     Succeed(FVal, usize, &'a ChunkPtr<K, V, A, ALLOC>),
+    Aborted(FVal),
     NotFound,
     Failed,
-    Aborted,
 }
 
 pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
@@ -410,7 +410,7 @@ impl<
                     }
                     _ => unreachable!(),
                 },
-                ModResult::Aborted => unreachable!("Should no abort"),
+                ModResult::Aborted(_) => unreachable!("Should no abort"),
             }
             let mut res;
             match (result, lock_old) {
@@ -594,9 +594,9 @@ impl<
                     backoff.spin();
                     continue;
                 }
-                ModResult::Aborted => {
+                ModResult::Aborted(fval) => {
                     // Key exists but aborted by user function, just return
-                    return SwapResult::Aborted;
+                    return SwapResult::Aborted(fval);
                 }
                 ModResult::NotFound => {
                     // Probably should try the old chunk see if it is there
@@ -1081,7 +1081,7 @@ impl<
                                             return ModResult::Fail;
                                         }
                                     } else {
-                                        return ModResult::Aborted;
+                                        return ModResult::Aborted(act_val);
                                     }
                                 }
                             }
@@ -2251,7 +2251,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             if has_key || has_val {
                 let attachment = self.attachment.prefetch(idx);
                 if has_key {
-                    debug!("Erase key with fkey {}, idx {}", fkey, idx);
+                    trace!("Erase key with fkey {}, idx {}", fkey, idx);
                     attachment.moveout_key();
                 }
                 if has_val {
@@ -2539,7 +2539,7 @@ impl<V> Debug for ModResult<V> {
             Self::NotFound => write!(f, "NotFound"),
             Self::Done(arg0, _arg1, arg2) => f.debug_tuple("Done").field(arg0).field(arg2).finish(),
             Self::TableFull => write!(f, "TableFull"),
-            Self::Aborted => write!(f, "Aborted"),
+            Self::Aborted(fval) => write!(f, "Aborted({fval})"),
         }
     }
 }

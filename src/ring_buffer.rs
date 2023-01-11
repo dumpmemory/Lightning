@@ -471,7 +471,7 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ItemIter<'a, T, N> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ItemPtr<T: Clone, const N: usize> {
     buffer: *const RingBuffer<T, N>,
     idx: usize,

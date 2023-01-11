@@ -255,7 +255,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     value = v;
                     break;
                 }
-                SwapResult::Failed | SwapResult::Aborted => {
+                SwapResult::Failed | SwapResult::Aborted(_) => {
                     trace!("Lock on key hash {} failed, retry", hash);
                     backoff.spin();
                     continue;
@@ -349,7 +349,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                     value = v;
                     break;
                 }
-                SwapResult::Failed | SwapResult::Aborted => {
+                SwapResult::Failed | SwapResult::Aborted(_) => {
                     trace!("Lock on key hash {} failed, retry", hash);
                     backoff.spin();
                     continue;

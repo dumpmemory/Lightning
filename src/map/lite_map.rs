@@ -182,7 +182,7 @@ impl<'a, K: Copy + Hash + Eq, V: Copy, ALLOC: GlobalAlloc + Default, H: Hasher +
                     value = map.decode_owned(val & WORD_MUTEX_DATA_BIT_MASK);
                     break;
                 }
-                SwapResult::Failed | SwapResult::Aborted => {
+                SwapResult::Failed | SwapResult::Aborted(_) => {
                     backoff.spin();
                     continue;
                 }

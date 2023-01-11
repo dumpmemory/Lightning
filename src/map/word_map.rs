@@ -137,7 +137,7 @@ impl<'a, ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMutexGuard<'a, A
                     value = val & WORD_MUTEX_DATA_BIT_MASK;
                     break;
                 }
-                SwapResult::Failed | SwapResult::Aborted => {
+                SwapResult::Failed | SwapResult::Aborted(_) => {
                     trace!("Lock on key {} failed, retry", key);
                     backoff.spin();
                     continue;
