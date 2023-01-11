@@ -3,14 +3,19 @@ use crate::list::{LinkedRingBufferList, ListIter};
 use crate::map::{Map, PtrHashMap, PtrMutexGuard};
 use crate::ring_buffer::ItemPtr;
 use std::hash::Hash;
-use std::fmt::Debug;
 
-pub struct LinkedHashMap<K: Clone + Hash + Eq + Default + Debug, V: Clone + Default + Debug, const N: usize> {
+pub struct LinkedHashMap<
+    K: Clone + Hash + Eq + Default ,
+    V: Clone + Default ,
+    const N: usize,
+> {
     map: PtrHashMap<K, (V, ItemPtr<K, N>)>,
     list: LinkedRingBufferList<K, N>,
 }
 
-impl<K: Clone + Hash + Eq + Default + Debug, V: Clone + Default + Debug, const N: usize> LinkedHashMap<K, V, N> {
+impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
+    LinkedHashMap<K, V, N>
+{
     pub fn with_capacity(cap: usize) -> Self {
         LinkedHashMap {
             map: PtrHashMap::with_capacity(cap),
@@ -176,7 +181,7 @@ impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
     }
 }
 
-unsafe impl<K: Clone + Hash + Eq + Default + Debug, V: Clone + Default + Debug, const N: usize> Send
+unsafe impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize> Send
     for LinkedHashMap<K, V, N>
 {
 }

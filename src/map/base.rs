@@ -493,7 +493,7 @@ impl<
                         fv, fkey, chunk.base, new_chunk.map(|c| c.base), epoch
                     );
                     res = Some((fv, v.unwrap()))
-                },
+                }
             }
             match &mut res {
                 Some((fv, _)) => {
