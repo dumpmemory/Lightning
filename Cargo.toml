@@ -38,3 +38,6 @@ default = ["hopsotch"]
 exchange_backoff = []
 asan = []
 hopsotch = []
+
+[profile.test]
+panic = 'abort'
