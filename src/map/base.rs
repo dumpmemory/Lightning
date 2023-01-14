@@ -184,7 +184,8 @@ impl<
     pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
         trace!("Creating chunk with capacity {}", cap);
         if !is_power_of_2(cap) {
-            panic!("capacity is not power of 2");
+            error!("Capacity is not power of 2, got {}", cap);
+            panic!("Capacity is not power of 2, got {}", cap);
         }
         // Each entry key value pair is 2 words
         // steal 1 bit in the MSB of value indicate Prime(1)
@@ -711,7 +712,10 @@ impl<
                     ModResult::NotFound => {
                         break 'INNER;
                     }
-                    _ => panic!(),
+                    _ => {
+                        error!("Unreachable result state on remove in chunk");
+                        panic!("Unreachable result state on remove in chunk");
+                    },
                 }
             }
             match old_chunk_val {
@@ -739,7 +743,8 @@ impl<
                     return None;
                 }
                 Some(_) => {
-                    panic!()
+                    error!("Unreachable result state on remove in old chunk");
+                    panic!("Unreachable result state on remove in old chunk")
                 }
             }
         }
