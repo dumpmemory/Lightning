@@ -41,3 +41,6 @@ hopsotch = []
 
 [profile.test]
 panic = 'abort'
+
+[profile.dev]
+panic = 'abort'
