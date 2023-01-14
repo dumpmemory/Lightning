@@ -352,7 +352,10 @@ impl<
                     Self::store_value(*addr, *fv);
                 }
                 Some(ModResult::NotFound) | Some(ModResult::Sentinel) | None => {}
-                _ => unreachable!(),
+                _ => {
+                    error!("Invalid modify entry state");
+                    unreachable!("Invalid modify entry state");
+                },
             };
             match value_insertion {
                 ModResult::Done(fv, v, idx) => {
@@ -409,9 +412,15 @@ impl<
                     Some(ModResult::NotFound) | None => {
                         result = None;
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        error!("Invalid value insertion state");
+                        unreachable!("Invalid value insertion state")
+                    },
                 },
-                ModResult::Aborted(_) => unreachable!("Should no abort"),
+                ModResult::Aborted(_) => {
+                    error!("Should not abort during insertion");
+                    unreachable!("Should no abort during insertion")
+                },
             }
             let mut res;
             match (result, lock_old) {
@@ -477,7 +486,8 @@ impl<
                     res = None;
                 }
                 (None, None) => {
-                    unreachable!();
+                    error!("Should not have none none during insertion");
+                    unreachable!("Should not have none none during insertion");
                 }
                 (Some((fv, v)), Some(ModResult::Replaced(lfv, _v, addr))) => {
                     delay_log!(
@@ -603,7 +613,10 @@ impl<
                     // Probably should try the old chunk see if it is there
                     trace!("Cannot find {} to swap", fkey);
                 }
-                _ => unreachable!("{:?}", fast_mod_res),
+                _ => {
+                    error!("Swap have {:?}", fast_mod_res);
+                    unreachable!("Swap have {:?}", fast_mod_res);
+                },
             }
             match (result, new_chunk.is_some()) {
                 (Some((fval, idx, mod_chunk)), true) => {
@@ -631,7 +644,10 @@ impl<
                                     mod_chunk,
                                 );
                             }
-                            _ => unreachable!("{:?}", sentinel_res),
+                            _ => {
+                                error!("Swap got sentinel {:?}", sentinel_res);
+                                unreachable!("Swap got sentinel {:?}", sentinel_res);
+                            },
                         }
                     }
                 }
