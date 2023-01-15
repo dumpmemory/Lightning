@@ -594,6 +594,8 @@ impl<
 #[cfg(test)]
 pub mod tests {
     use test::Bencher;
+    use std::panic;
+    use std::process;
 
     use crate::{
         map::{
@@ -603,6 +605,20 @@ pub mod tests {
         tests_misc::assert_all_thread_passed,
     };
     use std::{alloc::System, sync::Arc, thread};
+
+    pub fn hook_panic() {
+        let orig_hook = std::panic::take_hook();
+        panic::set_hook(Box::new(move |panic_info| {
+            // invoke the default handler and exit the process
+            if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                println!("panic occurred: {s:?}");
+            } else {
+                println!("panic occurred");
+            }
+            orig_hook(panic_info);
+            process::exit(1);
+        }));
+    }
 
     macro_rules! ptr_map_tests {
         (
@@ -853,7 +869,8 @@ pub mod tests {
                 #[test]
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
-                    let repeats: usize = 10240;
+                    hook_panic();
+                    let repeats: usize = 20480;
                     let map = Arc::new(map_init(8));
                     let mut threads = vec![];
                     for i in 1..64 {
