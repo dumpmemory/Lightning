@@ -596,6 +596,7 @@ pub mod tests {
     use test::Bencher;
     use std::panic;
     use std::process;
+    use std::sync::atomic::*;
 
     use crate::{
         map::{
@@ -606,18 +607,25 @@ pub mod tests {
     };
     use std::{alloc::System, sync::Arc, thread};
 
+    lazy_static! {
+        static ref HOOK_SET: AtomicBool = AtomicBool::new(false);
+    }
+    
+
     pub fn hook_panic() {
-        let orig_hook = std::panic::take_hook();
-        panic::set_hook(Box::new(move |panic_info| {
-            // invoke the default handler and exit the process
-            if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-                println!("panic occurred: {s:?}");
-            } else {
-                println!("panic occurred");
-            }
-            orig_hook(panic_info);
-            process::exit(1);
-        }));
+        if HOOK_SET.compare_exchange(false, true, AcqRel, Relaxed).is_ok() {
+            let orig_hook = std::panic::take_hook();
+            panic::set_hook(Box::new(move |panic_info| {
+                // invoke the default handler and exit the process
+                if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                    println!("panic occurred: {s:?}");
+                } else {
+                    println!("panic occurred");
+                }
+                orig_hook(panic_info);
+                process::exit(1);
+            }));
+        }
     }
 
     macro_rules! ptr_map_tests {
