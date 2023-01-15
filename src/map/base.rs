@@ -1802,16 +1802,12 @@ impl<
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
-                    // The values. First check its key is the same
-                    let old_attachment = old_chunk_ins.attachment.prefetch(idx);
-                    let key = old_attachment.get_key();
                     if Self::get_fast_key(old_address) != fkey {
                         backoff.spin();
                         continue;
                     }
                     if !Self::migrate_entry(
                         fkey,
-                        key,
                         idx,
                         fvalue,
                         old_chunk_ins,
@@ -1896,7 +1892,6 @@ impl<
 
     fn migrate_entry(
         fkey: FKey,
-        key: K,
         old_idx: usize,
         fvalue: FastValue,
         old_chunk_ins: &Chunk<K, V, A, ALLOC>,
@@ -1931,6 +1926,10 @@ impl<
         }
 
         trace!("Primed {}", fkey);
+
+        // Since the entry is primed, it is safe to read the key
+        let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
+        let key = old_attachment.get_key();
 
         let hash = if Self::WORD_KEY {
             hash_key::<_, H>(&fkey)
@@ -1971,7 +1970,7 @@ impl<
                     let new_attachment = new_chunk_ins.attachment.prefetch(idx);
                     let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
                     let value = old_attachment.get_value();
-                    new_attachment.set_key(key.clone());
+                    new_attachment.set_key(key);
                     new_attachment.set_value(value, 0);
                     Self::store_key(addr, fkey);
                     match Self::adjust_hops(

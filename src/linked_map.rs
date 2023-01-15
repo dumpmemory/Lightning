@@ -380,9 +380,6 @@ mod test {
                 fn exaust_versions() {
                     let map = map_init(16);
                     for i in 0..255 {
-                        if i == 2 {
-                            println!("watch out");
-                        }
                         let key = key_from(1);
                         let val = val_from(&key, i);
                         let orig_key = key.clone();
