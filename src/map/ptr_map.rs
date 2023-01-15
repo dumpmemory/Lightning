@@ -625,6 +625,7 @@ pub mod tests {
                 orig_hook(panic_info);
                 process::exit(1);
             }));
+            println!("Panic hooked");
         }
     }
 
