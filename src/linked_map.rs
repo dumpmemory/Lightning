@@ -24,20 +24,18 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
     }
 
     pub fn insert_front(&self, key: K, value: V) -> Option<V> {
-        self.insert_general(key, value, true)
+        let list_key_clone = key.clone();
+        let list_ref = self.list.push_front(list_key_clone);
+        self.insert_list_ref_to_map(&key, value, list_ref)
     }
 
     pub fn insert_back(&self, key: K, value: V) -> Option<V> {
-        self.insert_general(key, value, false)
+        let list_key_clone = key.clone();
+        let list_ref = self.list.push_back(list_key_clone);
+        self.insert_list_ref_to_map(&key, value, list_ref)
     }
 
-    fn insert_general(&self, key: K, value: V, at_front: bool) -> Option<V> {
-        let list_key_clone = key.clone();
-        let list_ref = if at_front {
-            self.list.push_front(list_key_clone )
-        } else {
-            self.list.push_back(list_key_clone )
-        };
+    fn insert_list_ref_to_map(&self, key: &K, value: V, list_ref: ItemPtr<K, N>) -> Option<V> {
         match self.map.locked_with_upsert(&key, (value, list_ref)) {
             Ok((_guard, (val, list_ptr))) => {
                 return unsafe {
