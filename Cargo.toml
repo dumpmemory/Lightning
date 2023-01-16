@@ -40,7 +40,6 @@ asan = []
 hopsotch = []
 
 [profile.test]
-panic = 'abort'
-
-[profile.dev]
-panic = 'abort'
+opt-level = 0
+debug = 2
+lto = "off"
