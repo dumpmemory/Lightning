@@ -32,10 +32,11 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
     }
 
     fn insert_general(&self, key: K, value: V, at_front: bool) -> Option<V> {
+        let list_key_clone = key.clone();
         let list_ref = if at_front {
-            self.list.push_front(key.clone())
+            self.list.push_front(list_key_clone )
         } else {
-            self.list.push_back(key.clone())
+            self.list.push_back(list_key_clone )
         };
         match self.map.locked_with_upsert(&key, (value, list_ref)) {
             Ok((_guard, (val, list_ptr))) => {
@@ -526,7 +527,9 @@ mod test {
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 let prev_epoch = map.map.table.now_epoch();
-                                assert_eq!(map.$insert(key.clone(), value.clone()), None, "inserting at key {}", key);
+                                let key_clone = key.clone();
+                                let val_clone = value.clone();
+                                assert_eq!(map.$insert(key_clone, val_clone), None, "inserting at key {}", key);
                                 let post_insert_epoch = map.map.table.now_epoch();
                                 {
                                     let get_test_res = map.get(&key);
@@ -541,8 +544,10 @@ mod test {
                                     }
                                 }
                                 let post_insert_epoch = map.map.table.now_epoch();
+                                let key_clone = key.clone();
+                                let val_clone = value.clone();
                                 assert_eq!(
-                                    map.$insert(key.clone(), value.clone()),
+                                    map.$insert(key_clone, val_clone),
                                     Some(value.clone()),
                                     "reinserting at key {}, get {:?}, epoch {}/{}/{}, i {}",
                                     key,
