@@ -24,19 +24,20 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
     }
 
     pub fn insert_front(&self, key: K, value: V) -> Option<V> {
-        let list_key_clone = key.clone();
-        let list_ref = self.list.push_front(list_key_clone);
-        self.insert_list_ref_to_map(&key, value, list_ref)
+        let list_ref = self.list.push_front(key);
+        self.insert_list_ref_to_map(value, list_ref)
     }
 
     pub fn insert_back(&self, key: K, value: V) -> Option<V> {
-        let list_key_clone = key.clone();
-        let list_ref = self.list.push_back(list_key_clone);
-        self.insert_list_ref_to_map(&key, value, list_ref)
+        let list_ref = self.list.push_back(key);
+        self.insert_list_ref_to_map(value, list_ref)
     }
 
-    fn insert_list_ref_to_map(&self, key: &K, value: V, list_ref: ItemPtr<K, N>) -> Option<V> {
-        match self.map.locked_with_upsert(&key, (value, list_ref)) {
+    fn insert_list_ref_to_map(&self, value: V, list_ref: ItemPtr<K, N>) -> Option<V> {
+        let key = unsafe {
+            list_ref.to_ref().to_ref()
+        };
+        match self.map.locked_with_upsert(key, (value, list_ref)) {
             Ok((_guard, (val, list_ptr))) => {
                 return unsafe {
                     list_ptr.remove();
@@ -95,6 +96,7 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
 
     #[inline(always)]
     fn pop_general(&self, forwarding: bool) -> Option<(K, V)> {
+        let backoff = crossbeam_utils::Backoff::new();
         loop {
             let list_item = if forwarding {
                 self.list.peek_front()
@@ -111,6 +113,7 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
                         }
                     }
                 }
+                backoff.spin();
             } else {
                 return None;
             }

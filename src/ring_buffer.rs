@@ -361,13 +361,20 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
         let buffer = self.buffer;
         let flag = &buffer.flags[idx];
         let ele = &buffer.elements[idx];
-        let obj = unsafe { (&*ele.get()).clone() };
         let flag_val = flag.load(Acquire);
         if flag_val == ACQUIRED {
+            let obj = unsafe { (&*ele.get()).clone() };
             return Some(obj);
         } else {
             return None;
         }
+    }
+
+    pub unsafe fn to_ref<'b>(self) -> &'b T {
+        let idx = self.idx;
+        let buffer = self.buffer;
+        let ele = &buffer.elements[idx];
+        unsafe { &*ele.get() }
     }
 
     pub fn remove(&self) -> Option<T> {
