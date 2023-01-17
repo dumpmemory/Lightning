@@ -1,19 +1,13 @@
-use crate::{linked_map::LinkedHashMap};
+use crate::linked_map::LinkedHashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-pub struct LRUCache<
-    K: Clone + Hash + Eq + Default ,
-    V: Clone + Default ,
-    const N: usize,
-> {
+pub struct LRUCache<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
     map: LinkedHashMap<K, V, N>,
     capacity: usize,
 }
 
-impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
-    LRUCache<K, V, N>
-{
+impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LRUCache<K, V, N> {
     pub fn new(capacity: usize) -> LRUCache<K, V, N> {
         Self {
             map: LinkedHashMap::with_capacity(capacity),
@@ -53,7 +47,7 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
     }
 }
 
-unsafe impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize> Send
+unsafe impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> Send
     for LRUCache<K, V, N>
 {
 }

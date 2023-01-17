@@ -355,7 +355,7 @@ impl<
                 _ => {
                     error!("Invalid modify entry state");
                     unreachable!("Invalid modify entry state");
-                },
+                }
             };
             match value_insertion {
                 ModResult::Done(fv, v, idx) => {
@@ -415,12 +415,12 @@ impl<
                     _ => {
                         error!("Invalid value insertion state");
                         unreachable!("Invalid value insertion state")
-                    },
+                    }
                 },
                 ModResult::Aborted(_) => {
                     error!("Should not abort during insertion");
                     unreachable!("Should no abort during insertion")
-                },
+                }
             }
             let mut res;
             match (result, lock_old) {
@@ -616,7 +616,7 @@ impl<
                 _ => {
                     error!("Swap have {:?}", fast_mod_res);
                     unreachable!("Swap have {:?}", fast_mod_res);
-                },
+                }
             }
             match (result, new_chunk.is_some()) {
                 (Some((fval, idx, mod_chunk)), true) => {
@@ -647,7 +647,7 @@ impl<
                             _ => {
                                 error!("Swap got sentinel {:?}", sentinel_res);
                                 unreachable!("Swap got sentinel {:?}", sentinel_res);
-                            },
+                            }
                         }
                     }
                 }
@@ -731,7 +731,7 @@ impl<
                     _ => {
                         error!("Unreachable result state on remove in chunk");
                         panic!("Unreachable result state on remove in chunk");
-                    },
+                    }
                 }
             }
             match old_chunk_val {

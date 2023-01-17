@@ -34,11 +34,12 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
     #[inline(always)]
     pub fn count(&self) -> usize {
         let head = self.head.load(Acquire);
-        let tail = self.head.load(Acquire);
+        let tail = self.tail.load(Acquire);
         if head > tail {
             head - tail
         } else {
-            tail - head
+            // wrapped
+            tail + (N - head)
         }
     }
 
@@ -512,6 +513,8 @@ impl<T: Clone + Default, const N: usize> ItemPtr<T, N> {
 }
 
 unsafe impl<T: Clone, const N: usize> Sync for RingBuffer<T, N> {}
+unsafe impl<T: Clone, const N: usize> Sync for ItemPtr<T, N> {}
+unsafe impl<T: Clone, const N: usize> Send for ItemPtr<T, N> {}
 
 #[cfg(test)]
 mod tests {
@@ -519,6 +522,9 @@ mod tests {
 
     use super::*;
     use crate::par_list_tests;
+    use itertools::*;
+    use std::collections::HashSet;
+    use std::thread;
 
     #[test]
     pub fn general() {
@@ -636,8 +642,9 @@ mod tests {
         assert_eq!(*ring.pop_front().unwrap(), 42);
     }
 
-    const NUM: usize = 4096;
-    const CAP: usize = 4096 * 2;
+    const NUM: usize = 8192;
+    const CAP: usize = NUM * 2;
+    const ROUNDS: usize = NUM;
 
     par_list_tests!(
         usize_test,
@@ -654,4 +661,127 @@ mod tests {
         { RingBuffer::<_, CAP>::new() },
         NUM
     );
+
+    fn item_from(n: usize) -> Vec<usize> {
+        vec![n]
+    }
+
+    #[test]
+    pub fn multithread_push_front_remove() {
+        let num: usize = NUM;
+        let deque = Arc::new(RingBuffer::<_, CAP>::new());
+        let threshold = (num as f64 * 0.5) as usize;
+        let threads = 256;
+        let deposits = (0..threshold)
+            .map(|i| {
+                let item = item_from(i);
+                deque.push_front(item).unwrap().to_ptr()
+            })
+            .chunks(threads)
+            .into_iter()
+            .map(|chunk| chunk.collect_vec())
+            .collect_vec();
+        let ths = (threshold..num)
+            .chunks(threads)
+            .into_iter()
+            .zip(deposits)
+            .map(|(nums, thread_deposit)| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    let to_remove = thread_deposit;
+                    let mut rm_idx = 0;
+                    nums.into_iter()
+                        .map(|i| {
+                            let item = item_from(i);
+                            if i % 2 == 0 {
+                                (Some(deque.push_front(item).unwrap().deref().unwrap()), None)
+                            } else {
+                                rm_idx += 1;
+                                unsafe {
+                                    (None, to_remove[rm_idx - 1].to_ref().remove())
+                                }
+                            }
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let (inserted, removed) : (Vec<_>, Vec<_>) = ths
+            .into_iter()
+            .map(|j| j.join().unwrap().into_iter())
+            .flatten()
+            .unzip();
+        let remove_result = removed
+            .into_iter()
+            .filter_map(|n| n)
+            .collect::<Vec<_>>();
+        let inserted_result = inserted
+            .into_iter()
+            .filter_map(|n| n)
+            .collect::<Vec<_>>();
+        let remove_result_len = remove_result.len();
+        let inserted_result_len = inserted_result.len();
+        assert_eq!(remove_result_len, (num - threshold) / 2);
+        assert_eq!(inserted_result_len, (num - threshold) / 2);
+        let remove_set = remove_result.into_iter().collect::<HashSet<_>>();
+        assert_eq!(remove_result_len, remove_set.len());
+        assert_eq!(deque.count(), threshold + inserted_result.len() - remove_result_len);
+    }
+
+    #[test]
+    pub fn multithread_push_back_remove() {
+        let num: usize = NUM;
+        let deque = Arc::new(RingBuffer::<_, CAP>::new());
+        let threshold = (num as f64 * 0.5) as usize;
+        let threads = 256;
+        let deposits = (0..threshold)
+            .map(|i| {
+                let item = item_from(i);
+                deque.push_back(item).unwrap().to_ptr()
+            })
+            .chunks(threads)
+            .into_iter()
+            .map(|chunk| chunk.collect_vec())
+            .collect_vec();
+        let ths = (threshold..num)
+            .chunks(threads)
+            .into_iter()
+            .zip(deposits)
+            .map(|(nums, thread_deposit)| {
+                let nums = nums.collect_vec();
+                let deque = deque.clone();
+                thread::spawn(move || {
+                    let to_remove = thread_deposit;
+                    let mut rm_idx = 0;
+                    nums.into_iter()
+                        .map(|i| {
+                            let item = item_from(i);
+                            if i % 2 == 0 {
+                                (Some(deque.push_back(item).unwrap().deref().unwrap()), None)
+                            } else {
+                                rm_idx += 1;
+                                unsafe {
+                                    (None, to_remove[rm_idx - 1].to_ref().remove())
+                                }
+                            }
+                        })
+                        .collect_vec()
+                })
+            })
+            .collect::<Vec<_>>();
+        let (inserted, removed) : (Vec<_>, Vec<_>) = ths
+            .into_iter()
+            .map(|j| j.join().unwrap().into_iter())
+            .flatten()
+            .unzip();
+        let remove_result = removed
+            .into_iter()
+            .filter_map(|n| n)
+            .collect::<Vec<_>>();
+        let remove_result_len = remove_result.len();
+        assert_eq!(remove_result_len, (num - threshold) / 2);
+        let remove_set = remove_result.into_iter().collect::<HashSet<_>>();
+        assert_eq!(remove_result_len, remove_set.len());
+    }
 }

@@ -4,18 +4,12 @@ use crate::map::{Map, PtrHashMap, PtrMutexGuard};
 use crate::ring_buffer::ItemPtr;
 use std::hash::Hash;
 
-pub struct LinkedHashMap<
-    K: Clone + Hash + Eq + Default ,
-    V: Clone + Default ,
-    const N: usize,
-> {
+pub struct LinkedHashMap<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
     map: PtrHashMap<K, (V, ItemPtr<K, N>)>,
     list: LinkedRingBufferList<K, N>,
 }
 
-impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
-    LinkedHashMap<K, V, N>
-{
+impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedHashMap<K, V, N> {
     pub fn with_capacity(cap: usize) -> Self {
         LinkedHashMap {
             map: PtrHashMap::with_capacity(cap),
@@ -34,9 +28,7 @@ impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize>
     }
 
     fn insert_list_ref_to_map(&self, value: V, list_ref: ItemPtr<K, N>) -> Option<V> {
-        let key = unsafe {
-            list_ref.to_ref().to_ref()
-        };
+        let key = unsafe { list_ref.to_ref().to_ref() };
         match self.map.locked_with_upsert(key, (value, list_ref)) {
             Ok((_guard, (val, list_ptr))) => {
                 return unsafe {
@@ -183,7 +175,7 @@ impl<'a, K: Clone + Hash + Default, V: Clone + Default, const N: usize> Iterator
     }
 }
 
-unsafe impl<K: Clone + Hash + Eq + Default , V: Clone + Default , const N: usize> Send
+unsafe impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> Send
     for LinkedHashMap<K, V, N>
 {
 }

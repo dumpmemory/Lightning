@@ -12,8 +12,8 @@ pub type PtrTable<K, V, ALLOC, H> =
 const ALLOC_BUFFER_SIZE: usize = 256;
 
 pub struct PtrHashMap<
-    K: Clone + Hash + Eq ,
-    V: Clone ,
+    K: Clone + Hash + Eq,
+    V: Clone,
     ALLOC: GlobalAlloc + Default = System,
     H: Hasher + Default = DefaultHasher,
 > {
@@ -29,12 +29,8 @@ struct PtrValueNode<V> {
     value: Cell<V>,
 }
 
-impl<
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > PtrHashMap<K, V, ALLOC, H>
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    PtrHashMap<K, V, ALLOC, H>
 {
     const VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS;
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
@@ -194,12 +190,8 @@ fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usiz
     )
 }
 
-impl<
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > Map<K, V> for PtrHashMap<K, V, ALLOC, H>
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
+    for PtrHashMap<K, V, ALLOC, H>
 {
     fn with_capacity(cap: usize) -> Self {
         let alloc = Box::new(obj_alloc::Allocator::new());
@@ -291,20 +283,12 @@ impl<
     }
 }
 
-unsafe impl<
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > Send for PtrHashMap<K, V, ALLOC, H>
+unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Send
+    for PtrHashMap<K, V, ALLOC, H>
 {
 }
-unsafe impl<
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > Sync for PtrHashMap<K, V, ALLOC, H>
+unsafe impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Sync
+    for PtrHashMap<K, V, ALLOC, H>
 {
 }
 
@@ -404,8 +388,8 @@ impl<K: Clone, V: Clone> Copy for PtrValAttachmentItem<K, V> {}
 
 pub struct PtrMutexGuard<
     'a,
-    K: Clone + Hash + Eq ,
-    V: Clone ,
+    K: Clone + Hash + Eq,
+    V: Clone,
     ALLOC: GlobalAlloc + Default,
     H: Hasher + Default,
 > {
@@ -414,13 +398,8 @@ pub struct PtrMutexGuard<
     value: V,
 }
 
-impl<
-        'a,
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > PtrMutexGuard<'a, K, V, ALLOC, H>
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
+    PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn new(map: &'a PtrHashMap<K, V, ALLOC, H>, key: &K) -> Option<Self> {
         let backoff = crossbeam_utils::Backoff::new();
@@ -514,13 +493,8 @@ impl<
         return r;
     }
 }
-impl<
-        'a,
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > Deref for PtrMutexGuard<'a, K, V, ALLOC, H>
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Deref
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     type Target = V;
 
@@ -529,25 +503,15 @@ impl<
     }
 }
 
-impl<
-        'a,
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > DerefMut for PtrMutexGuard<'a, K, V, ALLOC, H>
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> DerefMut
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
-impl<
-        'a,
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > Drop for PtrMutexGuard<'a, K, V, ALLOC, H>
+impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for PtrMutexGuard<'a, K, V, ALLOC, H>
 {
     fn drop(&mut self) {
         let guard = self.map.allocator.pin();
@@ -570,12 +534,8 @@ impl<
     }
 }
 
-impl<
-        K: Clone + Hash + Eq ,
-        V: Clone ,
-        ALLOC: GlobalAlloc + Default,
-        H: Hasher + Default,
-    > Drop for PtrHashMap<K, V, ALLOC, H>
+impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Drop
+    for PtrHashMap<K, V, ALLOC, H>
 {
     fn drop(&mut self) {
         for (_fk, fv, _k, _v) in self.table.entries() {
@@ -593,10 +553,10 @@ impl<
 
 #[cfg(test)]
 pub mod tests {
-    use test::Bencher;
     use std::panic;
     use std::process;
     use std::sync::atomic::*;
+    use test::Bencher;
 
     use crate::{
         map::{
@@ -610,10 +570,12 @@ pub mod tests {
     lazy_static! {
         static ref HOOK_SET: AtomicBool = AtomicBool::new(false);
     }
-    
 
     pub fn hook_panic() {
-        if HOOK_SET.compare_exchange(false, true, AcqRel, Relaxed).is_ok() {
+        if HOOK_SET
+            .compare_exchange(false, true, AcqRel, Relaxed)
+            .is_ok()
+        {
             let orig_hook = std::panic::take_hook();
             panic::set_hook(Box::new(move |panic_info| {
                 // invoke the default handler and exit the process
