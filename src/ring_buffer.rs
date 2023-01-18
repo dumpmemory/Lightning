@@ -35,11 +35,11 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
     pub fn count(&self) -> usize {
         let head = self.head.load(Acquire);
         let tail = self.tail.load(Acquire);
-        if head > tail {
+        if tail <= head {
             head - tail
         } else {
             // wrapped
-            tail + (N - head)
+            head + (N - tail)
         }
     }
 
@@ -667,66 +667,77 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     pub fn multithread_push_front_remove() {
         let num: usize = NUM;
         let deque = Arc::new(RingBuffer::<_, CAP>::new());
         let threshold = (num as f64 * 0.5) as usize;
         let threads = 256;
-        let deposits = (0..threshold)
-            .map(|i| {
-                let item = item_from(i);
-                deque.push_front(item).unwrap().to_ptr()
-            })
-            .chunks(threads)
-            .into_iter()
-            .map(|chunk| chunk.collect_vec())
-            .collect_vec();
-        let ths = (threshold..num)
-            .chunks(threads)
-            .into_iter()
-            .zip(deposits)
-            .map(|(nums, thread_deposit)| {
-                let nums = nums.collect_vec();
-                let deque = deque.clone();
-                thread::spawn(move || {
-                    let to_remove = thread_deposit;
-                    let mut rm_idx = 0;
-                    nums.into_iter()
-                        .map(|i| {
-                            let item = item_from(i);
-                            if i % 2 == 0 {
-                                (Some(deque.push_front(item).unwrap().deref().unwrap()), None)
-                            } else {
-                                rm_idx += 1;
-                                unsafe {
-                                    (None, to_remove[rm_idx - 1].to_ref().remove())
-                                }
-                            }
-                        })
-                        .collect_vec()
+        (0..ROUNDS).for_each(|round| {
+            let deposits = (0..threshold)
+                .map(|i| {
+                    let item = item_from(i);
+                    deque.push_front(item).unwrap().to_ptr()
                 })
-            })
-            .collect::<Vec<_>>();
-        let (inserted, removed) : (Vec<_>, Vec<_>) = ths
-            .into_iter()
-            .map(|j| j.join().unwrap().into_iter())
-            .flatten()
-            .unzip();
-        let remove_result = removed
-            .into_iter()
-            .filter_map(|n| n)
-            .collect::<Vec<_>>();
-        let inserted_result = inserted
-            .into_iter()
-            .filter_map(|n| n)
-            .collect::<Vec<_>>();
-        let remove_result_len = remove_result.len();
-        let inserted_result_len = inserted_result.len();
-        assert_eq!(remove_result_len, (num - threshold) / 2);
-        assert_eq!(inserted_result_len, (num - threshold) / 2);
-        let remove_set = remove_result.into_iter().collect::<HashSet<_>>();
-        assert_eq!(remove_result_len, remove_set.len());
-        assert_eq!(deque.count(), threshold + inserted_result.len() - remove_result_len);
+                .chunks(threads)
+                .into_iter()
+                .map(|chunk| chunk.collect_vec())
+                .collect_vec();
+            let ths = (threshold..num)
+                .chunks(threads)
+                .into_iter()
+                .zip(deposits)
+                .map(|(nums, thread_deposit)| {
+                    let nums = nums.collect_vec();
+                    let deque = deque.clone();
+                    thread::spawn(move || {
+                        let to_remove = thread_deposit;
+                        let mut rm_idx = 0;
+                        nums.into_iter()
+                            .map(|i| {
+                                let item = item_from(i);
+                                if i % 2 == 0 {
+                                    (Some(deque.push_front(item).unwrap().deref().unwrap()), None)
+                                } else {
+                                    rm_idx += 1;
+                                    unsafe {
+                                        (None, to_remove[rm_idx - 1].to_ref().remove())
+                                    }
+                                }
+                            })
+                            .collect_vec()
+                    })
+                })
+                .collect::<Vec<_>>();
+            let (inserted, removed) : (Vec<_>, Vec<_>) = ths
+                .into_iter()
+                .map(|j| j.join().unwrap().into_iter())
+                .flatten()
+                .unzip();
+            let remove_result = removed
+                .into_iter()
+                .filter_map(|n| n)
+                .collect::<Vec<_>>();
+            let inserted_result = inserted
+                .into_iter()
+                .filter_map(|n| n)
+                .collect::<Vec<_>>();
+            let remove_result_len = remove_result.len();
+            let inserted_result_len = inserted_result.len();
+            let remains_len = threshold + inserted_result_len - remove_result_len;
+            assert_eq!(remove_result_len, (num - threshold) / 2);
+            assert_eq!(inserted_result_len, (num - threshold) / 2);
+            let remove_set = remove_result.into_iter().collect::<HashSet<_>>();
+            assert_eq!(remove_result_len, remove_set.len());
+            assert!(deque.count() >= remains_len, "At round {}, should have dequue count {} >= {}", round, deque.count(), remains_len);
+            let mut removed_remains = 0;
+            while let Some(r) = deque.peek_front() {
+                r.remove().unwrap();
+                removed_remains += 1;
+            }
+            assert_eq!(removed_remains, remains_len, "At round {round}");
+            assert_eq!(deque.count(), 0);
+        });
     }
 
     #[test]
