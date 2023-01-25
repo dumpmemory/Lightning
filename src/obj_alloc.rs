@@ -717,7 +717,7 @@ mod test {
     #[test]
     fn checking_multithread_alter_alloc() {
         let allocator = Arc::new(Allocator::<usize, BUFFER_SIZE>::new());
-        let num_threads = num_cpus::get();
+        let num_threads = 128;
         let mut threads = vec![];
         for _ in 0..num_threads {
             let allocator = allocator.clone();
