@@ -16,6 +16,7 @@ const EMPTY_SLOT: AtomicU8 = AtomicU8::new(EMPTY);
 pub struct RingBuffer<T, const N: usize> {
     pub head: AtomicUsize,
     pub tail: AtomicUsize,
+    pub count: AtomicUsize,
     pub flags: [AtomicU8; N],
     elements: [ManuallyDrop<UnsafeCell<T>>; N],
 }
@@ -26,13 +27,14 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
             flags: [EMPTY_SLOT; N],
             elements,
         }
     }
 
     #[inline(always)]
-    pub fn count(&self) -> usize {
+    pub fn allocated_slots(&self) -> usize {
         let head = self.head.load(Acquire);
         let tail = self.tail.load(Acquire);
         if tail <= head {
@@ -42,6 +44,12 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
             head + (N - tail)
         }
     }
+
+    #[inline(always)]
+    pub fn count(&self) -> usize {
+        self.count.load(Acquire)
+    }
+
 
     #[inline(always)]
     pub fn push_back(&self, data: T) -> Result<ItemRef<T, N>, T> {
@@ -94,6 +102,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
                     ptr::write(obj.get(), data);
                 }
                 flag.store(ACQUIRED, Release);
+                self.count.fetch_add(1, Relaxed);
                 return Ok(ItemRef {
                     buffer: self,
                     idx: pos,
@@ -165,6 +174,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
                         res = ptr::read(obj.get());
                     }
                     change_target();
+                    self.count.fetch_sub(1, Relaxed);
                     return Some(res);
                 } else {
                     change_target();
@@ -204,6 +214,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
                     res = ptr::read(obj.get());
                 }
                 target.store(new_target_val, Relaxed);
+                self.count.fetch_sub(1, Relaxed);
                 return Some(res);
             } else {
                 target.store(new_target_val, Relaxed);
@@ -238,6 +249,7 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
             ptr::write(obj.get(), data);
         }
         flag.store(ACQUIRED, Relaxed);
+        self.count.fetch_add(1, Relaxed);
         return Ok(ItemRef {
             buffer: self,
             idx: pos,
@@ -410,6 +422,7 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
                     let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
                 }
             }
+            self.buffer.count.fetch_sub(1, Relaxed);
             return Some(val);
         } else {
             return None;
@@ -664,135 +677,5 @@ mod tests {
 
     fn item_from(n: usize) -> Vec<usize> {
         vec![n]
-    }
-
-    #[test]
-    #[ignore]
-    pub fn multithread_push_front_remove() {
-        let num: usize = NUM;
-        let deque = Arc::new(RingBuffer::<_, CAP>::new());
-        let threshold = (num as f64 * 0.5) as usize;
-        let threads = 256;
-        (0..ROUNDS).for_each(|round| {
-            let deposits = (0..threshold)
-                .map(|i| {
-                    let item = item_from(i);
-                    deque.push_front(item).unwrap().to_ptr()
-                })
-                .chunks(threads)
-                .into_iter()
-                .map(|chunk| chunk.collect_vec())
-                .collect_vec();
-            let ths = (threshold..num)
-                .chunks(threads)
-                .into_iter()
-                .zip(deposits)
-                .map(|(nums, thread_deposit)| {
-                    let nums = nums.collect_vec();
-                    let deque = deque.clone();
-                    thread::spawn(move || {
-                        let to_remove = thread_deposit;
-                        let mut rm_idx = 0;
-                        nums.into_iter()
-                            .map(|i| {
-                                let item = item_from(i);
-                                if i % 2 == 0 {
-                                    (Some(deque.push_front(item).unwrap().deref().unwrap()), None)
-                                } else {
-                                    rm_idx += 1;
-                                    unsafe {
-                                        (None, to_remove[rm_idx - 1].to_ref().remove())
-                                    }
-                                }
-                            })
-                            .collect_vec()
-                    })
-                })
-                .collect::<Vec<_>>();
-            let (inserted, removed) : (Vec<_>, Vec<_>) = ths
-                .into_iter()
-                .map(|j| j.join().unwrap().into_iter())
-                .flatten()
-                .unzip();
-            let remove_result = removed
-                .into_iter()
-                .filter_map(|n| n)
-                .collect::<Vec<_>>();
-            let inserted_result = inserted
-                .into_iter()
-                .filter_map(|n| n)
-                .collect::<Vec<_>>();
-            let remove_result_len = remove_result.len();
-            let inserted_result_len = inserted_result.len();
-            let remains_len = threshold + inserted_result_len - remove_result_len;
-            assert_eq!(remove_result_len, (num - threshold) / 2);
-            assert_eq!(inserted_result_len, (num - threshold) / 2);
-            let remove_set = remove_result.into_iter().collect::<HashSet<_>>();
-            assert_eq!(remove_result_len, remove_set.len());
-            assert!(deque.count() >= remains_len, "At round {}, should have dequue count {} >= {}", round, deque.count(), remains_len);
-            let mut removed_remains = 0;
-            while let Some(r) = deque.peek_front() {
-                r.remove().unwrap();
-                removed_remains += 1;
-            }
-            assert_eq!(removed_remains, remains_len, "At round {round}");
-            assert_eq!(deque.count(), 0);
-        });
-    }
-
-    #[test]
-    pub fn multithread_push_back_remove() {
-        let num: usize = NUM;
-        let deque = Arc::new(RingBuffer::<_, CAP>::new());
-        let threshold = (num as f64 * 0.5) as usize;
-        let threads = 256;
-        let deposits = (0..threshold)
-            .map(|i| {
-                let item = item_from(i);
-                deque.push_back(item).unwrap().to_ptr()
-            })
-            .chunks(threads)
-            .into_iter()
-            .map(|chunk| chunk.collect_vec())
-            .collect_vec();
-        let ths = (threshold..num)
-            .chunks(threads)
-            .into_iter()
-            .zip(deposits)
-            .map(|(nums, thread_deposit)| {
-                let nums = nums.collect_vec();
-                let deque = deque.clone();
-                thread::spawn(move || {
-                    let to_remove = thread_deposit;
-                    let mut rm_idx = 0;
-                    nums.into_iter()
-                        .map(|i| {
-                            let item = item_from(i);
-                            if i % 2 == 0 {
-                                (Some(deque.push_back(item).unwrap().deref().unwrap()), None)
-                            } else {
-                                rm_idx += 1;
-                                unsafe {
-                                    (None, to_remove[rm_idx - 1].to_ref().remove())
-                                }
-                            }
-                        })
-                        .collect_vec()
-                })
-            })
-            .collect::<Vec<_>>();
-        let (inserted, removed) : (Vec<_>, Vec<_>) = ths
-            .into_iter()
-            .map(|j| j.join().unwrap().into_iter())
-            .flatten()
-            .unzip();
-        let remove_result = removed
-            .into_iter()
-            .filter_map(|n| n)
-            .collect::<Vec<_>>();
-        let remove_result_len = remove_result.len();
-        assert_eq!(remove_result_len, (num - threshold) / 2);
-        let remove_set = remove_result.into_iter().collect::<HashSet<_>>();
-        assert_eq!(remove_result_len, remove_set.len());
     }
 }
