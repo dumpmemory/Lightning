@@ -191,6 +191,16 @@ impl<T, const B: usize> SharedAlloc<T, B> {
     }
 }
 
+impl<T, const B: usize> Drop for SharedAlloc<T, B> {
+    fn drop(&mut self) {
+        let mut node = self.free_obj.load();
+        while !node.is_null() {
+            node = node.next.swap_ref(Arc::null())
+        }
+    }
+}
+
+
 impl<T, const B: usize> TLAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
 
@@ -371,7 +381,6 @@ impl<const B: usize> TLBufferedStack<B> {
                     res = Some(overflow_buffer_node);
                     self.num_buffer -= 1;
                 }
-                debug_assert!(!self.head.is_null());
                 let mut new_buffer = ThreadLocalPage::new();
                 let _ = new_buffer.push_back(val);
                 new_buffer.next = AtomicArc::from_rc(self.head.clone());
@@ -626,8 +635,9 @@ impl ASan {
 
 #[cfg(test)]
 mod test {
-    use crate::tests_misc::assert_all_thread_passed;
-    use std::{collections::HashSet, thread};
+    use crate::tests_misc::{assert_all_thread_passed, hook_panic};
+    use std::{collections::HashSet, thread, time::Duration};
+    use crossbeam_channel::unbounded;
 
     use super::*;
 
@@ -738,6 +748,47 @@ mod test {
                     reallocated.insert(realloc_addr);
                 }
             }))
+        }
+        assert_all_thread_passed(threads);
+    }
+
+    #[test]
+    fn allocator_no_blow_up() {
+        let _ = env_logger::try_init();
+        hook_panic();
+        let (sender, receiver) = unbounded();
+        let num_threads = 128;
+        let test_load =10240;
+        let mut threads = vec![];
+        let allocator = Arc::new(Allocator::<String, BUFFER_SIZE>::new());
+        let mut senders = vec![sender];
+        for _ in 1..num_threads {
+            senders.push(senders[0].clone());
+        }
+        for (tid, sender) in senders.into_iter().enumerate() {
+            let allocator = allocator.clone();
+            let receiver = receiver.clone();
+            threads.push(thread::spawn(move || {
+                let allocator = allocator.pin();
+                if tid | 1 == tid {
+                    for _ in 0..test_load {
+                        let ptr = allocator.alloc();
+                        unsafe {
+                            ptr::write(ptr, format!("{}", tid));
+                        }
+                        sender.send(ptr as usize).unwrap();
+                    }
+                } else {
+                    while let  Ok(addr) = receiver.recv_timeout(Duration::from_secs(5)) {
+                        let ptr =  addr as _;
+                        unsafe {
+                            drop(ptr::read(ptr));
+                        }
+                        allocator.free(ptr);
+                    }
+                }
+                drop(sender);
+            }));
         }
         assert_all_thread_passed(threads);
     }

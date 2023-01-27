@@ -143,9 +143,10 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn load(&self) -> Arc<T> {
         let ptr = {
-            let _g = self.lock.read();
+            let g = self.lock.read();
             let ptr = self.ptr.load(Relaxed);
             incr_ref(ptr);
+            drop(g);
             ptr
         };
         Arc::from_ptr(ptr)
@@ -291,7 +292,7 @@ fn decr_ref<T>(ptr: *const Inner<T>) {
     let count = Inner::from_ptr(ptr).count.fetch_sub(1, AcqRel);
     if count <= 1 {
         unsafe {
-            Box::from_raw(ptr as *mut Inner<T>);
+            drop(Box::from_raw(ptr as *mut Inner<T>));
         }
     }
 }

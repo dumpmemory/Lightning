@@ -28,6 +28,7 @@ page_size = "0.5"
 env_logger = "0.10"
 rayon = "1"
 itertools = "0.10"
+crossbeam-channel = "0.5"
 
 [lib]
 name = "lightning"

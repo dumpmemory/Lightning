@@ -38,16 +38,16 @@ impl<T> RwSpinLock<T> {
         loop {
             let mark = self.mark.load(Acquire);
             if mark != 1
+                && mark < usize::MAX - 2
                 && self
                     .mark
                     .compare_exchange(mark, mark + 2, AcqRel, Relaxed)
                     .is_ok()
             {
-                break;
+                return ReadSpinLockGuard { lock: self }
             }
             backoff.spin();
         }
-        ReadSpinLockGuard { lock: self }
     }
 }
 
@@ -81,7 +81,7 @@ impl<'a, T> Deref for ReadSpinLockGuard<'a, T> {
 impl<'a, T> Drop for ReadSpinLockGuard<'a, T> {
     #[inline(always)]
     fn drop(&mut self) {
-        self.lock.mark.fetch_sub(2, Release);
+        self.lock.mark.fetch_sub(2, AcqRel);
     }
 }
 
@@ -97,13 +97,17 @@ mod test {
     fn lot_load_of_lock() {
         let lock = Arc::new(RwSpinLock::new(0));
         let num_threads = 32;
-        let thread_turns = 2048;
+        let thread_turns = 20480;
         let mut threads = vec![];
         for _ in 0..num_threads {
             let lock = lock.clone();
             threads.push(thread::spawn(move || {
                 for _ in 0..thread_turns {
                     *lock.write() += 1;
+                }
+                for _ in 0..thread_turns {
+                    let l = lock.read();
+                    drop(*l)
                 }
             }));
         }
