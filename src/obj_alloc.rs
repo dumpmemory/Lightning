@@ -1,3 +1,4 @@
+use crossbeam_epoch::Atomic;
 use itertools::Itertools;
 #[cfg(asan)]
 use libc::c_void;
@@ -27,7 +28,7 @@ pub struct TLAlloc<T, const B: usize> {
     buffer_addr: usize,
     buffer_limit: usize,
     free_list: TLBufferedStack<B>,
-    buffered_free: Arc<ThreadLocalPage<B>>,
+    buffered_free: ThreadLocalPage<B>,
     shared: Arc<SharedAlloc<T, B>>,
     guard_count: usize,
     defer_free: Vec<usize>,
@@ -156,14 +157,15 @@ impl<T, const B: usize> SharedAlloc<T, B> {
     }
 
     #[inline(always)]
-    fn attach_objs(&self, objs: &Arc<ThreadLocalPage<B>>) {
+    fn attach_objs(&self, objs: ThreadLocalPage<B>) {
         let backoff = crossbeam_utils::Backoff::new();
+        let objs = Arc::new(objs) ;
         loop {
             let head = self.free_obj.load();
             unsafe {
                 objs.as_mut().next.store_ref(head.clone());
             }
-            if self.free_obj.compare_exchange_is_ok(&head, objs) {
+            if self.free_obj.compare_exchange_is_ok(&head, &objs) {
                 return;
             }
             backoff.spin();
@@ -208,7 +210,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
     pub fn new<'a>(buffer: usize, limit: usize, alloc: &'a Allocator<T, B>) -> Self {
         Self {
             free_list: TLBufferedStack::new(),
-            buffered_free: Arc::new(ThreadLocalPage::new()),
+            buffered_free: ThreadLocalPage::new(),
             buffer_addr: buffer,
             buffer_limit: limit,
             shared: alloc.shared.clone(),
@@ -236,7 +238,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
                     let free_buffer_ref = free_buffer.as_mut();
                     if let Some(ptr) = free_buffer_ref.pop_back() {
                         free_buffer_ref.next = AtomicArc::null();
-                        self.free_list.head = free_buffer;
+                        self.free_list.head = free_buffer.unwrap();
                         self.free_list.num_buffer += 1;
                         #[cfg(debug_assertions)]
                         #[cfg(asan)]
@@ -255,7 +257,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
             }
         }
         unsafe {
-            if let Some(addr) = self.buffered_free.as_mut().pop_back() {
+            if let Some(addr) = self.buffered_free.pop_back() {
                 #[cfg(debug_assertions)]
                 #[cfg(asan)]
                 self.asan.alloc(addr);
@@ -278,7 +280,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
     #[inline(always)]
     pub fn free(&mut self, ptr: *const T) {
         if let Some(overflow_buffer) = self.free_list.push(ptr as usize) {
-            (&*self.shared).attach_objs(&overflow_buffer);
+            (&*self.shared).attach_objs(overflow_buffer);
         }
         #[cfg(debug_assertions)]
         #[cfg(asan)]
@@ -289,16 +291,15 @@ impl<T, const B: usize> TLAlloc<T, B> {
     #[inline(always)]
     pub fn buffered_free(&mut self, ptr: *const T) {
         unsafe {
-            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(ptr as usize) {
+            if let Err(overflowed_addr) = self.buffered_free.push_back(ptr as usize) {
                 // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
                 if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
                     &mut self.buffered_free,
-                    Arc::new(ThreadLocalPage::new()),
+                    ThreadLocalPage::new(),
                 )) {
-                    (&*self.shared).attach_objs(&overflow_buffer);
+                    (&*self.shared).attach_objs(overflow_buffer);
                 }
                 self.buffered_free
-                    .as_mut()
                     .push_back(overflowed_addr)
                     .unwrap();
             }
@@ -319,23 +320,17 @@ impl<T, const B: usize> TLAlloc<T, B> {
             }
 
             // return free list
-            let head = mem::replace(&mut self.free_list.head, Arc::null());
-            if !head.is_null() {
-                if head.pos > 0 {
-                    (&*self.shared).attach_objs(&head);
+            let mut next = mem::replace(&mut self.free_list.head.next, AtomicArc::null()).into_arc();
+            while !next.is_null() {
+                let next_next =
+                    mem::replace(&mut next.as_mut().next, AtomicArc::null()).into_arc();
+                if next.pos > 0 {
+                    (&*self.shared).attach_objs(next.unwrap());
                 }
-                let mut next = mem::replace(&mut head.as_mut().next, AtomicArc::null()).into_arc();
-                while !next.is_null() {
-                    let next_next =
-                        mem::replace(&mut next.as_mut().next, AtomicArc::null()).into_arc();
-                    if next.pos > 0 {
-                        (&*self.shared).attach_objs(&next);
-                    }
-                    next = next_next;
-                }
+                next = next_next;
             }
             if self.buffered_free.pos > 0 {
-                (&*self.shared).attach_objs(&self.buffered_free);
+                (&*self.shared).attach_objs(mem::replace(&mut self.buffered_free, ThreadLocalPage::new()));
             }
         }
     }
@@ -351,7 +346,7 @@ impl<T, const B: usize> Drop for TLAlloc<T, B> {
 }
 
 struct TLBufferedStack<const B: usize> {
-    head: Arc<ThreadLocalPage<B>>,
+    head: ThreadLocalPage<B>,
     num_buffer: usize,
 }
 
@@ -361,30 +356,31 @@ impl<const B: usize> TLBufferedStack<B> {
     #[inline(always)]
     pub fn new() -> Self {
         Self {
-            head: Arc::new(ThreadLocalPage::new()),
+            head: ThreadLocalPage::new(),
             num_buffer: 0,
         }
     }
 
     #[inline(always)]
-    pub fn push(&mut self, val: usize) -> Option<Arc<ThreadLocalPage<B>>> {
+    pub fn push(&mut self, val: usize) -> Option<ThreadLocalPage<B>> {
         let mut res = None;
         unsafe {
-            if let Err(val) = self.head.as_mut().push_back(val) {
+            if let Err(val) = self.head.push_back(val) {
                 // Current buffer is full, need a new one
                 if self.num_buffer >= Self::MAX_BUFFERS {
+                    // Need to move current buffer from buffer chain to shared buffer chain
                     let head_next = {
-                        let head_mut = self.head.as_mut();
-                        mem::replace(&mut head_mut.next, AtomicArc::null()).into_arc()
+                        mem::replace(&mut self.head.next, AtomicArc::null()).into_arc().unwrap()
                     };
                     let overflow_buffer_node = mem::replace(&mut self.head, head_next);
                     res = Some(overflow_buffer_node);
                     self.num_buffer -= 1;
                 }
                 let mut new_buffer = ThreadLocalPage::new();
-                let _ = new_buffer.push_back(val);
-                new_buffer.next = AtomicArc::from_rc(self.head.clone());
-                self.head = Arc::new(new_buffer);
+                let pr = new_buffer.push_back(val);
+                debug_assert!(pr.is_ok());
+                let old_head = mem::replace(&mut self.head, new_buffer);
+                self.head.next = AtomicArc::new(old_head);
                 self.num_buffer += 1;
             }
         }
@@ -394,29 +390,24 @@ impl<const B: usize> TLBufferedStack<B> {
     #[inline(always)]
     pub fn append_page(
         &mut self,
-        page: Arc<ThreadLocalPage<B>>,
-    ) -> Option<Arc<ThreadLocalPage<B>>> {
-        unsafe {
-            let head_mut = self.head.as_mut();
-            if self.num_buffer >= Self::MAX_BUFFERS {
-                let head_next = head_mut.next.as_mut();
-                let head_next_next = mem::replace(&mut head_next.next, AtomicArc::null());
-                page.as_mut().next = head_next_next;
-                Some(mem::replace(&mut head_mut.next, AtomicArc::from_rc(page)).into_arc())
-            } else {
-                let head_next = mem::replace(&mut head_mut.next, AtomicArc::null());
-                page.as_mut().next = head_next;
-                head_mut.next = AtomicArc::from_rc(page);
-                self.num_buffer += 1;
-                None
-            }
+        mut page: ThreadLocalPage<B>,
+    ) -> Option<ThreadLocalPage<B>> {
+        if self.num_buffer >= Self::MAX_BUFFERS {
+            let head_next = mem::replace(&mut self.head.next, AtomicArc::null());
+            page.next = head_next;
+            Some(mem::replace(&mut self.head, page))
+        } else {
+            let old_head = mem::replace(&mut self.head, page);
+            self.head.next = AtomicArc::new(old_head);
+            self.num_buffer += 1;
+            None
         }
     }
 
     #[inline(always)]
     pub fn pop(&mut self) -> Option<usize> {
         loop {
-            let head_pop = unsafe { self.head.as_mut().pop_back() };
+            let head_pop = self.head.pop_back();
             if head_pop.is_some() {
                 return head_pop;
             }
@@ -426,8 +417,8 @@ impl<const B: usize> TLBufferedStack<B> {
                     return None;
                 }
                 let next_node =
-                    mem::replace(&mut self.head.as_mut().next, AtomicArc::null()).into_arc();
-                self.head = next_node;
+                    mem::replace(&mut self.head.next, AtomicArc::null()).into_arc();
+                self.head = next_node.unwrap();
                 self.num_buffer -= 1;
             }
         }
@@ -437,15 +428,12 @@ impl<const B: usize> TLBufferedStack<B> {
         let mut res = Vec::new();
         unsafe {
             // return free list
-            let head = &self.head;
-            if !head.is_null() {
-                res.append(&mut head.all());
-                let mut next = &head.next;
-                while !next.is_null() {
-                    let next_next = &next.as_mut().next;
-                    res.append(&mut next.as_mut().all());
-                    next = next_next;
-                }
+            res.append(&mut self.head.all());
+            let mut next = &self.head.next;
+            while !next.is_null() {
+                let next_next = &next.as_mut().next;
+                res.append(&mut next.as_mut().all());
+                next = next_next;
             }
         }
         res.sort();

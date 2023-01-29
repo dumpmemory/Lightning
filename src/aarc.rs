@@ -1,4 +1,6 @@
+use std::intrinsics::forget;
 use std::mem::{self, ManuallyDrop};
+use std::ptr;
 use std::sync::atomic::Ordering::*;
 use std::{
     ops::Deref,
@@ -38,7 +40,18 @@ impl<T> Arc<T> {
 
     #[inline(always)]
     pub unsafe fn as_mut(&self) -> &mut T {
+        assert_eq!((*self.ptr).count.load(Relaxed), 1);
         &mut (*(self.ptr as *mut Inner<T>)).val
+    }
+
+    pub unsafe fn unwrap(self) -> T {
+        unsafe {
+            assert_eq!((*self.ptr).count.load(Relaxed), 1);
+            let inner = ptr::read(self.ptr);
+            let val = inner.val;
+            forget(self);
+            return val;
+        }
     }
 }
 
