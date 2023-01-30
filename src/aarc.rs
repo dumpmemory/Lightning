@@ -6,8 +6,8 @@ use std::{
     sync::atomic::{AtomicPtr, AtomicUsize},
 };
 
-use crossbeam_utils::atomic::AtomicConsume;
 use crate::spin::SpinLock;
+use crossbeam_utils::atomic::AtomicConsume;
 
 pub struct Arc<T> {
     ptr: *const Inner<T>,
@@ -125,18 +125,14 @@ impl<T> AtomicArc<T> {
     pub fn store(&self, val: T) {
         let inner = Box::new(Inner::new(val));
         let _g = self.lock.lock();
-        let old = {
-            self.ptr.swap(Box::into_raw(inner), Relaxed)
-        };
+        let old = { self.ptr.swap(Box::into_raw(inner), Relaxed) };
         decr_ref(old)
     }
 
     #[inline(always)]
     pub fn store_ref(&self, val: Arc<T>) {
         let _g = self.lock.lock();
-        let old = {
-            self.ptr.swap(val.ptr as *mut Inner<T>, Relaxed)
-        };
+        let old = { self.ptr.swap(val.ptr as *mut Inner<T>, Relaxed) };
         mem::forget(val);
         decr_ref(old)
     }
@@ -223,13 +219,10 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value_is_ok(&self, current: &Arc<T>, new: T) -> bool {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        let g = self.lock.lock();
-        let (cas_res, _g) = {
-            let ptr =
-                self.ptr
-                    .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed);
-            (ptr, g)
-        };
+        let _g = self.lock.lock();
+        let cas_res =
+            self.ptr
+                .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed);
         match cas_res {
             Ok(current) => {
                 decr_ref(current);

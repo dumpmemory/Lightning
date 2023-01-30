@@ -762,8 +762,8 @@ mod test {
                         sender.send(ptr as usize).unwrap();
                     }
                 } else {
-                    while let  Ok(addr) = receiver.recv_timeout(Duration::from_secs(5)) {
-                        let ptr =  addr as _;
+                    while let Ok(addr) = receiver.recv_timeout(Duration::from_secs(5)) {
+                        let ptr = addr as _;
                         unsafe {
                             drop(ptr::read(ptr));
                         }
