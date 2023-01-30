@@ -144,11 +144,10 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn load(&self) -> Arc<T> {
-        let g = self.lock.read();
+        let _g = self.lock.read();
         let ptr = {
             let ptr = self.ptr.load(Relaxed);
             incr_ref(ptr);
-            drop(g);
             ptr
         };
         Arc::from_ptr(ptr)
