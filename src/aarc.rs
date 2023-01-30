@@ -193,58 +193,7 @@ impl<T> AtomicArc<T> {
             Err(_current) => false,
         }
     }
-
-    #[inline(always)]
-    pub fn compare_exchange_value(&self, current: &Arc<T>, new: T) -> Result<(), Arc<T>> {
-        let new = Box::into_raw(Box::new(Inner::new(new)));
-        let g = self.lock.lock();
-        let cas_res = {
-            self.ptr
-                .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed)
-        };
-        match cas_res {
-            Ok(current) => {
-                decr_ref(current);
-                Ok(())
-            }
-            Err(current) => {
-                incr_ref(current);
-                drop(g);
-                unsafe {
-                    drop(Box::from_raw(new));
-                }
-                Err(Arc::from_ptr(current))
-            }
-        }
-    }
-
-    #[inline(always)]
-    pub fn compare_exchange_value_is_ok(&self, current: &Arc<T>, new: T) -> bool {
-        let new = Box::into_raw(Box::new(Inner::new(new)));
-        let _g = self.lock.lock();
-        let cas_res =
-            self.ptr
-                .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed);
-        match cas_res {
-            Ok(current) => {
-                decr_ref(current);
-                true
-            }
-            Err(_current) => {
-                unsafe {
-                    drop(Box::from_raw(new));
-                }
-                false
-            }
-        }
-    }
-
-    // #[inline(always)]
-    // pub unsafe fn as_mut(&self) -> &mut T {
-    //     let inner: &mut Inner<T> = mem::transmute_copy(&self.ptr);
-    //     &mut inner.val
-    // }
-
+    
     #[inline(always)]
     pub fn into_arc(self) -> Arc<T> {
         let ptr = self.ptr.load(Acquire);
