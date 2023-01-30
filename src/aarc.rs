@@ -124,8 +124,9 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn store(&self, val: T) {
         let inner = Box::new(Inner::new(val));
+        let ptr = Box::into_raw(inner);
         let _g = self.lock.lock();
-        let old = { self.ptr.swap(Box::into_raw(inner), Relaxed) };
+        let old = { self.ptr.swap(ptr, Relaxed) };
         decr_ref(old)
     }
 
@@ -196,7 +197,7 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value(&self, current: &Arc<T>, new: T) -> Result<(), Arc<T>> {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        let _g = self.lock.lock();
+        let g = self.lock.lock();
         let cas_res = {
             self.ptr
                 .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed)
@@ -207,10 +208,11 @@ impl<T> AtomicArc<T> {
                 Ok(())
             }
             Err(current) => {
+                incr_ref(current);
+                drop(g);
                 unsafe {
                     drop(Box::from_raw(new));
                 }
-                incr_ref(current);
                 Err(Arc::from_ptr(current))
             }
         }

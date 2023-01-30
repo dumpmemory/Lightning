@@ -63,7 +63,8 @@ impl<T: Clone + Default, const B: usize> LinkedRingBufferStack<T, B> {
                 buffer: RingBuffer::new(),
                 next: AtomicArc::from_rc(node.clone()),
             };
-            let _ = self.head.compare_exchange_value_is_ok(&node, new_node);
+            let new_node_arc = Arc::new(new_node);
+            let _ = self.head.compare_exchange_is_ok(&node, &new_node_arc);
         }
     }
 
