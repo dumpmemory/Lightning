@@ -160,9 +160,7 @@ impl<T, const B: usize> SharedAlloc<T, B> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
             let head = self.free_obj.load();
-            unsafe {
-                objs.next.store_ref(head.clone());
-            }
+            objs.next.store_ref(head.clone());
             if self.free_obj.compare_exchange_is_ok(&head, &objs) {
                 return;
             }

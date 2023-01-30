@@ -1,6 +1,5 @@
 use std::intrinsics::forget;
-use std::mem::{self, ManuallyDrop};
-use std::ptr;
+use std::mem::{self};
 use std::sync::atomic::Ordering::*;
 use std::{
     ops::Deref,
@@ -162,7 +161,7 @@ impl<T> AtomicArc<T> {
             self.ptr.compare_exchange(
                 current.ptr as *mut Inner<T>,
                 new.ptr as *mut Inner<T>,
-                Relaxed,
+                AcqRel,
                 Relaxed,
             )
         };
@@ -186,7 +185,7 @@ impl<T> AtomicArc<T> {
             self.ptr.compare_exchange(
                 current.ptr as *mut Inner<T>,
                 new.ptr as *mut Inner<T>,
-                Relaxed,
+                AcqRel,
                 Relaxed,
             )
         };
@@ -215,7 +214,7 @@ impl<T> AtomicArc<T> {
             }
             Err(current) => {
                 unsafe {
-                    Box::from_raw(new);
+                    drop(Box::from_raw(new));
                 }
                 incr_ref(current);
                 Err(Arc::from_ptr(current))
