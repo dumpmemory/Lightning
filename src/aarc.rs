@@ -40,18 +40,8 @@ impl<T> Arc<T> {
 
     #[inline(always)]
     pub unsafe fn as_mut(&self) -> &mut T {
-        assert_eq!((*self.ptr).count.load(Relaxed), 1);
+        // assert_eq!((*self.ptr).count.load(Relaxed), 1);
         &mut (*(self.ptr as *mut Inner<T>)).val
-    }
-
-    pub unsafe fn unwrap(self) -> T {
-        unsafe {
-            assert_eq!((*self.ptr).count.load(Relaxed), 1);
-            let inner = ptr::read(self.ptr);
-            let val = inner.val;
-            forget(self);
-            return val;
-        }
     }
 }
 
@@ -236,10 +226,12 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value_is_ok(&self, current: &Arc<T>, new: T) -> bool {
         let new = Box::into_raw(Box::new(Inner::new(new)));
-        let cas_res = {
-            let _g = self.lock.write();
-            self.ptr
-                .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed)
+        let (cas_res, _g) = {
+            let g = self.lock.write();
+            let ptr =
+                self.ptr
+                    .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed);
+            (ptr, g)
         };
         match cas_res {
             Ok(current) => {
@@ -248,32 +240,29 @@ impl<T> AtomicArc<T> {
             }
             Err(_current) => {
                 unsafe {
-                    Box::from_raw(new);
+                    drop(Box::from_raw(new));
                 }
                 false
             }
         }
     }
 
-    #[inline(always)]
-    pub unsafe fn as_mut(&self) -> &mut T {
-        let inner: &mut Inner<T> = mem::transmute_copy(&self.ptr);
-        &mut inner.val
-    }
+    // #[inline(always)]
+    // pub unsafe fn as_mut(&self) -> &mut T {
+    //     let inner: &mut Inner<T> = mem::transmute_copy(&self.ptr);
+    //     &mut inner.val
+    // }
 
     #[inline(always)]
-    pub fn into_arc(mut self) -> Arc<T> {
-        let _g = self.lock.read();
-        unsafe {
-            let res = mem::transmute_copy(&self.ptr);
-            self.ptr = mem::zeroed();
-            return res;
-        }
+    pub fn into_arc(self) -> Arc<T> {
+        let ptr = self.ptr.load(Acquire);
+        forget(self);
+        Arc { ptr }
     }
 
     #[inline(always)]
     pub(crate) unsafe fn inner(&self) -> *mut Inner<T> {
-        mem::transmute_copy(&self.ptr)
+        self.ptr.load(Acquire)
     }
 }
 

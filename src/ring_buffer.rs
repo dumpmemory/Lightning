@@ -50,7 +50,6 @@ impl<T: Clone + Sized, const N: usize> RingBuffer<T, N> {
         self.count.load(Acquire)
     }
 
-
     #[inline(always)]
     pub fn push_back(&self, data: T) -> Result<ItemRef<T, N>, T> {
         self.push_general(data, &self.tail, &self.head, Self::incr, false)

@@ -44,7 +44,7 @@ impl<T> RwSpinLock<T> {
                     .compare_exchange(mark, mark + 2, AcqRel, Relaxed)
                     .is_ok()
             {
-                return ReadSpinLockGuard { lock: self }
+                return ReadSpinLockGuard { lock: self };
             }
             backoff.spin();
         }

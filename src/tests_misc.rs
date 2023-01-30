@@ -1,7 +1,7 @@
 use itertools::Itertools;
-use std::{thread::JoinHandle, panic, process};
-use std::sync::atomic::*;
 use std::sync::atomic::Ordering::*;
+use std::sync::atomic::*;
+use std::{panic, process, thread::JoinHandle};
 
 lazy_static! {
     static ref HOOK_SET: AtomicBool = AtomicBool::new(false);
