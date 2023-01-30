@@ -125,8 +125,8 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn store(&self, val: T) {
         let inner = Box::new(Inner::new(val));
+        let _g = self.lock.write();
         let old = {
-            let _g = self.lock.write();
             self.ptr.swap(Box::into_raw(inner), Relaxed)
         };
         decr_ref(old)
@@ -134,8 +134,8 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn store_ref(&self, val: Arc<T>) {
+        let _g = self.lock.write();
         let old = {
-            let _g = self.lock.write();
             self.ptr.swap(val.ptr as *mut Inner<T>, Relaxed)
         };
         mem::forget(val);
@@ -144,8 +144,8 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn load(&self) -> Arc<T> {
+        let g = self.lock.read();
         let ptr = {
-            let g = self.lock.read();
             let ptr = self.ptr.load(Relaxed);
             incr_ref(ptr);
             drop(g);
@@ -156,8 +156,8 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn compare_exchange(&self, current: &Arc<T>, new: &Arc<T>) -> Result<(), Arc<T>> {
+        let _g = self.lock.write();
         let cas_res = {
-            let _g = self.lock.write();
             self.ptr.compare_exchange(
                 current.ptr as *mut Inner<T>,
                 new.ptr as *mut Inner<T>,
@@ -180,8 +180,8 @@ impl<T> AtomicArc<T> {
 
     #[inline(always)]
     pub fn compare_exchange_is_ok(&self, current: &Arc<T>, new: &Arc<T>) -> bool {
+        let _g = self.lock.write();
         let cas_res = {
-            let _g = self.lock.write();
             self.ptr.compare_exchange(
                 current.ptr as *mut Inner<T>,
                 new.ptr as *mut Inner<T>,
@@ -202,8 +202,8 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value(&self, current: &Arc<T>, new: T) -> Result<(), Arc<T>> {
         let new = Box::into_raw(Box::new(Inner::new(new)));
+        let _g = self.lock.write();
         let cas_res = {
-            let _g = self.lock.write();
             self.ptr
                 .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed)
         };
@@ -225,8 +225,8 @@ impl<T> AtomicArc<T> {
     #[inline(always)]
     pub fn compare_exchange_value_is_ok(&self, current: &Arc<T>, new: T) -> bool {
         let new = Box::into_raw(Box::new(Inner::new(new)));
+        let g = self.lock.write();
         let (cas_res, _g) = {
-            let g = self.lock.write();
             let ptr =
                 self.ptr
                     .compare_exchange(current.ptr as *mut Inner<T>, new, Relaxed, Relaxed);

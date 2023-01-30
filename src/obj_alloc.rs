@@ -372,10 +372,10 @@ impl<const B: usize> TLBufferedStack<B> {
                     res = Some(overflow_buffer_node);
                     self.num_buffer -= 1;
                 }
-                let mut new_buffer = ThreadLocalPage::new();
-                let pr = new_buffer.push_back(val);
+                let new_buffer = Arc::new(ThreadLocalPage::new());
+                let pr = new_buffer.as_mut().push_back(val);
                 debug_assert!(pr.is_ok());
-                let old_head = mem::replace(&mut self.head, Arc::new(new_buffer));
+                let old_head = mem::replace(&mut self.head, new_buffer);
                 self.head.as_mut().next = AtomicArc::from_rc(old_head);
                 self.num_buffer += 1;
             }
