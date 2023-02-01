@@ -399,28 +399,6 @@ impl<'a, T: Clone + Default, const N: usize> ItemRef<'a, T, N> {
             .is_ok()
         {
             let val = unsafe { ptr::read(ele.get()) };
-            let head = buffer.head.load(Acquire);
-            let tail = buffer.tail.load(Acquire);
-            let tail_decr = RingBuffer::<T, N>::decr(tail);
-            if tail_decr == idx {
-                if buffer
-                    .tail
-                    .compare_exchange(tail, tail_decr, AcqRel, Acquire)
-                    .is_ok()
-                {
-                    let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
-                }
-            }
-            if head == idx {
-                let new_head = RingBuffer::<T, N>::incr(head);
-                if buffer
-                    .head
-                    .compare_exchange(head, new_head, AcqRel, Acquire)
-                    .is_ok()
-                {
-                    let _succ = flag.compare_exchange(SENTINEL, EMPTY, AcqRel, Acquire);
-                }
-            }
             self.buffer.count.fetch_sub(1, Relaxed);
             return Some(val);
         } else {
