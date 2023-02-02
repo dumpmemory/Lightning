@@ -1,11 +1,12 @@
 // A concurrent linked hash map, fast and lock-free on iterate
-use crate::list::{LinkedRingBufferList, ListIter};
+use crate::list::{LinkedRingBufferList, ListIter, RingBufferNode, ListItemRef};
 use crate::map::{Map, PtrHashMap, PtrMutexGuard};
-use crate::ring_buffer::ItemPtr;
+use crate::ring_buffer::{ItemPtr, ItemRef};
 use std::hash::Hash;
+use std::ops::Deref;
 
 pub struct LinkedHashMap<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> {
-    map: PtrHashMap<K, (V, ItemPtr<K, N>)>,
+    map: PtrHashMap<K, (V, ListItemPtr<K, N>)>,
     list: LinkedRingBufferList<K, N>,
 }
 
@@ -27,12 +28,12 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
         self.insert_list_ref_to_map(value, list_ref)
     }
 
-    fn insert_list_ref_to_map(&self, value: V, list_ref: ItemPtr<K, N>) -> Option<V> {
-        let key = unsafe { list_ref.to_ref().to_ref() };
-        match self.map.locked_with_upsert(key, (value, list_ref)) {
+    fn insert_list_ref_to_map(&self, value: V, list_ref: ListItemRef<K, N>) -> Option<V> {
+        let key = unsafe { list_ref.item_ref().to_ref() };
+        match self.map.locked_with_upsert(key, (value, ListItemPtr::from_ref(list_ref))) {
             Ok((_guard, (val, list_ptr))) => {
                 return unsafe {
-                    list_ptr.remove();
+                    list_ptr.to_ref().remove();
                     Some(val)
                 };
             }
@@ -63,9 +64,9 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
                 self.list.push_back(key.clone())
             };
             unsafe {
-                l.1.remove();
+                l.1.to_ref().remove();
             }
-            l.1 = new_ref;
+            l.1 = ListItemPtr::from_ref(new_ref);
             l.0.clone()
         })
     }
@@ -73,7 +74,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map.lock(key).map(|p| unsafe {
             let (v, l) = PtrMutexGuard::remove(p);
-            l.remove();
+            l.to_ref().remove();
             return v;
         })
     }
@@ -100,7 +101,7 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
                     if let Some(l) = self.map.lock(&k) {
                         unsafe {
                             let (v, mf) = PtrMutexGuard::remove(l);
-                            mf.remove(); // only remove list ref recorded in the map
+                            mf.to_ref().remove(); // only remove list ref recorded in the map
                             return Some((k, v));
                         }
                     }
@@ -179,6 +180,37 @@ unsafe impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> 
     for LinkedHashMap<K, V, N>
 {
 }
+
+#[derive(Clone)]
+struct ListItemPtr<T: Clone, const N: usize> {
+    obj_idx: usize,
+    list: *const LinkedRingBufferList<T, N>,
+    node_ptr: *const RingBufferNode<T, N>,
+}
+
+impl <T: Clone, const N: usize> ListItemPtr<T, N> {
+    fn from_ref<'a>(item_ref: ListItemRef<'a, T, N>) -> Self {
+        Self {
+            obj_idx: item_ref.obj_idx,
+            list: item_ref.list as *const _,
+            node_ptr: item_ref.node_ptr
+        }
+    }
+
+    unsafe fn to_ref(&self) -> ListItemRef<T, N> {
+        unsafe {
+            ListItemRef { obj_idx: self.obj_idx, list: &*self.list, node_ptr: self.node_ptr }
+        }
+    }
+}
+
+// impl <T: Clone, const N: usize> Deref for ListItemPtr<T, N> {
+//     type Target = ListItemRef<T, N>;
+
+//     fn deref(&self) -> &Self::Target {
+//         todo!()
+//     }
+// }
 
 #[cfg(test)]
 mod test {

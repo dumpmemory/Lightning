@@ -33,15 +33,19 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             tail: Atomic::from(tail_ptr),
         }
     }
-    pub fn push_front(&self, mut val: T) -> ItemPtr<T, N> {
+    pub fn push_front(&self, mut val: T) -> ListItemRef<T, N> {
         let guard = crossbeam_epoch::pin();
         let backoff = Backoff::new();
         loop {
             let head_ptr = self.head.load(Acquire, &guard);
             let head_node = unsafe { head_ptr.deref() };
             match head_node.buffer.push_front(val) {
-                Ok(r) => {
-                    return r.to_ptr();
+                Ok(item) => {
+                    return ListItemRef {
+                        obj_idx: item.idx,
+                        list: self,
+                        node_ptr: head_ptr.as_raw(),
+                    };
                 }
                 Err(v) => {
                     let head_lock = head_node.lock.try_lock();
@@ -70,15 +74,20 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
         }
     }
 
-    pub fn push_back(&self, mut val: T) -> ItemPtr<T, N> {
+    pub fn push_back(&self, mut val: T) -> ListItemRef<T, N> {
         let guard = crossbeam_epoch::pin();
         let backoff = Backoff::new();
         loop {
             let tail_ptr = self.tail.load(Acquire, &guard);
             let tail_node = unsafe { tail_ptr.deref() };
             match tail_node.buffer.push_back(val) {
-                Ok(r) => {
-                    return r.to_ptr();
+                Ok(item) => {
+                    let guard = crossbeam_epoch::pin();
+                    return ListItemRef {
+                        obj_idx: item.idx,
+                        list: self,
+                        node_ptr: tail_ptr.as_raw(),
+                    };
                 }
                 Err(v) => {
                     debug!("Locking on tail ptr: {:?}", tail_ptr);
@@ -219,7 +228,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
         }
         let node_ptr = node_ptr.as_raw();
         Some(ListItemRef {
-            guard,
             obj_idx,
             node_ptr,
             list: self,
@@ -246,7 +254,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
         }
         let node_ptr = node_ptr.as_raw();
         Some(ListItemRef {
-            guard,
             obj_idx,
             node_ptr,
             list: self,
@@ -298,10 +305,9 @@ impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
 }
 
 pub struct ListItemRef<'a, T: Clone, const N: usize> {
-    guard: Guard,
-    obj_idx: usize,
-    list: &'a LinkedRingBufferList<T, N>,
-    node_ptr: *const RingBufferNode<T, N>,
+    pub obj_idx: usize,
+    pub list: &'a LinkedRingBufferList<T, N>,
+    pub node_ptr: *const RingBufferNode<T, N>,
 }
 
 impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
@@ -310,7 +316,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
     }
 
     pub fn remove(&self) -> Option<T> {
-        let guard = &self.guard;
+        let guard = crossbeam_epoch::pin();
         let node_ref = Shared::from(self.node_ptr);
         let node = unsafe { node_ref.deref() };
         let item_ref = ItemRef {
@@ -321,15 +327,15 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
             if node.buffer.peek_back().is_none() {
                 // Internal node is empty, shall remove the node
                 loop {
-                    let prev_ptr = node.prev.load(Acquire, guard);
-                    let next_ptr = node.next.load(Acquire, guard);
+                    let prev_ptr = node.prev.load(Acquire, &guard);
+                    let next_ptr = node.next.load(Acquire, &guard);
                     let prev = unsafe { prev_ptr.as_ref() };
                     let next = unsafe { next_ptr.as_ref() };
                     let _prev_lock = prev.as_ref().map(|n| n.lock.lock());
                     let _node_lock = node.lock.lock();
                     let _next_lock = next.as_ref().map(|n| n.lock.lock());
-                    if prev.map_or(true, |n| n.next.load(Acquire, guard) == node_ref)
-                        && next.map_or(true, |n| n.prev.load(Acquire, guard) == node_ref)
+                    if prev.map_or(true, |n| n.next.load(Acquire, &guard) == node_ref)
+                        && next.map_or(true, |n| n.prev.load(Acquire, &guard) == node_ref)
                     {
                         prev.map(|n| n.next.store(next_ptr, Release));
                         next.map(|n| n.prev.store(prev_ptr, Release));
@@ -345,7 +351,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                             }
                         }
                         unsafe {
-                            logged_defer_destory(guard, node_ref, "Remove list item ref");
+                            logged_defer_destory(&guard, node_ref, "Remove list item ref");
                         }
                         break;
                     }
@@ -389,9 +395,7 @@ impl<'a, T: Clone + Default, const N: usize> Iterator for ListIter<'a, T, N> {
         loop {
             let item = self.buffer_iter.next();
             if let Some(item) = item {
-                let guard = crossbeam_epoch::pin();
                 return Some(ListItemRef {
-                    guard,
                     obj_idx: item.idx,
                     list: self.list,
                     node_ptr: self.node_ptr,
