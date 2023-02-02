@@ -1,8 +1,7 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::ring_buffer::{ItemIter, ItemPtr, ItemRef, RingBuffer};
-use parking_lot::Mutex;
+use crate::{ring_buffer::{ItemIter, ItemRef, RingBuffer}, spin::SpinLock};
 use std::sync::atomic::Ordering::*;
 
 // A mostly lock-free list with linked ring buffers
@@ -16,7 +15,7 @@ pub struct RingBufferNode<T, const N: usize> {
     pub buffer: RingBuffer<T, N>,
     prev: Atomic<Self>,
     next: Atomic<Self>,
-    lock: Mutex<()>,
+    lock: SpinLock<()>,
 }
 
 impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
@@ -82,7 +81,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
             let tail_node = unsafe { tail_ptr.deref() };
             match tail_node.buffer.push_back(val) {
                 Ok(item) => {
-                    let guard = crossbeam_epoch::pin();
                     return ListItemRef {
                         obj_idx: item.idx,
                         list: self,
@@ -90,7 +88,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                     };
                 }
                 Err(v) => {
-                    debug!("Locking on tail ptr: {:?}", tail_ptr);
+                    trace!("Locking on tail ptr: {:?}", tail_ptr);
                     let tail_lock = tail_node.lock.try_lock();
                     if tail_lock.is_some() && tail_node.next.load(Acquire, &guard).is_null() {
                         let new_node = RingBufferNode::new();
@@ -128,7 +126,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 return Some(obj);
             }
             // Prev node is empty, shall move to next node
-            let mut remains = vec![];
             {
                 let head_next = head_node.next.load(Acquire, &guard);
                 let head_next_node = unsafe { head_next.deref() };
@@ -150,14 +147,11 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 {
                     head_next_node.prev.store(Shared::null(), Release);
                     // Need to keep prev and next reference for iterator
-                    remains = head_node.buffer.pop_all();
+                    debug_assert!(head_node.buffer.pop_all().is_empty());
                     unsafe {
                         logged_defer_destory(&guard, head_ptr, "pop front with head ptr");
                     }
                 }
-            }
-            for r in remains {
-                self.push_front(r);
             }
             backoff.spin();
         }
@@ -173,7 +167,6 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 return Some(obj);
             }
             // Prev node is empty, shall move to next node
-            let mut remains = vec![];
             {
                 let tail_prev = tail_node.prev.load(Acquire, &guard);
                 let tail_prev_node = unsafe { tail_prev.deref() };
@@ -195,14 +188,11 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 {
                     tail_prev_node.next.store(Shared::null(), Release);
                     // Need to keep prev and next reference for iterator
-                    remains = tail_node.buffer.pop_all();
+                    debug_assert!(tail_node.buffer.pop_all().is_empty());
                     unsafe {
                         logged_defer_destory(&guard, tail_ptr, "pop back with tail ptr");
                     }
                 }
-            }
-            for r in remains {
-                self.push_back(r);
             }
             backoff.spin();
         }
@@ -299,7 +289,7 @@ impl<T: Clone + Default, const N: usize> RingBufferNode<T, N> {
             prev: Atomic::null(),
             next: Atomic::null(),
             buffer: RingBuffer::<T, N>::new(),
-            lock: Mutex::new(()),
+            lock: SpinLock::new(()),
         }
     }
 }
@@ -324,32 +314,27 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
             idx: self.obj_idx,
         };
         if let Some(obj) = item_ref.remove() {
-            if node.buffer.peek_back().is_none() {
+            if node.buffer.count() == 0 {
                 // Internal node is empty, shall remove the node
                 loop {
                     let prev_ptr = node.prev.load(Acquire, &guard);
                     let next_ptr = node.next.load(Acquire, &guard);
-                    let prev = unsafe { prev_ptr.as_ref() };
-                    let next = unsafe { next_ptr.as_ref() };
-                    let _prev_lock = prev.as_ref().map(|n| n.lock.lock());
+                    if prev_ptr.is_null() || next_ptr.is_null() { 
+                        // Either this empty node is at head or the tail
+                        // Should not temper with it
+                        break;
+                    }
+                    let prev = unsafe { prev_ptr.as_ref().unwrap() };
+                    let next = unsafe { next_ptr.as_ref().unwrap() };
+                    let _prev_lock = prev.lock.lock();
                     let _node_lock = node.lock.lock();
-                    let _next_lock = next.as_ref().map(|n| n.lock.lock());
-                    if prev.map_or(true, |n| n.next.load(Acquire, &guard) == node_ref)
-                        && next.map_or(true, |n| n.prev.load(Acquire, &guard) == node_ref)
-                    {
-                        prev.map(|n| n.next.store(next_ptr, Release));
-                        next.map(|n| n.prev.store(prev_ptr, Release));
-                        let remains = node.buffer.pop_all();
-                        for v in remains {
-                            // Compensate, order may changed but not much choice here
-                            if prev.is_none() {
-                                // Possibly removing head node
-                                self.list.push_front(v);
-                            } else {
-                                // Possibly removing tail or internal node
-                                self.list.push_back(v);
-                            }
-                        }
+                    let _next_lock = next.lock.lock();
+                    if prev.next.load(Acquire, &guard) == node_ref && next.prev.load(Acquire, &guard) == node_ref{
+                        prev.next.store(next_ptr, Release);
+                        next.prev.store(prev_ptr, Release);
+                        node.next.store(Shared::null(), Relaxed);
+                        node.prev.store(Shared::null(), Relaxed);
+                        debug_assert!(node.buffer.pop_all().is_empty(), "With locking we should be confident that there is no remains");
                         unsafe {
                             logged_defer_destory(&guard, node_ref, "Remove list item ref");
                         }
