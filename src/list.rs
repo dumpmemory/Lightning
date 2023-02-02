@@ -129,6 +129,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 return Some(obj);
             }
             // Prev node is empty, shall move to next node
+            let mut remains = Vec::new();
             {
                 let head_next = head_node.next.load(Acquire, &guard);
                 let head_next_node = unsafe { head_next.deref() };
@@ -150,12 +151,14 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         .is_ok()
                 {
                     head_next_node.prev.store(Shared::null(), Release);
-                    // Need to keep prev and next reference for iterator
-                    debug_assert!(head_node.buffer.pop_all().is_empty());
+                    remains = head_node.buffer.pop_all();
                     unsafe {
                         logged_defer_destory(&guard, head_ptr, "pop front with head ptr");
                     }
                 }
+            }
+            for item in remains {
+                self.push_front(item);
             }
             backoff.spin();
         }
@@ -171,6 +174,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 return Some(obj);
             }
             // Prev node is empty, shall move to next node
+            let mut remains = Vec::new();
             {
                 let tail_prev = tail_node.prev.load(Acquire, &guard);
                 let tail_prev_node = unsafe { tail_prev.deref() };
@@ -192,12 +196,14 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                         .is_ok()
                 {
                     tail_prev_node.next.store(Shared::null(), Release);
-                    // Need to keep prev and next reference for iterator
-                    debug_assert!(tail_node.buffer.pop_all().is_empty());
+                    remains = tail_node.buffer.pop_all();
                     unsafe {
                         logged_defer_destory(&guard, tail_ptr, "pop back with tail ptr");
                     }
                 }
+            }
+            for item in remains {
+                self.push_front(item);
             }
             backoff.spin();
         }
@@ -321,6 +327,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
         if let Some(obj) = item_ref.remove() {
             if node.buffer.count() == 0 {
                 // Internal node is empty, shall remove the node
+                let mut remains = Vec::new();
                 loop {
                     let prev_ptr = node.prev.load(Acquire, &guard);
                     let next_ptr = node.next.load(Acquire, &guard);
@@ -342,15 +349,15 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                         next.prev.store(prev_ptr, Release);
                         node.next.store(Shared::null(), Relaxed);
                         node.prev.store(Shared::null(), Relaxed);
-                        debug_assert!(
-                            node.buffer.pop_all().is_empty(),
-                            "With locking we should be confident that there is no remains"
-                        );
+                        remains = node.buffer.pop_all();
                         unsafe {
                             logged_defer_destory(&guard, node_ref, "Remove list item ref");
                         }
                         break;
                     }
+                }
+                for item in remains {
+                    self.list.push_front(item);
                 }
             }
             Some(obj)
