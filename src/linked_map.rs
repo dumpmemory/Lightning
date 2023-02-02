@@ -1,5 +1,5 @@
 // A concurrent linked hash map, fast and lock-free on iterate
-use crate::list::{LinkedRingBufferList, ListIter, RingBufferNode, ListItemRef};
+use crate::list::{LinkedRingBufferList, ListItemRef, ListIter, RingBufferNode};
 use crate::map::{Map, PtrHashMap, PtrMutexGuard};
 use crate::ring_buffer::{ItemPtr, ItemRef};
 use std::hash::Hash;
@@ -30,7 +30,10 @@ impl<K: Clone + Hash + Eq + Default, V: Clone + Default, const N: usize> LinkedH
 
     fn insert_list_ref_to_map(&self, value: V, list_ref: ListItemRef<K, N>) -> Option<V> {
         let key = unsafe { list_ref.item_ref().to_ref() };
-        match self.map.locked_with_upsert(key, (value, ListItemPtr::from_ref(list_ref))) {
+        match self
+            .map
+            .locked_with_upsert(key, (value, ListItemPtr::from_ref(list_ref)))
+        {
             Ok((_guard, (val, list_ptr))) => {
                 return unsafe {
                     list_ptr.to_ref().remove();
@@ -188,18 +191,22 @@ struct ListItemPtr<T: Clone, const N: usize> {
     node_ptr: *const RingBufferNode<T, N>,
 }
 
-impl <T: Clone, const N: usize> ListItemPtr<T, N> {
+impl<T: Clone, const N: usize> ListItemPtr<T, N> {
     fn from_ref<'a>(item_ref: ListItemRef<'a, T, N>) -> Self {
         Self {
             obj_idx: item_ref.obj_idx,
             list: item_ref.list as *const _,
-            node_ptr: item_ref.node_ptr
+            node_ptr: item_ref.node_ptr,
         }
     }
 
     unsafe fn to_ref(&self) -> ListItemRef<T, N> {
         unsafe {
-            ListItemRef { obj_idx: self.obj_idx, list: &*self.list, node_ptr: self.node_ptr }
+            ListItemRef {
+                obj_idx: self.obj_idx,
+                list: &*self.list,
+                node_ptr: self.node_ptr,
+            }
         }
     }
 }

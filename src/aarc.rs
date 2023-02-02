@@ -193,7 +193,7 @@ impl<T> AtomicArc<T> {
             Err(_current) => false,
         }
     }
-    
+
     #[inline(always)]
     pub fn into_arc(self) -> Arc<T> {
         let ptr = self.ptr.load(Acquire);

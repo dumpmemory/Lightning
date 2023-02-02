@@ -1,7 +1,10 @@
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
 
-use crate::{ring_buffer::{ItemIter, ItemRef, RingBuffer}, spin::SpinLock};
+use crate::{
+    ring_buffer::{ItemIter, ItemRef, RingBuffer},
+    spin::SpinLock,
+};
 use std::sync::atomic::Ordering::*;
 
 // A mostly lock-free list with linked ring buffers
@@ -321,7 +324,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                 loop {
                     let prev_ptr = node.prev.load(Acquire, &guard);
                     let next_ptr = node.next.load(Acquire, &guard);
-                    if prev_ptr.is_null() || next_ptr.is_null() { 
+                    if prev_ptr.is_null() || next_ptr.is_null() {
                         // Either this empty node is at head or the tail
                         // Should not temper with it
                         break;
@@ -331,15 +334,18 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                     let _prev_lock = prev.lock.lock();
                     let _node_lock = node.lock.lock();
                     let _next_lock = next.lock.lock();
-                    if node.buffer.count() == 0 
-                        && prev.next.load(Acquire, &guard) == node_ref 
+                    if node.buffer.count() == 0
+                        && prev.next.load(Acquire, &guard) == node_ref
                         && next.prev.load(Acquire, &guard) == node_ref
                     {
                         prev.next.store(next_ptr, Release);
                         next.prev.store(prev_ptr, Release);
                         node.next.store(Shared::null(), Relaxed);
                         node.prev.store(Shared::null(), Relaxed);
-                        debug_assert!(node.buffer.pop_all().is_empty(), "With locking we should be confident that there is no remains");
+                        debug_assert!(
+                            node.buffer.pop_all().is_empty(),
+                            "With locking we should be confident that there is no remains"
+                        );
                         unsafe {
                             logged_defer_destory(&guard, node_ref, "Remove list item ref");
                         }
