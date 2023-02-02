@@ -137,6 +137,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 let head_next_lock = head_next_node.lock.try_lock();
                 if head_lock.is_some()
                     && head_next_lock.is_some()
+                    && head_node.buffer.count() == 0
                     && head_node.prev.load(Acquire, &guard).is_null()
                     && head_node.next.load(Acquire, &guard) == head_next
                     && head_next_node.prev.load(Acquire, &guard) == head_ptr
@@ -178,6 +179,7 @@ impl<T: Clone + Default, const N: usize> LinkedRingBufferList<T, N> {
                 let tail_lock = tail_node.lock.try_lock();
                 if tail_prev_lock.is_some()
                     && tail_lock.is_some()
+                    && tail_node.buffer.count() == 0
                     && tail_node.next.load(Acquire, &guard).is_null()
                     && tail_node.prev.load(Acquire, &guard) == tail_prev
                     && tail_prev_node.next.load(Acquire, &guard) == tail_ptr
@@ -329,7 +331,10 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
                     let _prev_lock = prev.lock.lock();
                     let _node_lock = node.lock.lock();
                     let _next_lock = next.lock.lock();
-                    if prev.next.load(Acquire, &guard) == node_ref && next.prev.load(Acquire, &guard) == node_ref{
+                    if node.buffer.count() == 0 
+                        && prev.next.load(Acquire, &guard) == node_ref 
+                        && next.prev.load(Acquire, &guard) == node_ref
+                    {
                         prev.next.store(next_ptr, Release);
                         next.prev.store(prev_ptr, Release);
                         node.next.store(Shared::null(), Relaxed);
