@@ -158,20 +158,25 @@ pub struct ChunkPtr<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>
     _marker: PhantomData<&'a ()>,
 }
 
-impl <'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for ChunkPtr<'a, K, V, A, ALLOC> {
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone
+    for ChunkPtr<'a, K, V, A, ALLOC>
+{
     fn clone(&self) -> Self {
-        Self { ptr: self.ptr, _marker: PhantomData }
+        Self {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
-impl <'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Copy for ChunkPtr<'a, K, V, A, ALLOC> {
-
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Copy
+    for ChunkPtr<'a, K, V, A, ALLOC>
+{
 }
 
 struct ChunkMeta {
     current_chunks: AtomicUsize,
     history_chunks: AtomicUsize,
-    epoch: AtomicUsize,
 }
 
 struct ChunkArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
@@ -281,6 +286,9 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<K, V, A
             if chunk_addr > 0 {
                 unsafe {
                     let old_addr = intrinsics::atomic_xchg_acqrel(chunk_addr as *mut _, 0usize);
+                    if old_addr == 0 {
+                        continue;
+                    }
                     guard.defer_unchecked(move || {
                         (ChunkPtr::<'a, K, V, A, ALLOC> {
                             ptr: old_addr as _,
@@ -360,7 +368,6 @@ impl<
             meta: Arc::new(ChunkMeta {
                 current_chunks: AtomicUsize::new(current_chunk_array as usize),
                 history_chunks: AtomicUsize::new(history_chunk_array as usize),
-                epoch: AtomicUsize::new(0),
             }),
             count: AtomicUsize::new(0),
             init_cap: cap,
@@ -386,15 +393,9 @@ impl<
         'OUTER: loop {
             let (chunk, new_chunk, epoch) = self.chunk_refs(hash, guard);
             let mut v;
-            if let Some((mut val, addr, aitem)) = self.get_from_chunk(
-                chunk,
-                hash,
-                key,
-                fkey,
-                &backoff,
-                new_chunk,
-                epoch,
-            ) {
+            if let Some((mut val, addr, aitem)) =
+                self.get_from_chunk(chunk, hash, key, fkey, &backoff, new_chunk, epoch)
+            {
                 'SPIN: loop {
                     v = val.val;
                     if val.is_valued() {
@@ -832,9 +833,8 @@ impl<
         'OUTER: loop {
             let (chunk, new_chunk, _epoch) = self.chunk_refs(hash, &guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
-            let old_chunk_val = new_chunk.map(|_| {
-                self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard)
-            });
+            let old_chunk_val = new_chunk
+                .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard));
             match old_chunk_val {
                 Some(ModResult::Fail) => {
                     // Make sure sentinel had succceed first
@@ -1771,11 +1771,9 @@ impl<
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         // Swap in new chunk as placeholder for the lock
-        let history_chunk_array =
-            Self::chunk_array_at_addr(self.meta.history_chunks.load(Acquire));
+        let history_chunk_array = Self::chunk_array_at_addr(self.meta.history_chunks.load(Acquire));
         let history_chunk_id = history_chunk_array.id_of_hash(hash);
-        let current_chunk_array =
-            Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire));
+        let current_chunk_array = Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire));
         let current_chunk_id = current_chunk_array.id_of_hash(hash);
         if !history_chunk_array.swap_in_chunk(history_chunk_id, old_chunk_ptr) {
             // other thread have allocated new chunk and wins the competition, exit
@@ -1815,7 +1813,6 @@ impl<
             (*new_chunk).occupation.store(old_occupation, Relaxed);
         }
         let new_chunk_ptr = ChunkPtr::new(new_chunk);
-        let new_chunk_ins = unsafe { new_chunk_ptr.deref() };
         debug_assert_ne!(new_chunk_ptr.base, old_chunk_ptr.base);
         debug!(
             "--- Resizing {} to {}. New size is {}, was {} at old epoch {}",
@@ -1830,7 +1827,6 @@ impl<
             old_epoch
         );
         current_chunk_array.set_chunk(current_chunk_id, new_chunk_ptr); // Stump becasue we have the lock already
-        let meta = self.meta.clone();
         // Not going to take multithreading resize
         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
@@ -1846,9 +1842,9 @@ impl<
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
             old_chunk_ptr.base,
-            new_chunk_ins.base,
+            new_chunk_ptr.base,
             old_chunk_ptr.capacity,
-            new_chunk_ins.capacity,
+            new_chunk_ptr.capacity,
             old_epoch, num_migrated
         );
         ResizeResult::InProgress
@@ -1879,7 +1875,7 @@ impl<
             let fkey = Self::get_fast_key(old_address);
             let fvalue = Self::get_fast_value(old_address);
             debug_assert_eq!(old_address, old_chunk.entry_addr(idx));
-            debug_assert_eq!(old_chunk.now_epoch(), epoch + 1);
+            debug_assert_eq!(new_chunk.now_epoch(), epoch + 1);
             // Reasoning value states
             trace!(
                 "Migrating entry have key {}",
@@ -2198,6 +2194,15 @@ impl<
 
     fn chunk_array_at_addr<'a>(addr: usize) -> &'a ChunkArray<K, V, A, ALLOC> {
         ChunkArray::ref_from_addr(addr)
+    }
+
+    pub (crate) fn now_epoch(&self, key: &K, fkey: usize) -> usize {
+        let (_fkey, hash) = Self::hash(fkey, key);
+        let guard = crossbeam_epoch::pin();
+        Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire))
+            .hash_chunk(hash, &guard)
+            .unwrap()
+            .now_epoch()
     }
 }
 
@@ -2560,10 +2565,14 @@ impl<
 {
     fn clone(&self) -> Self {
         let guard = crossbeam_epoch::pin();
-        let current_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.current_chunks.load(Acquire));
-        let history_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.history_chunks.load(Acquire));
-        let new_current_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(current_chunks.len, current_chunks.max_cap);
-        let new_history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(history_chunks.len, history_chunks.max_cap);
+        let current_chunks =
+            ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.current_chunks.load(Acquire));
+        let history_chunks =
+            ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.history_chunks.load(Acquire));
+        let new_current_chunk_array =
+            ChunkArray::<K, V, A, ALLOC>::new(current_chunks.len, current_chunks.max_cap);
+        let new_history_chunk_array =
+            ChunkArray::<K, V, A, ALLOC>::new(history_chunks.len, history_chunks.max_cap);
         for i in 0..current_chunks.len {
             if let Some(chunk) = current_chunks.chunk_at(i, &guard) {
                 unsafe {
@@ -2588,7 +2597,6 @@ impl<
             meta: Arc::new(ChunkMeta {
                 current_chunks: AtomicUsize::new(new_current_chunk_array as usize),
                 history_chunks: AtomicUsize::new(new_history_chunk_array as usize),
-                epoch: AtomicUsize::new(0),
             }),
             count: AtomicUsize::new(0),
             init_cap: self.init_cap,
@@ -2611,10 +2619,18 @@ impl<
 {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
-        let current_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.current_chunks.load(Acquire));
-        let history_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.history_chunks.load(Acquire));
-        &(*current_chunks).clear(&guard);
-        &(*history_chunks).clear(&guard);
+        let current_chunks_ptr = self.meta.current_chunks.load(Acquire);
+        let history_chunks_ptr = self.meta.history_chunks.load(Acquire);
+        let current_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(current_chunks_ptr);
+        let history_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(history_chunks_ptr);
+        current_chunks.clear(&guard);
+        history_chunks.clear(&guard);
+        unsafe {
+            guard.defer_unchecked(move || {
+                libc::free(current_chunks_ptr as _);
+                libc::free(history_chunks_ptr as _);
+            })
+        }
     }
 }
 

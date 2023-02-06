@@ -54,6 +54,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .map(|(fv, _)| (self.ptr_of_val(fv), guard))
     }
 
+    pub (crate) fn now_epoch(&self, key: &K) -> usize {
+        self.table.now_epoch(&key, 0)
+    }
+
     pub fn lock(&self, key: &K) -> Option<PtrMutexGuard<K, V, ALLOC, H>> {
         PtrMutexGuard::new(&self, key)
     }
@@ -714,13 +718,13 @@ pub mod tests {
                                       assert_eq!(map.get(&key), Some(val_from(&key, value_num - 1)));
                                   }
                                   let value = val_from(&key, value_num);
-                                  let pre_insert_epoch = map.table.now_epoch();
+                                  let pre_insert_epoch = map.now_epoch(&key);
                                   map.insert(key.clone(), value.clone());
-                                  let post_insert_epoch = map.table.now_epoch();
+                                  let post_insert_epoch = map.now_epoch(&key);
                                   for l in 1..128 {
-                                      let pre_fail_get_epoch = map.table.now_epoch();
+                                      let pre_fail_get_epoch = map.now_epoch(&key);
                                       let left = map.get(&key);
-                                      let post_fail_get_epoch = map.table.now_epoch();
+                                      let post_fail_get_epoch = map.now_epoch(&key);
                                       let right = Some(&value);
                                       if left.as_ref() != right {
                                           error!("Discovered mismatch key {:?}, analyzing", &key);
@@ -730,13 +734,12 @@ pub mod tests {
                                                 let mright = Some(&value);
                                                 if mleft.as_ref() == mright {
                                                     panic!(
-                                                        "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
+                                                        "Recovered at turn {} for {:?}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!",
                                                         m,
                                                         &key,
-                                                        map.table.map_is_copying(),
                                                         pre_fail_get_epoch,
                                                         post_fail_get_epoch,
-                                                        map.table.now_epoch(),
+                                                        map.now_epoch(&key),
                                                         pre_insert_epoch,
                                                         post_insert_epoch,
                                                         right, left
@@ -746,31 +749,30 @@ pub mod tests {
                                             }
                                           };
                                           error_checking();
-                                          panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
+                                          panic!("Unable to recover for {:?}, round {}. Expecting {:?} got {:?}.", &key, l , right, left);
                                           // panic!("Unrecoverable value change for {:?}", key);
                                       }
                                   }
                                   if j % 8 == 0 {
-                                    let pre_rm_epoch = map.table.now_epoch();
+                                    let pre_rm_epoch = map.now_epoch(&key);
                                     assert_eq!(
                                         map.remove(&key).as_ref(),
                                         Some(&value),
-                                        "Remove result, get {:?}, copying {}, round {}",
+                                        "Remove result, get {:?}, round {}",
                                         map.get(&key),
-                                        map.table.map_is_copying(),
                                         k
                                     );
-                                    let post_rm_epoch = map.table.now_epoch();
-                                    assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch(), get_delayed_log(4));
+                                    let post_rm_epoch = map.now_epoch(&key);
+                                    assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.now_epoch(&key), get_delayed_log(4));
                                     assert!(map.lock(&key).is_none(), "Remove recursion with lock");
                                     map.insert(key.clone(), value.clone());
                                   }
                                   if j % 4 == 0 {
                                       let updating = || {
                                         let new_value = val_from(&key, value_num + 7);
-                                        let pre_insert_epoch = map.table.now_epoch();
+                                        let pre_insert_epoch = map.now_epoch(&key);
                                         map.insert(key.clone(), new_value.clone());
-                                        let post_insert_epoch = map.table.now_epoch();
+                                        let post_insert_epoch = map.now_epoch(&key);
                                         assert_eq!(
                                             map.get(&key).as_ref(),
                                             Some(&new_value),
@@ -804,7 +806,7 @@ pub mod tests {
                                 k,
                                 i,
                                 j,
-                                map.table.now_epoch()
+                                map.now_epoch(&k)
                             );
                         }
                     });
@@ -824,33 +826,32 @@ pub mod tests {
                                 let n = i * 100000 + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
-                                let prev_epoch = map.table.now_epoch();
+                                let prev_epoch = map.now_epoch(&key);
                                 assert_eq!(map.insert(key.clone(), value.clone()), None, "inserting at key {}", key);
-                                let post_insert_epoch = map.table.now_epoch();
+                                let post_insert_epoch = map.now_epoch(&key);
                                 {
                                     let get_test_res = map.get(&key);
-                                    let get_epoch = map.table.now_epoch();
+                                    let get_epoch = map.now_epoch(&key);
                                     let expecting = Some(value.clone());
                                     if get_test_res != expecting {
                                         let all_pairs = map.entries().into_iter().collect::<std::collections::HashMap<_, _>>();
-                                        let dump_epoch = map.table.now_epoch();
                                         panic!(
-                                            "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?} at epoch {}",
+                                            "Value mismatch {:?} expecting {:?}. Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}. Dumped containing {:?}",
                                             get_test_res, expecting,
                                             key, get_epoch, post_insert_epoch, prev_epoch,
                                             get_delayed_log(4),
-                                            all_pairs.get(&key), dump_epoch
+                                            all_pairs.get(&key)
                                         );
                                     }
                                 }
-                                let post_insert_epoch = map.table.now_epoch();
+                                let post_insert_epoch = map.now_epoch(&key);
                                 assert_eq!(
                                     map.insert(key.clone(), value.clone()),
                                     Some(value.clone()),
                                     "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
                                     key,
                                     map.get(&key),
-                                    map.table.now_epoch(),
+                                    map.now_epoch(&key),
                                     post_insert_epoch,
                                     prev_epoch,
                                     get_delayed_log(3), i
@@ -866,7 +867,7 @@ pub mod tests {
                                     "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
                                     key,
                                     map.get(&key),
-                                    map.table.now_epoch(),
+                                    map.now_epoch(&key),
                                     get_delayed_log(3), i
                                 );
                             }
@@ -879,7 +880,7 @@ pub mod tests {
                                     Some(value),
                                     "reading at key {}, epoch {}",
                                     key,
-                                    map.table.now_epoch()
+                                    map.now_epoch(&key)
                                 );
                             }
                         }));
@@ -1012,7 +1013,6 @@ pub mod tests {
         for i in 0..prefill {
             map.insert(i, i);
         }
-        debug!("Len: {}, occ {:?}", map.len(), map.table.occupation());
         let mut i = prefill;
         b.iter(|| {
             map.insert(i, i);
@@ -1055,14 +1055,13 @@ pub mod tests {
                             map.get(&key).is_some(),
                             "Pre getting value for mutex, key {}, epoch {}",
                             key,
-                            map.table.now_epoch()
+                            map.now_epoch(&key)
                         );
                         let val = {
                             let mut mutex = map.lock(&key).expect(&format!(
-                                "Locking key {}, epoch {}, copying {}",
+                                "Locking key {}, epoch {}",
                                 key,
-                                map.table.now_epoch(),
-                                map.table.map_is_copying()
+                                map.now_epoch(&key),
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
@@ -1074,14 +1073,14 @@ pub mod tests {
                             map.get(&key).is_some(),
                             "Post getting value for mutex, key {}, epoch {}",
                             key,
-                            map.table.now_epoch()
+                            map.now_epoch(&key)
                         );
                         if j % 7 == 0 {
                             {
                                 let mutex = map.lock(&key).expect(&format!(
-                                    "Remove locking key {}, copying {}",
+                                    "Remove locking key {}, epoch {}",
                                     key,
-                                    map.table.now_epoch()
+                                    map.now_epoch(&key)
                                 ));
                                 mutex.remove();
                             }
@@ -1114,16 +1113,15 @@ pub mod tests {
                         Some(key),
                         "Pre getting value for mutex, key {}, epoch {}",
                         key,
-                        map.table.now_epoch()
+                        map.now_epoch(&key)
                     );
                     let get_fval = map.table.get(&key, 0, false).unwrap().0;
                     assert_eq!(get_fval, get_fval & WORD_MUTEX_DATA_BIT_MASK);
                     let val = {
                         let mut mutex = map.lock(&key).expect(&format!(
-                            "Locking key {}, epoch {}, copying {}",
+                            "Locking key {}, epoch {}",
                             key,
-                            map.table.now_epoch(),
-                            map.table.map_is_copying()
+                            map.now_epoch(&key),
                         ));
                         assert_eq!(*mutex, key);
                         *mutex = key * 1000;
@@ -1136,7 +1134,7 @@ pub mod tests {
                         Some(val),
                         "Post getting value for mutex, key {}, epoch {}",
                         key,
-                        map.table.now_epoch()
+                        map.now_epoch(&key)
                     );
                     //assert_eq!(*map.lock(&key).unwrap(), val);
                 }

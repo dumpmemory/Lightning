@@ -153,6 +153,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     pub fn read(&self, key: &K) -> Option<HashMapReadGuard<K, V, ALLOC, H>> {
         HashMapReadGuard::new(&self.table, key)
     }
+
+    fn now_epoch(&self, key: &K) -> usize {
+        self.table.now_epoch(&key, 0)
+    }
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<K, V>
@@ -545,13 +549,13 @@ mod fat_tests {
                           assert_eq!(map.get(&key), Some(val_from(value_num - 1)));
                       }
                       let value = val_from(value_num);
-                      let pre_insert_epoch = map.table.now_epoch();
+                      let pre_insert_epoch = map.now_epoch(&key);
                       map.insert(key, value);
-                      let post_insert_epoch = map.table.now_epoch();
+                      let post_insert_epoch = map.now_epoch(&key);
                       for l in 1..128 {
-                          let pre_fail_get_epoch = map.table.now_epoch();
+                          let pre_fail_get_epoch = map.now_epoch(&key);
                           let left = map.get(&key);
-                          let post_fail_get_epoch = map.table.now_epoch();
+                          let post_fail_get_epoch = map.now_epoch(&key);
                           let right = Some(value);
                           if left != right {
                               error!("Discovered mismatch key {:?}, analyzing", &key);
@@ -560,13 +564,12 @@ mod fat_tests {
                                   let mright = Some(value);
                                   if mleft == mright {
                                       panic!(
-                                          "Recovered at turn {} for {:?}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
+                                          "Recovered at turn {} for {:?}, epoch {} to {}, now {}, PIE: {} to {}. Expecting {:?} got {:?}. Migration problem!!!", 
                                           m, 
                                           &key, 
-                                          map.table.map_is_copying(),
                                           pre_fail_get_epoch,
                                           post_fail_get_epoch,
-                                          map.table.now_epoch(),
+                                          map.now_epoch(&key),
                                           pre_insert_epoch, 
                                           post_insert_epoch,
                                           right, left
@@ -574,7 +577,7 @@ mod fat_tests {
                                       // panic!("Late value change on {:?}", key);
                                   }
                               }
-                              panic!("Unable to recover for {:?}, round {}, copying {}. Expecting {:?} got {:?}.", &key, l , map.table.map_is_copying(), right, left);
+                              panic!("Unable to recover for {:?}, round {}. Expecting {:?} got {:?}.", &key, l , right, left);
                               // panic!("Unrecoverable value change for {:?}", key);
                           }
                       }
@@ -582,9 +585,8 @@ mod fat_tests {
                           assert_eq!(
                               map.remove(&key),
                               Some(value),
-                              "Remove result, get {:?}, copying {}, round {}",
+                              "Remove result, get {:?}, round {}",
                               map.get(&key),
-                              map.table.map_is_copying(),
                               k
                           );
                           assert_eq!(map.get(&key), None, "Remove recursion");
@@ -593,9 +595,9 @@ mod fat_tests {
                       }
                       if j % 3 == 0 {
                           let new_value = val_from(value_num + 7);
-                          let pre_insert_epoch = map.table.now_epoch();
+                          let pre_insert_epoch = map.now_epoch(&key);
                           map.insert(key, new_value);
-                          let post_insert_epoch = map.table.now_epoch();
+                          let post_insert_epoch = map.now_epoch(&key);
                           assert_eq!(
                               map.get(&key), 
                               Some(new_value), 
@@ -627,7 +629,7 @@ mod fat_tests {
                     k,
                     i,
                     j,
-                    map.table.now_epoch()
+                    map.now_epoch(&k)
                 );
             }
         });

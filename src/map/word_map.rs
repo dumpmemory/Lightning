@@ -27,6 +27,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     pub fn get_from_mutex(&self, key: &FKey) -> Option<FVal> {
         self.get(key).map(|v| v & WORD_MUTEX_DATA_BIT_MASK)
     }
+
+    fn now_epoch(&self, key: FKey) -> usize {
+        self.table.now_epoch(&(), key)
+    }
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for WordMap<ALLOC, H> {
@@ -270,7 +274,7 @@ mod test {
         }
         for i in 50..60 {
             let res = table.get(&i);
-            assert_eq!(res, Some(i), "at epoch {}", table.table.now_epoch());
+            assert_eq!(res, Some(i), "at epoch {}", table.now_epoch(i));
         }
         for i in 50..60 {
             assert_eq!(table.remove(&i), Some(i));
@@ -318,8 +322,9 @@ mod test {
         }
         for i in 100..900 {
             for j in START_IDX..60 {
-                let get_res = map.get(&(i * 100 + j));
-                assert_eq!(get_res, Some(i * j), "at epoch {}", map.table.now_epoch())
+                let key = i * 100 + j;
+                let get_res = map.get(&key);
+                assert_eq!(get_res, Some(i * j), "at epoch {}", map.now_epoch(key))
             }
         }
         for i in START_IDX..9 {
@@ -348,13 +353,13 @@ mod test {
                       if k != START_IDX {
                           assert_eq!(map.get(&key), Some(value - 1));
                       }
-                      let pre_insert_epoch = map.table.now_epoch();
+                      let pre_insert_epoch = map.now_epoch(key);
                       map.insert(key, value);
-                      let post_insert_epoch = map.table.now_epoch();
+                      let post_insert_epoch = map.now_epoch(key);
                       for l in 1..128 {
-                          let pre_fail_get_epoch = map.table.now_epoch();
+                          let pre_fail_get_epoch = map.now_epoch(key);
                           let left = map.get(&key);
-                          let post_fail_get_epoch = map.table.now_epoch();
+                          let post_fail_get_epoch = map.now_epoch(key);
                           let right = Some(value);
                           if left != right {
                               for m in 1..1024 {
@@ -362,42 +367,40 @@ mod test {
                                   let right = Some(value);
                                   if left == right {
                                       panic!(
-                                          "Recovered at turn {} for {}, copying {}, epoch {} to {}, now {}, PIE: {} to {}. Migration problem!!!", 
+                                          "Recovered at turn {} for {}, epoch {} to {}, now {}, PIE: {} to {}. Migration problem!!!", 
                                           m, 
                                           key, 
-                                          map.table.map_is_copying(),
                                           pre_fail_get_epoch,
                                           post_fail_get_epoch,
-                                          map.table.now_epoch(),
+                                          map.now_epoch(key),
                                           pre_insert_epoch, 
                                           post_insert_epoch
                                       );
                                   }
                               }
-                              panic!("Unable to recover for {}, round {}, copying {}, expecting {:?}, got {:?}", key, l , map.table.map_is_copying(), right, left);
+                              panic!("Unable to recover for {}, round {}, expecting {:?}, got {:?}", key, l , right, left);
                           }
                       }
                       if j % 5 == 0 {
-                        let pre_rm_epoch = map.table.now_epoch();
+                        let pre_rm_epoch = map.now_epoch(key);
                         assert_eq!(
                             map.remove(&key).as_ref(),
                             Some(&value),
-                            "Remove result, get {:?}, copying {}, round {}",
+                            "Remove result, get {:?}, round {}",
                             map.get(&key),
-                            map.table.map_is_copying(),
                             k
                         );
-                        let post_rm_epoch = map.table.now_epoch();
-                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.table.now_epoch(), get_delayed_log(3));
-                        assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.table.now_epoch());
+                        let post_rm_epoch = map.now_epoch(key);
+                        assert_eq!(map.get(&key), None, "Remove recursion, value was {:?}. Epoch pre {}, post {}, get {}, last logs {:?}", value, pre_rm_epoch, post_rm_epoch, map.now_epoch(key), get_delayed_log(3));
+                        assert!(map.lock(key).is_none(), "Remove recursion with lock, epoch {}", map.now_epoch(key));
                         assert!(map.insert(key, value).is_none());
                         assert_eq!(map.get(&key), Some(value));
                       }
                       if j % 3 == 0 {
                           let new_value = value + 7;
-                          let pre_insert_epoch = map.table.now_epoch();
+                          let pre_insert_epoch = map.now_epoch(key);
                           map.insert(key, new_value);
-                          let post_insert_epoch = map.table.now_epoch();
+                          let post_insert_epoch = map.now_epoch(key);
                           assert_eq!(
                               map.get(&key), 
                               Some(new_value), 
@@ -430,7 +433,7 @@ mod test {
                         k,
                         i,
                         j,
-                        map.table.now_epoch()
+                        map.now_epoch(k)
                     );
                 }
             });
@@ -485,7 +488,7 @@ mod test {
                 } else {
                     panic!(
                         "Cannot find key at epoch {}, get {:?}",
-                        map.table.now_epoch(),
+                        map.now_epoch(START_IDX),
                         map.get(&START_IDX)
                     )
                 }
@@ -520,13 +523,13 @@ mod test {
                             map.get(&key).is_some(),
                             "Pre getting value for mutex, key {}, epoch {}",
                             key,
-                            map.table.now_epoch()
+                            map.now_epoch(key)
                         );
                         let val = {
                             let mut mutex = map.lock(key).expect(&format!(
                                 "Locking key {}, copying {}",
                                 key,
-                                map.table.now_epoch()
+                                map.now_epoch(key)
                             ));
                             assert_eq!(*mutex, j);
                             *mutex += 1;
@@ -536,14 +539,14 @@ mod test {
                             map.get(&key).is_some(),
                             "Post getting value for mutex, key {}, epoch {}",
                             key,
-                            map.table.now_epoch()
+                            map.now_epoch(key)
                         );
                         if j % 7 == 0 {
                             {
                                 let mutex = map.lock(key).expect(&format!(
                                     "Remove locking key {}, copying {}",
                                     key,
-                                    map.table.now_epoch()
+                                    map.now_epoch(key)
                                 ));
                                 mutex.remove();
                             }
@@ -655,9 +658,9 @@ mod test {
                         map.get(&key),
                         Some(curr_val),
                         "Value checking before swap at epoch {}, expecting {}",
-                        map.table.now_epoch(), curr_val
+                        map.now_epoch(key), curr_val
                     );
-                    let epoch = map.table.now_epoch();
+                    let epoch = map.now_epoch(key);
                     let read_val = map.get(&key);
                     map.table.swap(
                         key,
@@ -676,15 +679,15 @@ mod test {
                     let got_value = map.get(&key);
                     let expecting_value = Some(next_val);
                     if got_value != expecting_value {
-                        let error_epoch = map.table.now_epoch();
+                        let error_epoch = map.now_epoch(key);
                         error!("Value checking after swap at epoch {:?}. Expecting {:?} found {:?}. Probing for final value", error_epoch, expecting_value, got_value);
                         (0..256).for_each(|i| {
                             let new_got_value = map.get(&key);
                             if new_got_value == expecting_value {
-                                panic!("Value checking failed. Expecting {:?} got {:?} recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i, map.table.capacity());
+                                panic!("Value checking failed. Expecting {:?} got {:?} recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.now_epoch(key), i, map.table.capacity());
                             }
                         });
-                        panic!("Value checking failed. Expecting {:?} got {:?} DID NOT recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.table.now_epoch(), i, map.table.capacity());
+                        panic!("Value checking failed. Expecting {:?} got {:?} DID NOT recovered from epoch {} at {} turn {}, cap {}", got_value, expecting_value, error_epoch, map.now_epoch(key), i, map.table.capacity());
                     }
                 }
             }));
@@ -729,15 +732,15 @@ mod test {
             threads.push(thread::spawn(move || {
                 for j in START_IDX..repeats {
                     let key = i * 100000 + j;
-                    let prev_epoch = map.table.now_epoch();
+                    let prev_epoch = map.now_epoch(key);
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
-                    let post_epoch = map.table.now_epoch();
+                    let post_epoch = map.now_epoch(key);
                     assert_eq!(
                         map.get(&key),
                         Some(key),
                         "Reading after insertion at key {}, epoch {}/{}/{}, last log {:?}, i {}",
                         key,
-                        map.table.now_epoch(),
+                        map.now_epoch(key),
                         post_epoch,
                         prev_epoch,
                         get_delayed_log(5),
@@ -746,14 +749,14 @@ mod test {
                             i
                         }
                     );
-                    let post_insert_epoch = map.table.now_epoch();
+                    let post_insert_epoch = map.now_epoch(key);
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
                         "reinserting at key {}, get {:?}, epoch {}/{}/{}, last log {:?}, i {}",
                         key,
                         map.get(&key),
-                        map.table.now_epoch(),
+                        map.now_epoch(key),
                         post_insert_epoch,
                         prev_epoch,
                         get_delayed_log(5),
@@ -771,7 +774,7 @@ mod test {
                         "reinserting at key {}, get {:?}, epoch {}, last log {:?}, i {}",
                         key,
                         map.get(&key),
-                        map.table.now_epoch(),
+                        map.now_epoch(key),
                         get_delayed_log(2),
                         {
                             dump_migration_log();
@@ -866,11 +869,10 @@ mod test {
                     }
                 }
                 error!(
-                    "Cannot fall back for {}, i {}, j {}, copying {}",
+                    "Cannot fall back for {}, i {}, j {}",
                     num,
                     i,
                     j,
-                    map.table.map_is_copying()
                 );
             }
         }
