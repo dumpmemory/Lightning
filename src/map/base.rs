@@ -74,6 +74,9 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
+pub const HALF_USIZE: usize = 1 << ((!0usize).trailing_ones() / 2 - 1);
+pub const QUART_USIZE: usize = HALF_USIZE >> (HALF_USIZE.trailing_zeros() / 2);
+
 const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
 thread_local! {
@@ -215,6 +218,8 @@ macro_rules! delay_log {
 
 impl<T: From<usize> + Into<usize>> PartitionArray<T> {
     fn new(len: usize, max_cap: usize) -> *mut Self {
+        let max_cap = min(max_cap, HALF_USIZE);
+        let len = min(len, QUART_USIZE);
         debug_assert!(max_cap.is_power_of_two());
         debug_assert!(len.is_power_of_two());
         let obj_size = mem::size_of::<Self>() + len * mem::size_of::<usize>();
