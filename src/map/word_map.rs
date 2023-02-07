@@ -704,8 +704,8 @@ mod test {
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
-                        "reinserting at key {}",
-                        key
+                        "reinserting at key {}, epoch {}",
+                        key, map.now_epoch(key)
                     );
                 }
                 for j in 0..repeats {
@@ -745,7 +745,7 @@ mod test {
                         prev_epoch,
                         get_delayed_log(5),
                         {
-                            dump_migration_log();
+                            //dump_migration_log();
                             i
                         }
                     );
@@ -761,7 +761,7 @@ mod test {
                         prev_epoch,
                         get_delayed_log(5),
                         {
-                            dump_migration_log();
+                            //dump_migration_log();
                             i
                         }
                     );
@@ -777,7 +777,7 @@ mod test {
                         map.now_epoch(key),
                         get_delayed_log(2),
                         {
-                            dump_migration_log();
+                            //dump_migration_log();
                             i
                         }
                     );

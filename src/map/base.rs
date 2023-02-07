@@ -356,14 +356,15 @@ impl<
             error!("Capacity is not power of 2, got {}", cap);
             panic!("Capacity is not power of 2, got {}", cap);
         }
-        // Each entry key value pair is 2 words
-        // steal 1 bit in the MSB of value indicate Prime(1)
-        let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, 0, &attachment_init_meta);
-        let current_chunk_array = ChunkArray::new(1, max_cap);
-        unsafe {
-            (*current_chunk_array).set_chunk(0, ChunkPtr::new(chunk));
+        let init_arr_len = num_cpus::get_physical().next_power_of_two();
+        let current_chunk_array = ChunkArray::new(init_arr_len, max_cap);
+        for i in 0..init_arr_len {
+            unsafe {
+                let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, 0, &attachment_init_meta);
+                (*current_chunk_array).set_chunk(i, ChunkPtr::new(chunk));
+            }
         }
-        let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(1, max_cap);
+        let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(init_arr_len, max_cap);
         Self {
             meta: Arc::new(ChunkMeta {
                 current_chunks: AtomicUsize::new(current_chunk_array as usize),
@@ -942,17 +943,24 @@ impl<
             let current_chunk = current_chunks.hash_chunk(hash, guard).unwrap();
             let history_chunk = history_chunks.hash_chunk(hash, guard);
 
-            let epoch = current_chunk.now_epoch();
-            let is_copying = Self::is_copying(epoch);
+            let current_epoch = current_chunk.now_epoch();
+            let last_epoch = history_chunk.map(|c| c.now_epoch());
+            let is_copying = Self::is_copying(current_epoch);
+            if is_copying && last_epoch != Some(current_epoch - 1) {
+                continue;
+            }
+            if is_copying && current_chunks_addr == history_chunks_addr {
+                continue;
+            }
             if is_copying && history_chunk.is_none() {
                 continue;
             } else if !is_copying && history_chunk.is_some() {
                 continue;
             }
             if is_copying {
-                return (history_chunk.unwrap(), Some(current_chunk), epoch);
+                return (history_chunk.unwrap(), Some(current_chunk), current_epoch);
             } else {
-                return (current_chunk, None, epoch);
+                return (current_chunk, None, current_epoch);
             }
         }
     }
