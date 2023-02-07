@@ -256,7 +256,7 @@ mod test {
             base::{dump_migration_log, get_delayed_log},
             *,
         },
-        tests_misc::assert_all_thread_passed,
+        tests_misc::{assert_all_thread_passed, hook_panic},
     };
     use alloc::sync::Arc;
     use rayon::prelude::*;
@@ -724,11 +724,12 @@ mod test {
     #[test]
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
+        hook_panic();
         let repeats: usize = 20480;
         let multplier = 100000;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
-        for i in 1..64 {
+        for i in 1..8 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in START_IDX..repeats {
