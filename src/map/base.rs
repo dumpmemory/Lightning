@@ -374,7 +374,7 @@ impl<
             error!("Capacity is not power of 2, got {}", cap);
             panic!("Capacity is not power of 2, got {}", cap);
         }
-        let init_arr_len = 1; // num_cpus::get_physical().next_power_of_two();
+        let init_arr_len = num_cpus::get_physical().next_power_of_two();
         let current_chunk_array = ChunkArray::new(init_arr_len, max_cap);
         let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(init_arr_len, max_cap);
         let epoch_array = EpochArray::new(init_arr_len, max_cap);
