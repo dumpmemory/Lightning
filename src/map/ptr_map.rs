@@ -54,7 +54,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             .map(|(fv, _)| (self.ptr_of_val(fv), guard))
     }
 
-    pub (crate) fn now_epoch(&self, key: &K) -> usize {
+    pub(crate) fn now_epoch(&self, key: &K) -> usize {
         self.table.now_epoch(&key, 0)
     }
 

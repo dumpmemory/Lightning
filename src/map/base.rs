@@ -179,12 +179,13 @@ struct ChunkMeta {
     history_chunks: AtomicUsize,
 }
 
-struct ChunkArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+struct PartitionArray<T: From<usize> + Into<usize>> {
     len: usize,
     hash_masking: usize,
     max_cap: usize,
     max_cap_shift: u32,
-    _marker: PhantomData<(K, V, A, ALLOC)>, // Rest of the space belongs to array of pointers `*mut Chunk<K, V, A, ALLOC>`
+    _marker: PhantomData<T>, // Rest of the space belongs to array of pointers
+                             //It can be `*mut Chunk<K, V, A, ALLOC>`
 }
 
 macro_rules! delay_log {
@@ -200,7 +201,7 @@ macro_rules! delay_log {
     };
 }
 
-impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<K, V, A, ALLOC> {
+impl<T: From<usize> + Into<usize>> PartitionArray<T> {
     fn new(len: usize, max_cap: usize) -> *mut Self {
         debug_assert!(max_cap.is_power_of_two());
         debug_assert!(len.is_power_of_two());
@@ -225,50 +226,64 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<K, V, A
         return arr_ptr;
     }
 
-    fn chunk_ptr_addr_of(&self, chunk_id: usize) -> usize {
+    fn ptr_addr_of(&self, chunk_id: usize) -> usize {
         debug_assert!(chunk_id < self.len);
         let base_addr = self as *const Self as usize + mem::size_of::<Self>();
         return base_addr + chunk_id * mem::size_of::<usize>();
     }
 
-    fn chunk_at<'a>(
-        &self,
-        chunk_id: usize,
-        _guard: &'a Guard,
-    ) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
+    fn at(&self, id: usize) -> Option<T> {
         unsafe {
-            let chunk_addr = self.chunk_ptr_addr_of(chunk_id);
-            let chunk_ptr = intrinsics::atomic_load_acquire(chunk_addr as *const usize) as usize;
-            if chunk_ptr > 0 {
-                Some(ChunkPtr::new(chunk_ptr as _))
+            let addr = self.ptr_addr_of(id);
+            let ptr = intrinsics::atomic_load_acquire(addr as *const usize) as usize;
+            if ptr > 0 {
+                Some(ptr.into())
             } else {
                 None
             }
         }
     }
 
-    fn swap_in_chunk(&self, chunk_id: usize, chunk_ptr: ChunkPtr<K, V, A, ALLOC>) -> bool {
+    fn swap_in(&self, id: usize, obj: T) -> bool {
         unsafe {
-            let chunk_addr = self.chunk_ptr_addr_of(chunk_id);
-            return intrinsics::atomic_cxchg_acqrel_relaxed(
-                chunk_addr as _,
-                0,
-                chunk_ptr.ptr as usize,
-            )
-            .1;
+            let chunk_addr = self.ptr_addr_of(id);
+            return intrinsics::atomic_cxchg_acqrel_relaxed(chunk_addr as _, 0, obj.into()).1;
         }
     }
 
-    fn set_chunk(&self, chunk_id: usize, chunk_ptr: ChunkPtr<K, V, A, ALLOC>) {
+    fn set(&self, id: usize, obj: T) {
         unsafe {
-            let chunk_addr = self.chunk_ptr_addr_of(chunk_id);
-            intrinsics::atomic_store_release(chunk_addr as *mut _, chunk_ptr.ptr as usize);
+            let chunk_addr = self.ptr_addr_of(id);
+            intrinsics::atomic_store_release(chunk_addr as *mut _, obj.into());
         }
     }
 
-    fn erase_chunk<'a>(&self, chunk_id: usize, guard: &'a Guard) {
+    fn ref_from_addr<'a>(addr: usize) -> &'a Self {
+        unsafe { &*(addr as *const Self) }
+    }
+
+    fn id_of_hash(&self, hash: usize) -> usize {
+        let r = (hash & self.hash_masking) >> self.max_cap_shift;
+        debug_assert!(r < self.len);
+        return r;
+    }
+
+    fn hash<'a>(&self, hash: usize) -> Option<T> {
+        self.at(self.id_of_hash(hash))
+    }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = T> + 'a {
+        (0..self.len).filter_map(move |i| self.at(i))
+    }
+}
+
+type ChunkArray<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> =
+    PartitionArray<ChunkPtr<'a, K, V, A, ALLOC>>;
+
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<'a, K, V, A, ALLOC> {
+    fn erase_chunk(&self, id: usize, guard: &'a Guard) {
         unsafe {
-            let chunk_addr = self.chunk_ptr_addr_of(chunk_id);
+            let chunk_addr = self.ptr_addr_of(id);
             let old_addr = intrinsics::atomic_xchg_acqrel(chunk_addr as *mut _, 0usize);
             guard.defer_unchecked(move || {
                 (ChunkPtr::<'a, K, V, A, ALLOC> {
@@ -280,12 +295,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<K, V, A
         }
     }
 
-    fn clear<'a>(&self, guard: &'a Guard) {
+    fn clear(&self, guard: &'a Guard) {
         for i in (0..self.len).rev() {
-            let chunk_addr = self.chunk_ptr_addr_of(i);
-            if chunk_addr > 0 {
+            let addr = self.ptr_addr_of(i);
+            if addr > 0 {
                 unsafe {
-                    let old_addr = intrinsics::atomic_xchg_acqrel(chunk_addr as *mut _, 0usize);
+                    let old_addr = intrinsics::atomic_xchg_acqrel(addr as *mut _, 0usize);
                     if old_addr == 0 {
                         continue;
                     }
@@ -301,31 +316,20 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<K, V, A
         }
     }
 
-    fn ref_from_addr<'a>(addr: usize) -> &'a Self {
-        unsafe { &*(addr as *const Self) }
+    fn key_capacity(&self) -> usize {
+        self.iter().map(|chunk| chunk.capacity).sum()
     }
 
-    fn id_of_hash(&self, hash: usize) -> usize {
-        (hash & self.hash_masking) >> self.max_cap_shift
-    }
-
-    fn hash_chunk<'a>(
+    fn hash_chunk<'b>(
         &self,
         hash: usize,
-        guard: &'a Guard,
+        _guard: &'a Guard,
     ) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
-        self.chunk_at(self.id_of_hash(hash), guard)
+        self.hash(hash)
     }
 
-    fn key_capacity<'a>(&self, guard: &'a Guard) -> usize {
-        self.iter_chunks(guard).map(|chunk| chunk.capacity).sum()
-    }
-
-    fn iter_chunks<'a, 'b>(
-        &'a self,
-        guard: &'a Guard,
-    ) -> impl Iterator<Item = ChunkPtr<'a, K, V, A, ALLOC>> {
-        (0..self.len).filter_map(move |i| self.chunk_at(i, guard))
+    fn chunk_at<'b>(&self, id: usize, _guard: &'a Guard) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
+        self.at(id)
     }
 }
 
@@ -356,12 +360,12 @@ impl<
             error!("Capacity is not power of 2, got {}", cap);
             panic!("Capacity is not power of 2, got {}", cap);
         }
-        let init_arr_len = num_cpus::get_physical().next_power_of_two();
+        let init_arr_len = 1; // num_cpus::get_physical().next_power_of_two();
         let current_chunk_array = ChunkArray::new(init_arr_len, max_cap);
         for i in 0..init_arr_len {
             unsafe {
                 let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, 0, &attachment_init_meta);
-                (*current_chunk_array).set_chunk(i, ChunkPtr::new(chunk));
+                (*current_chunk_array).set(i, ChunkPtr::new(chunk));
             }
         }
         let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(init_arr_len, max_cap);
@@ -702,7 +706,7 @@ impl<
             Chunk::<K, V, A, ALLOC>::alloc_chunk(self.init_cap, 0, &self.attachment_init_meta);
         let chunk_array = ChunkArray::new(1, self.max_cap);
         unsafe {
-            (*chunk_array).set_chunk(0, ChunkPtr::new(chunk));
+            (*chunk_array).set(0, ChunkPtr::new(chunk));
         }
         let len = self.len();
         let old_history_chunk_addr = self.meta.history_chunks.swap(0, AcqRel);
@@ -937,8 +941,8 @@ impl<
             if current_chunks_addr == history_chunks_addr {
                 continue;
             }
-            let current_chunks = Self::chunk_array_at_addr(current_chunks_addr);
-            let history_chunks = Self::chunk_array_at_addr(history_chunks_addr);
+            let current_chunks = ChunkArray::ref_from_addr(current_chunks_addr);
+            let history_chunks = ChunkArray::ref_from_addr(history_chunks_addr);
 
             let current_chunk = current_chunks.hash_chunk(hash, guard).unwrap();
             let history_chunk = history_chunks.hash_chunk(hash, guard);
@@ -1424,13 +1428,13 @@ impl<
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
         let current_map = Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire))
-            .iter_chunks(&guard)
+            .iter()
             .map(|chunk| self.all_from_chunk(chunk))
             .flatten()
             .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
             .collect::<std::collections::HashMap<_, _>>();
         let history_map = Self::chunk_array_at_addr(self.meta.history_chunks.load(Acquire))
-            .iter_chunks(&guard)
+            .iter()
             .map(|chunk| self.all_from_chunk(chunk))
             .flatten()
             .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
@@ -1783,7 +1787,7 @@ impl<
         let history_chunk_id = history_chunk_array.id_of_hash(hash);
         let current_chunk_array = Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire));
         let current_chunk_id = current_chunk_array.id_of_hash(hash);
-        if !history_chunk_array.swap_in_chunk(history_chunk_id, old_chunk_ptr) {
+        if !history_chunk_array.swap_in(history_chunk_id, old_chunk_ptr) {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
@@ -1791,7 +1795,7 @@ impl<
         let old_epoch = old_chunk_ptr.epoch.load(Acquire);
         debug_assert!(!Self::is_copying(old_epoch));
         if chunk_epoch != old_epoch {
-            history_chunk_array.set_chunk(history_chunk_id, ChunkPtr::null());
+            history_chunk_array.set(history_chunk_id, ChunkPtr::null());
             debug!(
                 "$ Epoch changed from {} to {} after migration lock",
                 chunk_epoch, old_epoch
@@ -1834,9 +1838,9 @@ impl<
             new_cap,
             old_epoch
         );
-        current_chunk_array.set_chunk(current_chunk_id, new_chunk_ptr); // Stump becasue we have the lock already
-        // Not going to take multithreading resize
-        // Experiments shows there is no significant improvement in performance
+        current_chunk_array.set(current_chunk_id, new_chunk_ptr); // Stump becasue we have the lock already
+                                                                  // Not going to take multithreading resize
+                                                                  // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
         let num_migrated = self.migrate_entries(
             old_chunk_ptr,
@@ -2176,8 +2180,7 @@ impl<
     }
 
     pub fn capacity(&self) -> usize {
-        let guard = crossbeam_epoch::pin();
-        Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire)).key_capacity(&guard)
+        Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire)).key_capacity()
     }
 
     #[inline(always)]
@@ -2200,11 +2203,11 @@ impl<
         n - V_OFFSET
     }
 
-    fn chunk_array_at_addr<'a>(addr: usize) -> &'a ChunkArray<K, V, A, ALLOC> {
+    fn chunk_array_at_addr<'a>(addr: usize) -> &'a ChunkArray<'a, K, V, A, ALLOC> {
         ChunkArray::ref_from_addr(addr)
     }
 
-    pub (crate) fn now_epoch(&self, key: &K, fkey: usize) -> usize {
+    pub(crate) fn now_epoch(&self, key: &K, fkey: usize) -> usize {
         let (_fkey, hash) = Self::hash(fkey, key);
         let guard = crossbeam_epoch::pin();
         Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire))
@@ -2587,7 +2590,7 @@ impl<
                     let total_size = chunk.total_size;
                     let new_chunk_ptr = libc::malloc(total_size);
                     libc::memcpy(new_chunk_ptr, chunk.ptr as _, total_size);
-                    &(*new_current_chunk_array).set_chunk(i, ChunkPtr::new(new_chunk_ptr as _));
+                    &(*new_current_chunk_array).set(i, ChunkPtr::new(new_chunk_ptr as _));
                 }
             }
         }
@@ -2597,7 +2600,7 @@ impl<
                     let total_size = chunk.total_size;
                     let new_chunk_ptr = libc::malloc(total_size);
                     libc::memcpy(new_chunk_ptr, chunk.ptr as _, total_size);
-                    &(*new_history_chunk_array).set_chunk(i, ChunkPtr::new(new_chunk_ptr as _));
+                    &(*new_history_chunk_array).set(i, ChunkPtr::new(new_chunk_ptr as _));
                 }
             }
         }
@@ -2668,6 +2671,25 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Deref
     fn deref(&self) -> &Self::Target {
         debug_assert_ne!(self.ptr as usize, 0);
         unsafe { &*self.ptr }
+    }
+}
+
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> From<usize>
+    for ChunkPtr<'a, K, V, A, ALLOC>
+{
+    fn from(value: usize) -> Self {
+        Self {
+            ptr: value as _,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Into<usize>
+    for ChunkPtr<'a, K, V, A, ALLOC>
+{
+    fn into(self) -> usize {
+        self.ptr as _
     }
 }
 

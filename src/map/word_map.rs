@@ -705,7 +705,8 @@ mod test {
                         map.insert(key, key),
                         Some(key),
                         "reinserting at key {}, epoch {}",
-                        key, map.now_epoch(key)
+                        key,
+                        map.now_epoch(key)
                     );
                 }
                 for j in 0..repeats {
@@ -868,12 +869,7 @@ mod test {
                         break;
                     }
                 }
-                error!(
-                    "Cannot fall back for {}, i {}, j {}",
-                    num,
-                    i,
-                    j,
-                );
+                error!("Cannot fall back for {}, i {}, j {}", num, i, j,);
             }
         }
     }
