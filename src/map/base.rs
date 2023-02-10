@@ -77,6 +77,8 @@ pub const ALL_HOPS_TAKEN: HopBits = !0;
 pub const HALF_USIZE: usize = 1 << ((!0usize).trailing_ones() / 2 - 1);
 pub const QUART_USIZE: usize = HALF_USIZE >> (HALF_USIZE.trailing_zeros() / 2);
 
+pub const PARTITION_MAX_CAP: usize = 8 * 1024 * 1024; // 8M. This number is selected to be the size of most commonly seen L3 cache
+
 const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
 thread_local! {
@@ -366,7 +368,7 @@ impl<
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
-        Self::with_max_capacity(cap, max(cap * 4, 4096), attachment_init_meta)
+        Self::with_max_capacity(cap, PARTITION_MAX_CAP, attachment_init_meta)
     }
 
     pub fn with_max_capacity(
