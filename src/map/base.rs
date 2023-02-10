@@ -74,9 +74,6 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
-pub const HALF_USIZE: usize = 1 << ((!0usize).trailing_ones() / 2 - 1);
-pub const QUART_USIZE: usize = HALF_USIZE >> (HALF_USIZE.trailing_zeros() / 2);
-
 pub const PARTITION_MAX_CAP: usize = 8 * 1024 * 1024; // 8M. This number is selected to be the size of most commonly seen L3 cache
 
 const DELAY_LOG_CAP: usize = 10;
@@ -196,8 +193,7 @@ struct ChunkMeta {
 struct PartitionArray<T: From<usize> + Into<usize>> {
     len: usize,
     hash_masking: usize,
-    max_cap: usize,
-    max_cap_shift: u32,
+    hash_shift: u32,
     _marker: PhantomData<T>, // Rest of the space belongs to array of pointers
                              //It can be `*mut Chunk<K, V, A, ALLOC>`
 }
@@ -219,25 +215,21 @@ macro_rules! delay_log {
 }
 
 impl<T: From<usize> + Into<usize>> PartitionArray<T> {
-    fn new(len: usize, max_cap: usize) -> *mut Self {
-        let max_cap = min(max_cap, HALF_USIZE);
-        let len = min(len, QUART_USIZE);
-        debug_assert!(max_cap.is_power_of_two());
+    fn new(len: usize) -> *mut Self {
         debug_assert!(len.is_power_of_two());
         let obj_size = mem::size_of::<Self>() + len * mem::size_of::<usize>();
         let raw_ptr = unsafe { libc::malloc(obj_size) };
         let arr_ptr = raw_ptr as _;
-        let max_cap_shift = max_cap.trailing_zeros();
-        let hash_masking = (len - 1) << max_cap_shift;
+        let hash_shift = 0usize.trailing_zeros() - len.trailing_zeros();
+        let hash_masking = (len - 1) << hash_shift;
         unsafe {
             libc::memset(raw_ptr, 0, obj_size);
             ptr::write(
                 arr_ptr,
                 Self {
                     len,
-                    max_cap_shift,
                     hash_masking,
-                    max_cap,
+                    hash_shift,
                     _marker: PhantomData,
                 },
             );
@@ -282,7 +274,7 @@ impl<T: From<usize> + Into<usize>> PartitionArray<T> {
     }
 
     fn id_of_hash(&self, hash: usize) -> ArrId {
-        let r = (hash & self.hash_masking) >> self.max_cap_shift;
+        let r = (hash & self.hash_masking) >> self.hash_shift;
         debug_assert!(r < self.len);
         return ArrId(r);
     }
@@ -382,9 +374,9 @@ impl<
             panic!("Capacity is not power of 2, got {}", cap);
         }
         let init_arr_len = num_cpus::get_physical().next_power_of_two();
-        let current_chunk_array = ChunkArray::new(init_arr_len, max_cap);
-        let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(init_arr_len, max_cap);
-        let epoch_array = EpochArray::new(init_arr_len, max_cap);
+        let current_chunk_array = ChunkArray::new(init_arr_len);
+        let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(init_arr_len);
+        let epoch_array = EpochArray::new(init_arr_len);
         for i in 0..init_arr_len {
             unsafe {
                 let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, &attachment_init_meta);
@@ -728,7 +720,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let chunk =
             Chunk::<K, V, A, ALLOC>::alloc_chunk(self.init_cap, &self.attachment_init_meta);
-        let chunk_array = ChunkArray::new(1, self.max_cap);
+        let chunk_array = ChunkArray::new(1);
         unsafe {
             (*chunk_array).set(ArrId(0), ChunkPtr::new(chunk));
         }
@@ -2596,9 +2588,9 @@ impl<
         let history_chunks =
             ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.history_chunks.load(Acquire));
         let new_current_chunk_array =
-            ChunkArray::<K, V, A, ALLOC>::new(current_chunks.len, current_chunks.max_cap);
+            ChunkArray::<K, V, A, ALLOC>::new(current_chunks.len);
         let new_history_chunk_array =
-            ChunkArray::<K, V, A, ALLOC>::new(history_chunks.len, history_chunks.max_cap);
+            ChunkArray::<K, V, A, ALLOC>::new(history_chunks.len);
         for i in 0..current_chunks.len {
             if let Some(chunk) = current_chunks.chunk_at(ArrId(i), &guard) {
                 unsafe {
@@ -2620,7 +2612,7 @@ impl<
             }
         }
         let current_epochs = EpochArray::ref_from_addr(self.meta.epochs.load(Acquire));
-        let new_epochs = EpochArray::new(current_epochs.len, current_epochs.max_cap);
+        let new_epochs = EpochArray::new(current_epochs.len);
         for i in 0..current_chunks.len {
             unsafe {
                 let epoch = current_epochs.at(ArrId(i)).unwrap();
