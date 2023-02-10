@@ -729,7 +729,7 @@ mod test {
         let multplier = 100000;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
-        for i in 1..8 {
+        for i in 1..32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in START_IDX..repeats {
