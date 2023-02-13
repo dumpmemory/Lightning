@@ -1,9 +1,7 @@
 use std::{
     cell::RefCell,
-    cmp::{max, min},
+    cmp::min,
     collections::VecDeque,
-    sync::Arc,
-    thread,
 };
 
 #[cfg(debug_assertions)]
@@ -146,7 +144,7 @@ pub struct Table<
     const K_OFFSET: usize,
     const V_OFFSET: usize,
 > {
-    meta: Arc<ChunkMeta>,
+    meta: ChunkMeta,
     attachment_init_meta: A::InitMeta,
     count: AtomicUsize,
     init_cap: usize,
@@ -453,9 +451,9 @@ impl<
             });
         }
         Self {
-            meta: Arc::new(ChunkMeta {
+            meta: ChunkMeta {
                 partitions: AtomicUsize::new(partitions as _)
-            }),
+            },
             count: AtomicUsize::new(0),
             init_cap: cap,
             max_cap,
@@ -2671,9 +2669,9 @@ impl<
             new_part.set_epoch(part.epoch())
         });
         Self {
-            meta: Arc::new(ChunkMeta {
+            meta: ChunkMeta {
                 partitions: AtomicUsize::new(new_parts as _)
-            }),
+            },
             count: AtomicUsize::new(0),
             init_cap: self.init_cap,
             max_cap: self.max_cap,
