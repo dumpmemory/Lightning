@@ -340,7 +340,7 @@ mod test {
         let num_threads = num_cpus::get();
         let test_load = 4096;
         let repeat_load = 16;
-        let map = Arc::new(WordMap::<System>::with_capacity(32));
+        let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
         for i in 0..num_threads {
             let map = map.clone();

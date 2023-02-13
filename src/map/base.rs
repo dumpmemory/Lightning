@@ -138,8 +138,8 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
 }
 
 pub struct Table<
-    K,
-    V,
+    K: Clone + Hash + Eq,
+    V: Clone,
     A: Attachment<K, V>,
     ALLOC: GlobalAlloc + Default,
     H: Hasher + Default,
@@ -183,19 +183,53 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartialEq
     }
 }
 
-
-struct ChunkMeta {
-    current_chunks: AtomicUsize,
-    history_chunks: AtomicUsize,
-    epochs: AtomicUsize,
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K, V, A, ALLOC>
+{
+    fn is_null(&self) -> bool {
+        self.ptr as usize == 0
+    }
 }
 
-struct PartitionArray<T: From<usize> + Into<usize>> {
+struct ChunkMeta {
+    partitions: AtomicUsize,
+}
+
+
+#[derive(Default)]
+struct Partition<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
+    current_chunk: AtomicUsize,
+    history_chunk: AtomicUsize,
+    epoch: AtomicUsize,
+    _marker: PhantomData<(K, V, A, ALLOC)>
+}
+
+impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partition<K, V, A, ALLOC> {
+    fn clone(&self) -> Self {
+        Self { 
+            current_chunk: AtomicUsize::new(self.current_chunk.load(Relaxed)), 
+            history_chunk: AtomicUsize::new(self.history_chunk.load(Relaxed)),
+            epoch: AtomicUsize::new(self.epoch.load(Relaxed)),
+            _marker: PhantomData
+        }
+    }
+}
+
+// impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
+//     fn new() -> Self {
+//         Self { 
+//             current_chunk: AtomicUsize::new(0), 
+//             history_chunk: AtomicUsize::new(0),
+//             epoch: AtomicUsize::new(2),
+//             _marker: PhantomData
+//         }
+//     }
+// }
+
+struct PartitionArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     len: usize,
     hash_masking: usize,
     hash_shift: u32,
-    _marker: PhantomData<T>, // Rest of the space belongs to array of pointers
-                             //It can be `*mut Chunk<K, V, A, ALLOC>`
+    _marker: PhantomData<(K, V, A, ALLOC)>
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -214,10 +248,10 @@ macro_rules! delay_log {
     };
 }
 
-impl<T: From<usize> + Into<usize>> PartitionArray<T> {
+impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, V, A, ALLOC> {
     fn new(len: usize) -> *mut Self {
         debug_assert!(len.is_power_of_two());
-        let obj_size = mem::size_of::<Self>() + len * mem::size_of::<usize>();
+        let obj_size = mem::size_of::<Self>() + len * mem::size_of::<Partition<K, V, A, ALLOC>>();
         let raw_ptr = unsafe { libc::malloc(obj_size) };
         let arr_ptr = raw_ptr as _;
         let hash_shift = 0usize.trailing_zeros() - len.trailing_zeros();
@@ -230,7 +264,7 @@ impl<T: From<usize> + Into<usize>> PartitionArray<T> {
                     len,
                     hash_masking,
                     hash_shift,
-                    _marker: PhantomData,
+                    _marker: PhantomData
                 },
             );
         }
@@ -240,32 +274,13 @@ impl<T: From<usize> + Into<usize>> PartitionArray<T> {
     fn ptr_addr_of(&self, id: ArrId) -> usize {
         debug_assert!(id.0 < self.len);
         let base_addr = self as *const Self as usize + mem::size_of::<Self>();
-        return base_addr + id.0 * mem::size_of::<usize>();
+        return base_addr + id.0 * mem::size_of::<Partition<K, V, A, ALLOC>>();
     }
 
-    fn at(&self, id: ArrId) -> Option<T> {
+    fn at(&self, id: ArrId) -> &Partition<K, V, A, ALLOC> {
         unsafe {
             let addr = self.ptr_addr_of(id);
-            let ptr = intrinsics::atomic_load_acquire(addr as *const usize) as usize;
-            if ptr > 0 {
-                Some(ptr.into())
-            } else {
-                None
-            }
-        }
-    }
-
-    fn swap_in(&self, id: ArrId, obj: T) -> bool {
-        unsafe {
-            let chunk_addr = self.ptr_addr_of(id);
-            return intrinsics::atomic_cxchg_acqrel_relaxed(chunk_addr as _, 0, obj.into()).1;
-        }
-    }
-
-    fn set(&self, id: ArrId, obj: T) {
-        unsafe {
-            let addr = self.ptr_addr_of(id);
-            intrinsics::atomic_store_release(addr as *mut _, obj.into());
+            &*(addr as *const Partition<K, V, A, ALLOC>)
         }
     }
 
@@ -279,23 +294,55 @@ impl<T: From<usize> + Into<usize>> PartitionArray<T> {
         return ArrId(r);
     }
 
-    fn hash<'a>(&self, hash: usize) -> Option<T> {
+    fn hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
         self.at(self.id_of_hash(hash))
     }
 
-    fn iter<'a>(&'a self) -> impl Iterator<Item = T> + 'a {
-        (0..self.len).filter_map(move |i| self.at(ArrId(i)))
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Partition<K, V, A, ALLOC>> + 'a {
+        (0..self.len).map(move |i| self.at(ArrId(i)))
+    }
+    fn clear<'a>(&self, guard: &'a Guard) {
+        self.iter().for_each(|part| {
+            unsafe {
+                let mut current = part.current();
+                let mut history = part.history();
+                guard.defer_unchecked(move || {
+                    current.destory();
+                    history.destory();
+                });
+            }
+        });
+    }
+    fn key_capacity(&self) -> usize {
+        self.iter().map(|part| part.current().capacity).sum()
     }
 }
 
-type ChunkArray<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> =
-    PartitionArray<ChunkPtr<'a, K, V, A, ALLOC>>;
-
-impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<'a, K, V, A, ALLOC> {
-    fn erase_chunk(&self, id: ArrId, guard: &'a Guard) {
+impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
+    fn epoch(&self) -> usize {
+        self.epoch.load(Acquire)
+    }
+    fn set_epoch(&self, epoch: usize) {
+        self.epoch.store(epoch, Release);
+    }
+    fn current<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
+        ChunkPtr::new(self.current_chunk.load(Acquire) as _)
+    }
+    fn history<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
+        ChunkPtr::new(self.history_chunk.load(Acquire) as _)
+    }
+    fn swap_in_history<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
+        self.history_chunk.compare_exchange(0, chunk_ptr.ptr as _, AcqRel, Relaxed).is_ok()
+    }
+    fn set_history<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) {
+        self.history_chunk.store(chunk_ptr.ptr as _, Release);
+    }
+    fn set_current<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) {
+        self.current_chunk.store(chunk_ptr.ptr as _, Release);
+    }
+    fn erase_history<'a>(&self, guard: &'a Guard) {
         unsafe {
-            let chunk_addr = self.ptr_addr_of(id);
-            let old_addr = intrinsics::atomic_xchg_acqrel(chunk_addr as *mut _, 0usize);
+            let old_addr = self.history_chunk.swap(0, AcqRel);
             guard.defer_unchecked(move || {
                 (ChunkPtr::<'a, K, V, A, ALLOC> {
                     ptr: old_addr as _,
@@ -305,46 +352,65 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<'a,
             });
         }
     }
-
-    fn clear(&self, guard: &'a Guard) {
-        for i in (0..self.len).rev() {
-            let addr = self.ptr_addr_of(ArrId(i));
-            if addr > 0 {
-                unsafe {
-                    let old_addr = intrinsics::atomic_xchg_acqrel(addr as *mut _, 0usize);
-                    if old_addr == 0 {
-                        continue;
-                    }
-                    guard.defer_unchecked(move || {
-                        (ChunkPtr::<'a, K, V, A, ALLOC> {
-                            ptr: old_addr as _,
-                            _marker: PhantomData,
-                        })
-                        .destory();
-                    });
-                }
-            }
-        }
-    }
-
-    fn key_capacity(&self) -> usize {
-        self.iter().map(|chunk| chunk.capacity).sum()
-    }
-
-    fn hash_chunk<'b>(
-        &self,
-        hash: usize,
-        _guard: &'a Guard,
-    ) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
-        self.hash(hash)
-    }
-
-    fn chunk_at<'b>(&self, id: ArrId, _guard: &'a Guard) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
-        self.at(id)
-    }
 }
 
-type EpochArray = PartitionArray<usize>;
+// type ChunkArray<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> =
+//     PartitionArray<ChunkPtr<'a, K, V, A, ALLOC>>;
+
+// impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<'a, K, V, A, ALLOC> {
+//     fn erase_chunk(&self, id: ArrId, guard: &'a Guard) {
+//         unsafe {
+//             let chunk_addr = self.ptr_addr_of(id);
+//             let old_addr = intrinsics::atomic_xchg_acqrel(chunk_addr as *mut _, 0usize);
+//             guard.defer_unchecked(move || {
+//                 (ChunkPtr::<'a, K, V, A, ALLOC> {
+//                     ptr: old_addr as _,
+//                     _marker: PhantomData,
+//                 })
+//                 .destory();
+//             });
+//         }
+//     }
+
+//     fn clear(&self, guard: &'a Guard) {
+//         for i in (0..self.len).rev() {
+//             let addr = self.ptr_addr_of(ArrId(i));
+//             if addr > 0 {
+//                 unsafe {
+//                     let old_addr = intrinsics::atomic_xchg_acqrel(addr as *mut _, 0usize);
+//                     if old_addr == 0 {
+//                         continue;
+//                     }
+//                     guard.defer_unchecked(move || {
+//                         (ChunkPtr::<'a, K, V, A, ALLOC> {
+//                             ptr: old_addr as _,
+//                             _marker: PhantomData,
+//                         })
+//                         .destory();
+//                     });
+//                 }
+//             }
+//         }
+//     }
+
+//     fn key_capacity(&self) -> usize {
+//         self.iter().map(|chunk| chunk.capacity).sum()
+//     }
+
+//     fn hash_chunk<'b>(
+//         &self,
+//         hash: usize,
+//         _guard: &'a Guard,
+//     ) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
+//         self.hash(hash)
+//     }
+
+//     fn chunk_at<'b>(&self, id: ArrId, _guard: &'a Guard) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
+//         self.at(id)
+//     }
+// }
+
+// type EpochArray = PartitionArray<usize>;
 
 impl<
         K: Clone + Hash + Eq,
@@ -363,6 +429,10 @@ impl<
         Self::with_max_capacity(cap, PARTITION_MAX_CAP, attachment_init_meta)
     }
 
+    fn init_part_nums() -> usize {
+        num_cpus::get_physical().next_power_of_two()
+    }
+
     pub fn with_max_capacity(
         cap: usize,
         max_cap: usize,
@@ -373,22 +443,18 @@ impl<
             error!("Capacity is not power of 2, got {}", cap);
             panic!("Capacity is not power of 2, got {}", cap);
         }
-        let init_arr_len = num_cpus::get_physical().next_power_of_two();
-        let current_chunk_array = ChunkArray::new(init_arr_len);
-        let history_chunk_array = ChunkArray::<K, V, A, ALLOC>::new(init_arr_len);
-        let epoch_array = EpochArray::new(init_arr_len);
-        for i in 0..init_arr_len {
-            unsafe {
+        let init_arr_len = Self::init_part_nums();
+        let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len);
+        unsafe {
+            (*partitions).iter().for_each(|part|{
                 let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, &attachment_init_meta);
-                (*current_chunk_array).set(ArrId(i), ChunkPtr::new(chunk));
-                (*epoch_array).set(ArrId(i), 2);
-            }
+                part.set_current(ChunkPtr::new(chunk));
+                part.set_epoch(2);
+            });
         }
         Self {
             meta: Arc::new(ChunkMeta {
-                current_chunks: AtomicUsize::new(current_chunk_array as usize),
-                history_chunks: AtomicUsize::new(history_chunk_array as usize),
-                epochs: AtomicUsize::new(epoch_array as usize)
+                partitions: AtomicUsize::new(partitions as _)
             }),
             count: AtomicUsize::new(0),
             init_cap: cap,
@@ -412,7 +478,7 @@ impl<
         backoff: &Backoff,
     ) -> Option<(FVal, Option<V>, usize)> {
         'OUTER: loop {
-            let (chunk, new_chunk, epoch) = self.chunk_refs(hash, guard);
+            let (chunk, new_chunk, epoch, part) = self.chunk_refs(hash, guard);
             let mut v;
             if let Some((mut val, addr, aitem)) =
                 self.get_from_chunk(chunk, hash, key, fkey, &backoff, new_chunk, epoch)
@@ -471,7 +537,7 @@ impl<
                     }
                 }
             }
-            let new_epoch = EpochArray::ref_from_addr(self.meta.epochs.load(Acquire)).hash(hash).unwrap();
+            let new_epoch = part.epoch();
             if new_epoch != epoch {
                 backoff.spin();
                 continue 'OUTER;
@@ -502,7 +568,7 @@ impl<
         let (fkey, hash) = Self::hash(fkey, key);
         let fvalue = Self::offset_v_in(fvalue);
         loop {
-            let (chunk, new_chunk, epoch) = self.chunk_refs(hash, &guard);
+            let (chunk, new_chunk, epoch, part) = self.chunk_refs(hash, &guard);
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
@@ -718,17 +784,18 @@ impl<
 
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
-        let chunk =
-            Chunk::<K, V, A, ALLOC>::alloc_chunk(self.init_cap, &self.attachment_init_meta);
-        let chunk_array = ChunkArray::new(1);
+        let init_arr_len = Self::init_part_nums();
+        let new_parts = PartitionArray::new(init_arr_len);
         unsafe {
-            (*chunk_array).set(ArrId(0), ChunkPtr::new(chunk));
+            (*new_parts).iter().for_each(|part|{
+                let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(self.init_cap, &self.attachment_init_meta);
+                part.set_current(ChunkPtr::new(chunk));
+                part.set_epoch(2);
+            });
         }
         let len = self.len();
-        let old_history_chunk_addr = self.meta.history_chunks.swap(0, AcqRel);
-        let old_current_chunk_addr = self.meta.current_chunks.swap(chunk_array as usize, AcqRel);
-        Self::chunk_array_at_addr(old_history_chunk_addr).clear(&guard);
-        Self::chunk_array_at_addr(old_current_chunk_addr).clear(&guard);
+        let old_part_addr = self.meta.partitions.swap(new_parts as _, AcqRel);
+        PartitionArray::<K, V, A, ALLOC>::ref_from_addr(old_part_addr).clear(&guard);
         self.count.fetch_sub(len, AcqRel);
     }
 
@@ -753,7 +820,7 @@ impl<
     ) -> SwapResult<K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
-            let (chunk, new_chunk, epoch) = self.chunk_refs(hash, guard);
+            let (chunk, new_chunk, epoch, part) = self.chunk_refs(hash, guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
             let mut result = None;
             let fast_mod_res = self.modify_entry(
@@ -852,7 +919,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
         'OUTER: loop {
-            let (chunk, new_chunk, _epoch) = self.chunk_refs(hash, &guard);
+            let (chunk, new_chunk, _epoch, part) = self.chunk_refs(hash, &guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk
                 .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard));
@@ -942,49 +1009,49 @@ impl<
     }
 
     #[inline]
+    fn partitions<'a>(&self) -> &PartitionArray<K, V, A, ALLOC> {
+        PartitionArray::ref_from_addr(self.meta.partitions.load(Acquire))
+    } 
+
+    #[inline]
+    fn part_of_hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
+        let parts = self.partitions();
+        parts.hash(hash)
+    }
+
+    #[inline]
     fn chunk_refs<'a>(
         &self,
         hash: usize,
-        guard: &'a Guard,
+        _guard: &'a Guard,
     ) -> (
         ChunkPtr<'a, K, V, A, ALLOC>,
         Option<ChunkPtr<'a, K, V, A, ALLOC>>,
         usize,
+        &Partition<K, V, A, ALLOC>,
     ) {
         loop {
-            let epochs = EpochArray::ref_from_addr(self.meta.epochs.load(Acquire));
-            let epoch_id = epochs.id_of_hash(hash);
-            let current_epoch = epochs.at(epoch_id).unwrap();
-
-            let current_chunks_addr = self.meta.current_chunks.load(Acquire);
-            let history_chunks_addr = self.meta.history_chunks.load(Acquire);
-            if current_chunks_addr == history_chunks_addr {
-                continue;
-            }
-            let current_chunks = ChunkArray::ref_from_addr(current_chunks_addr);
-            let history_chunks = ChunkArray::ref_from_addr(history_chunks_addr);
-            let current_chunk = current_chunks.hash_chunk(hash, guard).unwrap();
-            let history_chunk = history_chunks.hash_chunk(hash, guard);
-
+            
+            let part = self.part_of_hash(hash);
+            let current_epoch = part.epoch();
+            let current_chunk = part.current();
+            let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
-            if current_chunks_addr == history_chunks_addr {
+            if history_chunk == current_chunk {
                 continue;
             }
-            if history_chunk == Some(current_chunk) {
+            if is_copying && history_chunk.is_null() {
+                continue;
+            } else if !is_copying && !history_chunk.is_null() {
                 continue;
             }
-            if is_copying && history_chunk.is_none() {
-                continue;
-            } else if !is_copying && history_chunk.is_some() {
-                continue;
-            }
-            if epochs.at(epoch_id).unwrap() != current_epoch {
+            if part.epoch() != current_epoch {
                 continue;
             }
             if is_copying {
-                return (history_chunk.unwrap(), Some(current_chunk), current_epoch);
+                return (history_chunk, Some(current_chunk), current_epoch, part);
             } else {
-                return (current_chunk, None, current_epoch);
+                return (current_chunk, None, current_epoch, part);
             }
         }
     }
@@ -1447,15 +1514,16 @@ impl<
 
     pub fn entries(&self) -> Vec<(FKey, FVal, K, V)> {
         let guard = crossbeam_epoch::pin();
-        let current_map = Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire))
-            .iter()
-            .map(|chunk| self.all_from_chunk(chunk))
+        let parts = self.partitions();
+        let current_map = parts
+        .iter()
+            .map(|part| self.all_from_chunk(part.current()))
             .flatten()
             .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
             .collect::<std::collections::HashMap<_, _>>();
-        let history_map = Self::chunk_array_at_addr(self.meta.history_chunks.load(Acquire))
+        let history_map = parts
             .iter()
-            .map(|chunk| self.all_from_chunk(chunk))
+            .map(|part| self.all_from_chunk(part.history()))
             .flatten()
             .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
             .collect::<std::collections::HashMap<_, _>>();
@@ -1803,21 +1871,16 @@ impl<
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         // Swap in new chunk as placeholder for the lock
-        let history_chunk_array = Self::chunk_array_at_addr(self.meta.history_chunks.load(Acquire));
-        let history_chunk_id = history_chunk_array.id_of_hash(hash);
-        let current_chunk_array = Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire));
-        let current_chunk_id = current_chunk_array.id_of_hash(hash);
-        let epoch_array = EpochArray::ref_from_addr(self.meta.epochs.load(Acquire));
-        let epoch_id = epoch_array.id_of_hash(hash);
-        if !history_chunk_array.swap_in(history_chunk_id, old_chunk_ptr) {
+        let part = self.part_of_hash(hash);
+        if !part.swap_in_history(old_chunk_ptr) {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
             return ResizeResult::SwapFailed;
         }
-        let old_epoch = epoch_array.at(epoch_id).unwrap();
+        let old_epoch = part.epoch();
         debug_assert!(!Self::is_copying(old_epoch));
         if chunk_epoch != old_epoch {
-            history_chunk_array.set(history_chunk_id, ChunkPtr::null());
+            part.set_history(ChunkPtr::null());
             debug!(
                 "$ Epoch changed from {} to {} after migration lock",
                 chunk_epoch, old_epoch
@@ -1842,7 +1905,7 @@ impl<
             // The map is small, block all insertions until the migration is completed
             old_occupation = new_cap;
         }
-        epoch_array.set(epoch_id, old_epoch + 1);
+        part.set_epoch(old_epoch + 1);
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
             (*new_chunk).occupation.store(old_occupation, Relaxed);
@@ -1861,7 +1924,7 @@ impl<
             new_cap,
             old_epoch
         );
-        current_chunk_array.set(current_chunk_id, new_chunk_ptr); // Stump becasue we have the lock already
+        part.set_current(new_chunk_ptr); // Stump becasue we have the lock already
                                                                   // Not going to take multithreading resize
                                                                   // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
@@ -1872,8 +1935,8 @@ impl<
             old_epoch,
             &guard,
         );
-        history_chunk_array.erase_chunk(history_chunk_id, guard);
-        epoch_array.set(epoch_id, old_epoch + 2);
+        part.erase_history(guard);
+        part.set_epoch(old_epoch + 2);
         debug!(
             "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {}",
             old_chunk_ptr.base,
@@ -2202,7 +2265,7 @@ impl<
     }
 
     pub fn capacity(&self) -> usize {
-        Self::chunk_array_at_addr(self.meta.current_chunks.load(Acquire)).key_capacity()
+        self.partitions().key_capacity()
     }
 
     #[inline(always)]
@@ -2225,13 +2288,10 @@ impl<
         n - V_OFFSET
     }
 
-    fn chunk_array_at_addr<'a>(addr: usize) -> &'a ChunkArray<'a, K, V, A, ALLOC> {
-        ChunkArray::ref_from_addr(addr)
-    }
-
     pub(crate) fn now_epoch(&self, key: &K, fkey: usize) -> usize {
         let (_fkey, hash) = Self::hash(fkey, key);
-        EpochArray::ref_from_addr(self.meta.epochs.load(Acquire)).hash(hash).unwrap()
+        let part = self.part_of_hash(hash);
+        part.epoch()
     }
 }
 
@@ -2400,7 +2460,9 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     unsafe fn gc(ptr: *mut Chunk<K, V, A, ALLOC>) {
-        debug_assert_ne!(ptr as usize, 0);
+        if ptr.is_null() {
+            return;
+        }
         let chunk = &*ptr;
         chunk.gc_entries();
         dealloc_mem::<ALLOC>(ptr as usize, chunk.total_size);
@@ -2572,8 +2634,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 }
 
 impl<
-        K,
-        V,
+        K: Clone + Hash + Eq,
+        V: Clone,
         A: Attachment<K, V>,
         ALLOC: GlobalAlloc + Default,
         H: Hasher + Default,
@@ -2583,47 +2645,34 @@ impl<
 {
     fn clone(&self) -> Self {
         let guard = crossbeam_epoch::pin();
-        let current_chunks =
-            ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.current_chunks.load(Acquire));
-        let history_chunks =
-            ChunkArray::<K, V, A, ALLOC>::ref_from_addr(self.meta.history_chunks.load(Acquire));
-        let new_current_chunk_array =
-            ChunkArray::<K, V, A, ALLOC>::new(current_chunks.len);
-        let new_history_chunk_array =
-            ChunkArray::<K, V, A, ALLOC>::new(history_chunks.len);
-        for i in 0..current_chunks.len {
-            if let Some(chunk) = current_chunks.chunk_at(ArrId(i), &guard) {
-                unsafe {
-                    let total_size = chunk.total_size;
-                    let new_chunk_ptr = libc::malloc(total_size);
-                    libc::memcpy(new_chunk_ptr, chunk.ptr as _, total_size);
-                    &(*new_current_chunk_array).set(ArrId(i), ChunkPtr::new(new_chunk_ptr as _));
-                }
-            }
-        }
-        for i in 0..history_chunks.len {
-            if let Some(chunk) = history_chunks.chunk_at(ArrId(i), &guard) {
-                unsafe {
-                    let total_size = chunk.total_size;
-                    let new_chunk_ptr = libc::malloc(total_size);
-                    libc::memcpy(new_chunk_ptr, chunk.ptr as _, total_size);
-                    &(*new_history_chunk_array).set(ArrId(i), ChunkPtr::new(new_chunk_ptr as _));
-                }
-            }
-        }
-        let current_epochs = EpochArray::ref_from_addr(self.meta.epochs.load(Acquire));
-        let new_epochs = EpochArray::new(current_epochs.len);
-        for i in 0..current_chunks.len {
+        let parts = self.partitions();
+        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len);
+        parts.iter().enumerate().for_each(|(i, part)|{
+            let new_part = unsafe {
+                &(*new_parts).at(ArrId(i))
+            };
+            let current = part.current();
+            let history = part.history();
+            let epoch = part.epoch();
             unsafe {
-                let epoch = current_epochs.at(ArrId(i)).unwrap();
-                (*new_epochs).set(ArrId(i), epoch);
+                let total_size = current.total_size;
+                let new_chunk_ptr = libc::malloc(total_size);
+                libc::memcpy(new_chunk_ptr, current.ptr as _, total_size);
+                new_part.set_current(ChunkPtr::new(new_chunk_ptr as _));
             }
-        }
+            if !history.is_null() {
+                unsafe {
+                    let total_size = history.total_size;
+                    let new_chunk_ptr = libc::malloc(total_size);
+                    libc::memcpy(new_chunk_ptr, history.ptr as _, total_size);
+                    new_part.set_history(ChunkPtr::new(new_chunk_ptr as _));
+                }
+            }
+            new_part.set_epoch(part.epoch())
+        });
         Self {
             meta: Arc::new(ChunkMeta {
-                current_chunks: AtomicUsize::new(new_current_chunk_array as usize),
-                history_chunks: AtomicUsize::new(new_history_chunk_array as usize),
-                epochs: AtomicUsize::new(new_epochs as _)
+                partitions: AtomicUsize::new(new_parts as _)
             }),
             count: AtomicUsize::new(0),
             init_cap: self.init_cap,
@@ -2635,8 +2684,8 @@ impl<
 }
 
 impl<
-        K,
-        V,
+        K: Clone + Hash + Eq,
+        V: Clone,
         A: Attachment<K, V>,
         ALLOC: GlobalAlloc + Default,
         H: Hasher + Default,
@@ -2646,18 +2695,12 @@ impl<
 {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
-        let current_chunks_ptr = self.meta.current_chunks.load(Acquire);
-        let history_chunks_ptr = self.meta.history_chunks.load(Acquire);
-        let current_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(current_chunks_ptr);
-        let history_chunks = ChunkArray::<K, V, A, ALLOC>::ref_from_addr(history_chunks_ptr);
-        let epochs_ptr  = self.meta.epochs.load(Acquire);
-        current_chunks.clear(&guard);
-        history_chunks.clear(&guard);
+        let parts_addr = self.meta.partitions.load(Acquire);
+        let parts = PartitionArray::<K, V, A, ALLOC>::ref_from_addr(parts_addr);
+        parts.clear(&guard);
         unsafe {
             guard.defer_unchecked(move || {
-                libc::free(current_chunks_ptr as _);
-                libc::free(history_chunks_ptr as _);
-                libc::free(epochs_ptr as _);
+                libc::free(parts_addr as _);
             })
         }
     }
@@ -2674,7 +2717,6 @@ unsafe impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Sync
 
 impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K, V, A, ALLOC> {
     fn destory(&mut self) {
-        debug_assert_ne!(self.ptr as usize, 0);
         unsafe {
             Chunk::gc(self.ptr);
         }
@@ -2713,7 +2755,6 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Into<usize>
 
 impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K, V, A, ALLOC> {
     fn new(ptr: *mut Chunk<K, V, A, ALLOC>) -> Self {
-        debug_assert_ne!(ptr as usize, 0);
         Self {
             ptr,
             _marker: PhantomData,
