@@ -352,64 +352,6 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A
     }
 }
 
-// type ChunkArray<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> =
-//     PartitionArray<ChunkPtr<'a, K, V, A, ALLOC>>;
-
-// impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkArray<'a, K, V, A, ALLOC> {
-//     fn erase_chunk(&self, id: ArrId, guard: &'a Guard) {
-//         unsafe {
-//             let chunk_addr = self.ptr_addr_of(id);
-//             let old_addr = intrinsics::atomic_xchg_acqrel(chunk_addr as *mut _, 0usize);
-//             guard.defer_unchecked(move || {
-//                 (ChunkPtr::<'a, K, V, A, ALLOC> {
-//                     ptr: old_addr as _,
-//                     _marker: PhantomData,
-//                 })
-//                 .destory();
-//             });
-//         }
-//     }
-
-//     fn clear(&self, guard: &'a Guard) {
-//         for i in (0..self.len).rev() {
-//             let addr = self.ptr_addr_of(ArrId(i));
-//             if addr > 0 {
-//                 unsafe {
-//                     let old_addr = intrinsics::atomic_xchg_acqrel(addr as *mut _, 0usize);
-//                     if old_addr == 0 {
-//                         continue;
-//                     }
-//                     guard.defer_unchecked(move || {
-//                         (ChunkPtr::<'a, K, V, A, ALLOC> {
-//                             ptr: old_addr as _,
-//                             _marker: PhantomData,
-//                         })
-//                         .destory();
-//                     });
-//                 }
-//             }
-//         }
-//     }
-
-//     fn key_capacity(&self) -> usize {
-//         self.iter().map(|chunk| chunk.capacity).sum()
-//     }
-
-//     fn hash_chunk<'b>(
-//         &self,
-//         hash: usize,
-//         _guard: &'a Guard,
-//     ) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
-//         self.hash(hash)
-//     }
-
-//     fn chunk_at<'b>(&self, id: ArrId, _guard: &'a Guard) -> Option<ChunkPtr<'a, K, V, A, ALLOC>> {
-//         self.at(id)
-//     }
-// }
-
-// type EpochArray = PartitionArray<usize>;
-
 impl<
         K: Clone + Hash + Eq,
         V: Clone,
@@ -1521,7 +1463,14 @@ impl<
             .collect::<std::collections::HashMap<_, _>>();
         let history_map = parts
             .iter()
-            .map(|part| self.all_from_chunk(part.history()))
+            .filter_map(|part| {
+                let history = part.history();
+                if history.is_null() {
+                    None
+                } else {
+                    Some(self.all_from_chunk(history))
+                }
+            })
             .flatten()
             .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
             .collect::<std::collections::HashMap<_, _>>();
