@@ -1,8 +1,4 @@
-use std::{
-    cell::RefCell,
-    cmp::min,
-    collections::VecDeque,
-};
+use std::{cell::RefCell, cmp::min, collections::VecDeque};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -181,8 +177,7 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartialEq
     }
 }
 
-impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K, V, A, ALLOC>
-{
+impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K, V, A, ALLOC> {
     fn is_null(&self) -> bool {
         self.ptr as usize == 0
     }
@@ -192,30 +187,29 @@ struct ChunkMeta {
     partitions: AtomicUsize,
 }
 
-
 #[derive(Default)]
 struct Partition<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     current_chunk: AtomicUsize,
     history_chunk: AtomicUsize,
     epoch: AtomicUsize,
-    _marker: PhantomData<(K, V, A, ALLOC)>
+    _marker: PhantomData<(K, V, A, ALLOC)>,
 }
 
-impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partition<K, V, A, ALLOC> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partition<K, V, A, ALLOC> {
     fn clone(&self) -> Self {
-        Self { 
-            current_chunk: AtomicUsize::new(self.current_chunk.load(Relaxed)), 
+        Self {
+            current_chunk: AtomicUsize::new(self.current_chunk.load(Relaxed)),
             history_chunk: AtomicUsize::new(self.history_chunk.load(Relaxed)),
             epoch: AtomicUsize::new(self.epoch.load(Relaxed)),
-            _marker: PhantomData
+            _marker: PhantomData,
         }
     }
 }
 
 // impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
 //     fn new() -> Self {
-//         Self { 
-//             current_chunk: AtomicUsize::new(0), 
+//         Self {
+//             current_chunk: AtomicUsize::new(0),
 //             history_chunk: AtomicUsize::new(0),
 //             epoch: AtomicUsize::new(2),
 //             _marker: PhantomData
@@ -227,7 +221,7 @@ struct PartitionArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     len: usize,
     hash_masking: usize,
     hash_shift: u32,
-    _marker: PhantomData<(K, V, A, ALLOC)>
+    _marker: PhantomData<(K, V, A, ALLOC)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -246,7 +240,7 @@ macro_rules! delay_log {
     };
 }
 
-impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, V, A, ALLOC> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, V, A, ALLOC> {
     fn new(len: usize) -> *mut Self {
         debug_assert!(len.is_power_of_two());
         let obj_size = mem::size_of::<Self>() + len * mem::size_of::<Partition<K, V, A, ALLOC>>();
@@ -262,7 +256,7 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K,
                     len,
                     hash_masking,
                     hash_shift,
-                    _marker: PhantomData
+                    _marker: PhantomData,
                 },
             );
         }
@@ -300,15 +294,13 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K,
         (0..self.len).map(move |i| self.at(ArrId(i)))
     }
     fn clear<'a>(&self, guard: &'a Guard) {
-        self.iter().for_each(|part| {
-            unsafe {
-                let mut current = part.current();
-                let mut history = part.history();
-                guard.defer_unchecked(move || {
-                    current.destory();
-                    history.destory();
-                });
-            }
+        self.iter().for_each(|part| unsafe {
+            let mut current = part.current();
+            let mut history = part.history();
+            guard.defer_unchecked(move || {
+                current.destory();
+                history.destory();
+            });
         });
     }
     fn key_capacity(&self) -> usize {
@@ -316,7 +308,7 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K,
     }
 }
 
-impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
+impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
     fn epoch(&self) -> usize {
         self.epoch.load(Acquire)
     }
@@ -330,7 +322,9 @@ impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A
         ChunkPtr::new(self.history_chunk.load(Acquire) as _)
     }
     fn swap_in_history<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
-        self.history_chunk.compare_exchange(0, chunk_ptr.ptr as _, AcqRel, Relaxed).is_ok()
+        self.history_chunk
+            .compare_exchange(0, chunk_ptr.ptr as _, AcqRel, Relaxed)
+            .is_ok()
     }
     fn set_history<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) {
         self.history_chunk.store(chunk_ptr.ptr as _, Release);
@@ -386,7 +380,7 @@ impl<
         let init_arr_len = Self::init_part_nums();
         let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len);
         unsafe {
-            (*partitions).iter().for_each(|part|{
+            (*partitions).iter().for_each(|part| {
                 let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, &attachment_init_meta);
                 part.set_current(ChunkPtr::new(chunk));
                 part.set_epoch(2);
@@ -394,7 +388,7 @@ impl<
         }
         Self {
             meta: ChunkMeta {
-                partitions: AtomicUsize::new(partitions as _)
+                partitions: AtomicUsize::new(partitions as _),
             },
             count: AtomicUsize::new(0),
             init_cap: cap,
@@ -727,8 +721,9 @@ impl<
         let init_arr_len = Self::init_part_nums();
         let new_parts = PartitionArray::new(init_arr_len);
         unsafe {
-            (*new_parts).iter().for_each(|part|{
-                let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(self.init_cap, &self.attachment_init_meta);
+            (*new_parts).iter().for_each(|part| {
+                let chunk =
+                    Chunk::<K, V, A, ALLOC>::alloc_chunk(self.init_cap, &self.attachment_init_meta);
                 part.set_current(ChunkPtr::new(chunk));
                 part.set_epoch(2);
             });
@@ -951,7 +946,7 @@ impl<
     #[inline]
     fn partitions<'a>(&self) -> &PartitionArray<K, V, A, ALLOC> {
         PartitionArray::ref_from_addr(self.meta.partitions.load(Acquire))
-    } 
+    }
 
     #[inline]
     fn part_of_hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
@@ -971,7 +966,6 @@ impl<
         &Partition<K, V, A, ALLOC>,
     ) {
         loop {
-            
             let part = self.part_of_hash(hash);
             let current_epoch = part.epoch();
             let current_chunk = part.current();
@@ -1456,7 +1450,7 @@ impl<
         let guard = crossbeam_epoch::pin();
         let parts = self.partitions();
         let current_map = parts
-        .iter()
+            .iter()
             .map(|part| self.all_from_chunk(part.current()))
             .flatten()
             .map(|(k, v, fk, fv)| ((k, fk), (v, fv)))
@@ -1872,8 +1866,8 @@ impl<
             old_epoch
         );
         part.set_current(new_chunk_ptr); // Stump becasue we have the lock already
-                                                                  // Not going to take multithreading resize
-                                                                  // Experiments shows there is no significant improvement in performance
+                                         // Not going to take multithreading resize
+                                         // Experiments shows there is no significant improvement in performance
         trace!("Initialize migration");
         let num_migrated = self.migrate_entries(
             old_chunk_ptr,
@@ -2594,10 +2588,8 @@ impl<
         let guard = crossbeam_epoch::pin();
         let parts = self.partitions();
         let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len);
-        parts.iter().enumerate().for_each(|(i, part)|{
-            let new_part = unsafe {
-                &(*new_parts).at(ArrId(i))
-            };
+        parts.iter().enumerate().for_each(|(i, part)| {
+            let new_part = unsafe { &(*new_parts).at(ArrId(i)) };
             let current = part.current();
             let history = part.history();
             let epoch = part.epoch();
@@ -2619,7 +2611,7 @@ impl<
         });
         Self {
             meta: ChunkMeta {
-                partitions: AtomicUsize::new(new_parts as _)
+                partitions: AtomicUsize::new(new_parts as _),
             },
             count: AtomicUsize::new(0),
             init_cap: self.init_cap,
