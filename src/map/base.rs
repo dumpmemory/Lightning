@@ -205,18 +205,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partitio
         }
     }
 }
-
-// impl <K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
-//     fn new() -> Self {
-//         Self {
-//             current_chunk: AtomicUsize::new(0),
-//             history_chunk: AtomicUsize::new(0),
-//             epoch: AtomicUsize::new(2),
-//             _marker: PhantomData
-//         }
-//     }
-// }
-
 struct PartitionArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     len: usize,
     hash_masking: usize,
