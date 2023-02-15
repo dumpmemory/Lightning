@@ -69,6 +69,7 @@ pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
 pub const PARTITION_MAX_CAP: usize = 8 * 1024 * 1024; // 8M. This number is selected to be the size of most commonly seen L3 cache
+pub const INIT_ARR_VER: usize = 0;
 
 const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
@@ -185,6 +186,7 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K
 
 struct ChunkMeta {
     partitions: AtomicUsize,
+    array_version: AtomicUsize
 }
 
 #[derive(Default)]
@@ -192,6 +194,7 @@ struct Partition<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     current_chunk: AtomicUsize,
     history_chunk: AtomicUsize,
     epoch: AtomicUsize,
+    arr_ver: usize,
     _marker: PhantomData<(K, V, A, ALLOC)>,
 }
 
@@ -201,6 +204,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partitio
             current_chunk: AtomicUsize::new(self.current_chunk.load(Relaxed)),
             history_chunk: AtomicUsize::new(self.history_chunk.load(Relaxed)),
             epoch: AtomicUsize::new(self.epoch.load(Relaxed)),
+            arr_ver: self.arr_ver,
             _marker: PhantomData,
         }
     }
@@ -208,6 +212,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partitio
 struct PartitionArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     len: usize,
     hash_masking: usize,
+    version: usize,
     hash_shift: u32,
     _marker: PhantomData<(K, V, A, ALLOC)>,
 }
@@ -229,7 +234,7 @@ macro_rules! delay_log {
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, V, A, ALLOC> {
-    fn new(len: usize) -> *mut Self {
+    fn new(len: usize, version: usize) -> *mut Self {
         debug_assert!(len.is_power_of_two());
         let obj_size = mem::size_of::<Self>() + len * mem::size_of::<Partition<K, V, A, ALLOC>>();
         let raw_ptr = unsafe { libc::malloc(obj_size) };
@@ -244,6 +249,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
                     len,
                     hash_masking,
                     hash_shift,
+                    version,
                     _marker: PhantomData,
                 },
             );
@@ -366,7 +372,7 @@ impl<
             panic!("Capacity is not power of 2, got {}", cap);
         }
         let init_arr_len = Self::init_part_nums();
-        let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len);
+        let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len, INIT_ARR_VER);
         unsafe {
             (*partitions).iter().for_each(|part| {
                 let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, &attachment_init_meta);
@@ -377,6 +383,7 @@ impl<
         Self {
             meta: ChunkMeta {
                 partitions: AtomicUsize::new(partitions as _),
+                array_version: AtomicUsize::new(INIT_ARR_VER)
             },
             count: AtomicUsize::new(0),
             init_cap: cap,
@@ -707,7 +714,7 @@ impl<
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
         let init_arr_len = Self::init_part_nums();
-        let new_parts = PartitionArray::new(init_arr_len);
+        let new_parts = PartitionArray::new(init_arr_len, INIT_ARR_VER);
         unsafe {
             (*new_parts).iter().for_each(|part| {
                 let chunk =
@@ -2573,9 +2580,8 @@ impl<
     > Clone for Table<K, V, A, ALLOC, H, K_OFFSET, V_OFFSET>
 {
     fn clone(&self) -> Self {
-        let guard = crossbeam_epoch::pin();
         let parts = self.partitions();
-        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len);
+        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version);
         parts.iter().enumerate().for_each(|(i, part)| {
             let new_part = unsafe { &(*new_parts).at(ArrId(i)) };
             let current = part.current();
@@ -2595,11 +2601,12 @@ impl<
                     new_part.set_history(ChunkPtr::new(new_chunk_ptr as _));
                 }
             }
-            new_part.set_epoch(part.epoch())
+            new_part.set_epoch(epoch);
         });
         Self {
             meta: ChunkMeta {
                 partitions: AtomicUsize::new(new_parts as _),
+                array_version: AtomicUsize::new(parts.version)
             },
             count: AtomicUsize::new(0),
             init_cap: self.init_cap,
