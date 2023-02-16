@@ -186,7 +186,7 @@ impl<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> ChunkPtr<'a, K
 
 struct ChunkMeta {
     partitions: AtomicUsize,
-    array_version: AtomicUsize
+    array_version: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -383,7 +383,7 @@ impl<
         Self {
             meta: ChunkMeta {
                 partitions: AtomicUsize::new(partitions as _),
-                array_version: AtomicUsize::new(INIT_ARR_VER)
+                array_version: AtomicUsize::new(INIT_ARR_VER),
             },
             count: AtomicUsize::new(0),
             init_cap: cap,
@@ -505,7 +505,7 @@ impl<
                     continue;
                 }
             } else {
-                match self.check_migration(hash, chunk, epoch, &guard) {
+                match self.check_migration(hash, chunk, epoch, part, true, &guard) {
                     ResizeResult::InProgress | ResizeResult::SwapFailed => {
                         trace!("Retry insert due to resize");
                         backoff.spin();
@@ -572,7 +572,7 @@ impl<
                 ModResult::TableFull => {
                     reset_locked_old();
                     if new_chunk.is_none() {
-                        self.do_migration(hash, chunk, epoch, &guard);
+                        self.check_migration(hash, chunk, epoch, part, false, &guard);
                     }
                     backoff.spin();
                     continue;
@@ -1783,31 +1783,66 @@ impl<
         }
     }
 
+    fn current_arr_ver(&self) -> usize {
+        self.meta.array_version.load(Acquire)
+    }
+
+    fn need_split_chunk<'a>(&self, old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
+        // Check if the chunk need to be split
+        // During array splitting, partition pointers would be duplicated 
+        // This function however, would detect those duplicates by checking arr_ver with partition version 
+        unimplemented!()
+
+    }
+
+    fn need_split_array<'a>(&self, old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
+        // Statsticly, a oversized partition indicates that other partitions in the array is also full
+        // Such that we don't need to check every partitions in the array for it is expensive
+        // Justification: Hash functions should be able to spread entries across all partitions evenly
+        unimplemented!()
+    }
+
     /// Failed return old shared
     fn check_migration<'a>(
         &self,
         hash: usize,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
         chunk_epoch: usize,
+        part: &Partition<K, V, A, ALLOC>,
+        check: bool,
         guard: &Guard,
     ) -> ResizeResult {
-        let occupation = old_chunk_ptr.occupation.load(Relaxed);
-        let occu_limit = old_chunk_ptr.occu_limit;
-        if occupation < occu_limit {
-            return ResizeResult::NoNeed;
+        let arr_ver = self.current_arr_ver();
+        if check {
+            let occupation = old_chunk_ptr.occupation.load(Relaxed);
+            let occu_limit = old_chunk_ptr.occu_limit;
+            if occupation < occu_limit {
+                return ResizeResult::NoNeed;
+            }
         }
-        self.do_migration(hash, old_chunk_ptr, chunk_epoch, guard)
+        self.resize_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard)
     }
 
-    fn do_migration<'a>(
+    fn split_migration<'a>(
         &self,
         hash: usize,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
         chunk_epoch: usize,
         guard: &crossbeam_epoch::Guard,
+    ) {
+
+    }
+
+    fn resize_migration<'a>(
+        &self,
+        hash: usize,
+        old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
+        chunk_epoch: usize,
+        arr_Ver: usize,
+        part: &Partition<K, V, A, ALLOC>,
+        guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         // Swap in new chunk as placeholder for the lock
-        let part = self.part_of_hash(hash);
         if !part.swap_in_history(old_chunk_ptr) {
             // other thread have allocated new chunk and wins the competition, exit
             trace!("Cannot obtain lock for resize, will retry");
@@ -1815,7 +1850,9 @@ impl<
         }
         let old_epoch = part.epoch();
         debug_assert!(!Self::is_copying(old_epoch));
-        if chunk_epoch != old_epoch {
+        // After the chunk partition lock is acquired, we need to check if array epoch is changed
+        // If so, or partition epoch is changed, we need to reset and try again
+        if chunk_epoch != old_epoch || arr_Ver != self.current_arr_ver() {
             part.set_history(ChunkPtr::null());
             debug!(
                 "$ Epoch changed from {} to {} after migration lock",
@@ -2606,7 +2643,7 @@ impl<
         Self {
             meta: ChunkMeta {
                 partitions: AtomicUsize::new(new_parts as _),
-                array_version: AtomicUsize::new(parts.version)
+                array_version: AtomicUsize::new(parts.version),
             },
             count: AtomicUsize::new(0),
             init_cap: self.init_cap,
