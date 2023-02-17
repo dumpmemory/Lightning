@@ -352,7 +352,7 @@ impl<
     }
 
     fn init_part_nums() -> usize {
-        num_cpus::get_physical().next_power_of_two()
+        1 //num_cpus::get_physical().next_power_of_two()
     }
 
     pub fn with_max_capacity(
