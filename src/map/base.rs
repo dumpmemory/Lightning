@@ -281,7 +281,15 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     }
 
     fn hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
-        self.at(self.id_of_hash(hash))
+        let hash_id = self.id_of_hash(hash);
+        let part = self.at(hash_id);
+        let ver_dest = self.version - part.arr_ver;
+        let size_diff = ver_dest >> 1;
+        if size_diff > 0 {
+            return self.at(ArrId(hash_id.0 >> size_diff << size_diff));
+        } else {
+            return part;
+        }
     }
 
     fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Partition<K, V, A, ALLOC>> + 'a {
@@ -968,6 +976,9 @@ impl<
             let current_chunk = part.current();
             let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
+            if Self::is_copying(arr_ver) {
+                continue;
+            }
             if history_chunk == current_chunk {
                 continue;
             }
@@ -977,6 +988,9 @@ impl<
                 continue;
             }
             if part.epoch() != current_epoch {
+                continue;
+            }            
+            if self.current_arr_ver() != arr_ver {
                 continue;
             }
             if is_copying {
@@ -1801,18 +1815,18 @@ impl<
         self.meta.array_version.load(Relaxed)
     }
 
-    fn need_split_chunk<'a>(&self, old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
+    fn need_split_chunk<'a>(&self, part: &Partition<K, V, A, ALLOC>, arr_ver: usize) -> bool {
         // Check if the chunk need to be split
         // During array splitting, partition pointers would be duplicated
         // This function however, would detect those duplicates by checking arr_ver with partition version
-        unimplemented!()
+        part.arr_ver < arr_ver
     }
 
-    fn need_split_array<'a>(&self, old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
+    fn need_split_array<'a>(&self, old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>, part: &Partition<K, V, A, ALLOC>, arr_ver: usize) -> bool {
         // Statsticly, a oversized partition indicates that other partitions in the array is also full
         // Such that we don't need to check every partitions in the array for it is expensive
         // Justification: Hash functions should be able to spread entries across all partitions evenly
-        unimplemented!()
+        old_chunk_ptr.capacity > self.max_cap && part.arr_ver == arr_ver
     }
 
     /// Failed return old shared
@@ -1826,6 +1840,7 @@ impl<
         check: bool,
         guard: &Guard,
     ) -> ResizeResult {
+        debug_assert!(!Self::is_copying(arr_ver));
         if check {
             let occupation = old_chunk_ptr.occupation.load(Relaxed);
             let occu_limit = old_chunk_ptr.occu_limit;
@@ -1833,7 +1848,32 @@ impl<
                 return ResizeResult::NoNeed;
             }
         }
+        if self.need_split_array(old_chunk_ptr, part, arr_ver) {
+            // Try split array, if cannot, try again
+            if !self.split_array(arr_ver) {
+                return ResizeResult::SwapFailed;
+            }
+            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, part, guard);
+        }
+        if self.need_split_chunk(part, arr_ver) {
+            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, part, guard);
+        }
         self.resize_migration(old_chunk_ptr, chunk_epoch, arr_ver, part, guard)
+    }
+
+    fn split_array(&self, prev_arr_ver: usize) -> bool {
+        debug_assert!(!Self::is_copying(prev_arr_ver));
+        // First lock the array by swapping ver+1
+        if self.meta.array_version.compare_exchange(prev_arr_ver, prev_arr_ver + 1, AcqRel, Relaxed).is_ok() {
+            // Lock obtained. Should be safe to allocate new array and store
+            let old_part_arr = self.partitions();
+            debug_assert_eq!(old_part_arr.version, prev_arr_ver);
+            let new_size = old_part_arr.len << 1; // x2
+            
+        } else {
+            return false;
+        }
+        unimplemented!()
     }
 
     fn split_migration<'a>(
@@ -1843,7 +1883,8 @@ impl<
         chunk_epoch: usize,
         part: &Partition<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
-    ) {
+    ) -> ResizeResult {
+        unimplemented!()
     }
 
     fn resize_migration<'a>(
