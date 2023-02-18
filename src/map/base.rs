@@ -2333,6 +2333,19 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         ptr
     }
 
+    #[cfg(not(target_os = "linux"))]
+    unsafe fn fill_zeros(
+        mut data_base: usize,
+        mut hop_base: usize,
+        data_size: usize,
+        hop_size: usize,
+        page_size: usize,
+    ) {
+        fill_zeros(data_base, data_size);
+        fill_zeros(hop_base, hop_size);
+    }
+
+    #[cfg(target_os = "linux")]
     unsafe fn fill_zeros(
         mut data_base: usize,
         mut hop_base: usize,
