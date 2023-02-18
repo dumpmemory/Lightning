@@ -11,7 +11,7 @@ use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
-use std::{marker::PhantomData, mem, ptr};
+use std::{marker::PhantomData, mem, ptr, collections::VecDeque};
 
 use crate::stack::LinkedRingBufferStack;
 
@@ -231,8 +231,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
                     let free_buffer_ref = free_buffer.as_mut();
                     if let Some(ptr) = free_buffer_ref.pop_back() {
                         free_buffer_ref.next = AtomicArc::null();
-                        self.free_list.head = free_buffer;
-                        self.free_list.num_buffer += 1;
+                        self.free_list.append_page(free_buffer);
                         #[cfg(debug_assertions)]
                         #[cfg(asan)]
                         self.asan.alloc(ptr);
@@ -249,14 +248,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 }
             }
         }
-        unsafe {
-            if let Some(addr) = self.buffered_free.as_mut().pop_back() {
-                #[cfg(debug_assertions)]
-                #[cfg(asan)]
-                self.asan.alloc(addr);
-                return addr;
-            }
-        }
+        // NEVER take freed objects from `self.buffered_free`
         let obj_addr = self.buffer_addr;
         self.buffer_addr += Self::OBJ_SIZE;
         debug_assert!(self.buffer_addr <= self.buffer_limit);
@@ -313,15 +305,15 @@ impl<T, const B: usize> TLAlloc<T, B> {
                     .push((self.buffer_addr, self.buffer_limit))
             }
 
-            let mut free_node = mem::replace(&mut self.free_list.head, Arc::null());
-            while !free_node.is_null() {
-                let next_next =
-                    mem::replace(&mut free_node.as_mut().next, AtomicArc::null()).into_arc();
-                if free_node.pos > 0 {
-                    (&*self.shared).attach_objs(free_node);
-                }
-                free_node = next_next;
-            }
+            // let mut free_node = mem::replace(&mut self.free_list.head, Arc::null());
+            // while !free_node.is_null() {
+            //     let next_next =
+            //         mem::replace(&mut free_node.as_mut().next, AtomicArc::null()).into_arc();
+            //     if free_node.pos > 0 {
+            //         (&*self.shared).attach_objs(free_node);
+            //     }
+            //     free_node = next_next;
+            // }
             if self.buffered_free.pos > 0 {
                 (&*self.shared).attach_objs(mem::replace(
                     &mut self.buffered_free,
@@ -342,8 +334,7 @@ impl<T, const B: usize> Drop for TLAlloc<T, B> {
 }
 
 struct TLBufferedStack<const B: usize> {
-    head: Arc<ThreadLocalPage<B>>,
-    num_buffer: usize,
+    deque: VecDeque<Arc<ThreadLocalPage<B>>>,
 }
 
 impl<const B: usize> TLBufferedStack<B> {
@@ -351,33 +342,28 @@ impl<const B: usize> TLBufferedStack<B> {
 
     #[inline(always)]
     pub fn new() -> Self {
-        Self {
-            head: Arc::new(ThreadLocalPage::new()),
-            num_buffer: 0,
-        }
+        let mut deque = VecDeque::with_capacity(Self::MAX_BUFFERS);
+        deque.push_front(Arc::new(ThreadLocalPage::new()));
+        Self { deque }
+    }
+
+    fn head (&mut self) -> &Arc<ThreadLocalPage<B>> {
+        self.deque.front().unwrap()
     }
 
     #[inline(always)]
     pub fn push(&mut self, val: usize) -> Option<Arc<ThreadLocalPage<B>>> {
         let mut res = None;
         unsafe {
-            if let Err(val) = self.head.as_mut().push_back(val) {
+            if let Err(val) = self.head().as_mut().push_back(val) {
                 // Current buffer is full, need a new one
-                if self.num_buffer >= Self::MAX_BUFFERS {
+                if self.deque.len() >= Self::MAX_BUFFERS {
                     // Need to move current buffer from buffer chain to shared buffer chain
-                    let head_next = {
-                        mem::replace(&mut self.head.as_mut().next, AtomicArc::null()).into_arc()
-                    };
-                    let overflow_buffer_node = mem::replace(&mut self.head, head_next);
-                    res = Some(overflow_buffer_node);
-                    self.num_buffer -= 1;
+                    res = self.deque.pop_back();
                 }
-                let new_buffer = Arc::new(ThreadLocalPage::new());
-                let pr = new_buffer.as_mut().push_back(val);
-                debug_assert!(pr.is_ok());
-                let old_head = mem::replace(&mut self.head, new_buffer);
-                self.head.as_mut().next = AtomicArc::from_rc(old_head);
-                self.num_buffer += 1;
+                let mut new_buffer = ThreadLocalPage::new();
+                let _ = new_buffer.push_back(val);
+                self.deque.push_front(Arc::new(new_buffer));
             }
         }
         return res;
@@ -389,14 +375,12 @@ impl<const B: usize> TLBufferedStack<B> {
         page: Arc<ThreadLocalPage<B>>,
     ) -> Option<Arc<ThreadLocalPage<B>>> {
         unsafe {
-            if self.num_buffer >= Self::MAX_BUFFERS {
-                let head_next = mem::replace(&mut self.head.as_mut().next, AtomicArc::null());
-                page.as_mut().next = head_next;
-                Some(mem::replace(&mut self.head, page))
+            if self.deque.len() >= Self::MAX_BUFFERS {
+                let res = self.deque.pop_front();
+                self.deque.push_back(page);
+                return res;
             } else {
-                let old_head = mem::replace(&mut self.head, page);
-                self.head.as_mut().next = AtomicArc::from_rc(old_head);
-                self.num_buffer += 1;
+                self.deque.push_back(page);
                 None
             }
         }
@@ -406,34 +390,29 @@ impl<const B: usize> TLBufferedStack<B> {
     pub fn pop(&mut self) -> Option<usize> {
         loop {
             unsafe {
-                let head_pop = self.head.as_mut().pop_back();
-                if head_pop.is_some() {
-                    return head_pop;
+                if let Some(val) = self.head().as_mut().pop_back() {
+                    return Some(val);
+                } else {
+                    // Last empty buffer, just return None
+                    if self.deque.len() == 1 {
+                        return None;
+                    }
+                    // Current head buffer is empty, pop the head buffer
+                    self.deque.pop_front();
+                    // And try again
                 }
-                // Need to pop from next buffer
-                if self.head.next.inner().is_null() {
-                    return None;
-                }
-                let next_node =
-                    mem::replace(&mut self.head.as_mut().next, AtomicArc::null()).into_arc();
-                self.head = next_node;
-                self.num_buffer -= 1;
             }
         }
     }
 
     pub fn all(&self) -> Vec<usize> {
-        let mut res = Vec::new();
-        // return free list
-        res.append(&mut self.head.all());
-        let mut next = self.head.next.load();
-        while !next.is_null() {
-            res.append(&mut next.all());
-            next = next.next.load();
-        }
-        res.sort();
-        res.dedup();
-        return res;
+        self.deque
+            .iter()
+            .map(|buffer| buffer.all())
+            .flatten()
+            .sorted()
+            .dedup()
+            .collect_vec()
     }
 }
 

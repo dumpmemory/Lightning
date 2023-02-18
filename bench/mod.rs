@@ -25,7 +25,6 @@ mod fat_lfmap;
 mod flurry;
 mod lfmap;
 mod lite_lfmap;
-mod lite_lfmap_arc;
 mod lockfree;
 mod obj_lfmap;
 mod ptr_lfmap;
@@ -285,13 +284,6 @@ fn perf_test<'a>(file_name: &'a str, load: u8, contention: bool, stride: usize) 
             contention,
             stride,
         ),
-        run_perf_test_set::<lite_lfmap_arc::TestTable>(
-            file_name,
-            "lightning - arc",
-            load,
-            contention,
-            stride,
-        ),
         run_perf_test_set::<lfmap::TestTable>(
             file_name,
             "lightning - base",
@@ -399,17 +391,16 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     cont: f64,
     stride: usize,
 ) -> Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)> {
-    println!("Testing {}", name);
-    println!("Read heavy");
-    let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
-    write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
+    println!("Testing {}", name);    
     println!("Insert heavy");
-    let insert_measurement =
-        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
+    let insert_measurement = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
     write_measurements(
         &format!("{}_{}_insertion.csv", task, name),
         &insert_measurement,
     );
+    println!("Read heavy");
+    let read_measurement = run_and_measure_mix::<T>(Mix::read_heavy(), 0.75, load, cont, stride);
+    write_measurements(&format!("{}_{}_read.csv", task, name), &read_measurement);
     println!("Uniform");
     let uniform_measurement = run_and_measure_mix::<T>(Mix::uniform(), 0.75, load, cont, stride);
     write_measurements(

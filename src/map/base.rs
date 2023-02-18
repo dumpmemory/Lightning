@@ -257,12 +257,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         return arr_ptr;
     }
 
+    #[inline(always)]
     fn ptr_addr_of(&self, id: ArrId) -> usize {
         debug_assert!(id.0 < self.len);
         let base_addr = self as *const Self as usize + mem::size_of::<Self>();
         return base_addr + id.0 * mem::size_of::<Partition<K, V, A, ALLOC>>();
     }
 
+    #[inline(always)]
     fn at(&self, id: ArrId) -> &Partition<K, V, A, ALLOC> {
         unsafe {
             let addr = self.ptr_addr_of(id);
@@ -270,16 +272,19 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         }
     }
 
+    #[inline(always)]
     fn ref_from_addr<'a>(addr: usize) -> &'a Self {
         unsafe { &*(addr as *const Self) }
     }
 
+    #[inline(always)]
     fn id_of_hash(&self, hash: usize) -> ArrId {
         let r = (hash & self.hash_masking) >> self.hash_shift;
         debug_assert!(r < self.len);
         return ArrId(r);
     }
 
+    #[inline(always)]
     fn hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
         let hash_id = self.id_of_hash(hash);
         let part = self.at(hash_id);
@@ -948,7 +953,7 @@ impl<
 
     #[inline]
     fn partitions<'a>(&self) -> &PartitionArray<K, V, A, ALLOC> {
-        PartitionArray::ref_from_addr(self.meta.partitions.load(Acquire))
+        PartitionArray::ref_from_addr(self.meta.partitions.load(Relaxed))
     }
 
     #[inline]
@@ -2430,6 +2435,19 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         ptr
     }
 
+    #[cfg(not(target_os = "linux"))]
+    unsafe fn fill_zeros(
+        mut data_base: usize,
+        mut hop_base: usize,
+        data_size: usize,
+        hop_size: usize,
+        page_size: usize,
+    ) {
+        fill_zeros(data_base, data_size);
+        fill_zeros(hop_base, hop_size);
+    }
+
+    #[cfg(target_os = "linux")]
     unsafe fn fill_zeros(
         mut data_base: usize,
         mut hop_base: usize,
