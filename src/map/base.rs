@@ -1812,7 +1812,6 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_epoch = part.epoch();
-        debug_assert!(!Self::is_copying(old_epoch));
         if chunk_epoch != old_epoch {
             part.set_history(ChunkPtr::null());
             debug!(
