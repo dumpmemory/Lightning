@@ -90,6 +90,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             let node_ver = node_ref.retire_ver.load(Relaxed);
             let mut current_ver = self.epoch.load(Acquire);
+            let backoff = Backoff::new();
             debug_assert_ne!(
                 node_ptr as usize & Self::VAL_NODE_LOW_BITS,
                 node_ptr as usize
@@ -106,6 +107,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                         if actual_ver >= new_ver {
                             break;
                         } else {
+                            backoff.spin();
                             continue;
                         }
                     } else {
