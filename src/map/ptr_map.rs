@@ -124,7 +124,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let obj_ptr = node_ref.value.as_ptr();
             if node_ver > 0 {
                 // Free existing object
-                drop(ptr::read(obj_ptr));
+                ptr::read(obj_ptr);
             }
             ptr::write(obj_ptr, d);
             Self::compose_value(node_ptr as usize, current_ver)
