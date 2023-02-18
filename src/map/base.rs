@@ -251,12 +251,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         return arr_ptr;
     }
 
+    #[inline(always)]
     fn ptr_addr_of(&self, id: ArrId) -> usize {
         debug_assert!(id.0 < self.len);
         let base_addr = self as *const Self as usize + mem::size_of::<Self>();
         return base_addr + id.0 * mem::size_of::<Partition<K, V, A, ALLOC>>();
     }
 
+    #[inline(always)]
     fn at(&self, id: ArrId) -> &Partition<K, V, A, ALLOC> {
         unsafe {
             let addr = self.ptr_addr_of(id);
@@ -264,16 +266,19 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         }
     }
 
+    #[inline(always)]
     fn ref_from_addr<'a>(addr: usize) -> &'a Self {
         unsafe { &*(addr as *const Self) }
     }
 
+    #[inline(always)]
     fn id_of_hash(&self, hash: usize) -> ArrId {
         let r = (hash & self.hash_masking) >> self.hash_shift;
         debug_assert!(r < self.len);
         return ArrId(r);
     }
 
+    #[inline(always)]
     fn hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
         self.at(self.id_of_hash(hash))
     }
