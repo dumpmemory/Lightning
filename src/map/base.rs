@@ -938,7 +938,7 @@ impl<
 
     #[inline]
     fn partitions<'a>(&self) -> &PartitionArray<K, V, A, ALLOC> {
-        PartitionArray::ref_from_addr(self.meta.partitions.load(Acquire))
+        PartitionArray::ref_from_addr(self.meta.partitions.load(Relaxed))
     }
 
     #[inline]

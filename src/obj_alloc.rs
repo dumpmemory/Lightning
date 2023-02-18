@@ -249,14 +249,7 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 }
             }
         }
-        unsafe {
-            if let Some(addr) = self.buffered_free.as_mut().pop_back() {
-                #[cfg(debug_assertions)]
-                #[cfg(asan)]
-                self.asan.alloc(addr);
-                return addr;
-            }
-        }
+        // NEVER take freed objects from `self.buffered_free`
         let obj_addr = self.buffer_addr;
         self.buffer_addr += Self::OBJ_SIZE;
         debug_assert!(self.buffer_addr <= self.buffer_limit);

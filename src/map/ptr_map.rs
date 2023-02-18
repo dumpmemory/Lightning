@@ -9,7 +9,7 @@ use super::*;
 
 pub type PtrTable<K, V, ALLOC, H> =
     Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
-const ALLOC_BUFFER_SIZE: usize = 256;
+const ALLOC_BUFFER_SIZE: usize = 4096;
 
 pub struct PtrHashMap<
     K: Clone + Hash + Eq,
@@ -89,7 +89,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
             let node_ver = node_ref.retire_ver.load(Relaxed);
-            let mut current_ver = self.epoch.load(Relaxed);
+            let mut current_ver = self.epoch.load(Acquire);
             debug_assert_ne!(
                 node_ptr as usize & Self::VAL_NODE_LOW_BITS,
                 node_ptr as usize
@@ -97,18 +97,19 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             loop {
                 if node_ver >= current_ver {
                     // Bump global apoch when the reclaimed node version is higher than current version
-                    let new_ver = current_ver + 1;
+                    let new_ver = node_ver + 1;
                     if let Err(actual_ver) =
                         self.epoch
                             .compare_exchange(current_ver, new_ver, AcqRel, Relaxed)
                     {
+                        current_ver = actual_ver;
                         if actual_ver >= new_ver {
-                            current_ver = actual_ver;
+                            break;
+                        } else {
                             continue;
                         }
                     } else {
                         current_ver = new_ver;
-                        break;
                     }
                 }
                 break;
