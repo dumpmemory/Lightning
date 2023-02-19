@@ -1907,10 +1907,14 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let old_epoch = part.epoch();
+<<<<<<< HEAD
         debug_assert!(!Self::is_copying(old_epoch));
         // After the chunk partition lock is acquired, we need to check if array epoch is changed
         // If so, or partition epoch is changed, we need to reset and try again
         if chunk_epoch != old_epoch || arr_ver != self.current_arr_ver() {
+=======
+        if chunk_epoch != old_epoch {
+>>>>>>> develop
             part.set_history(ChunkPtr::null());
             debug!(
                 "$ Epoch changed from {} to {} after migration lock",

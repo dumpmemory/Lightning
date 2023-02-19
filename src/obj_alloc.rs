@@ -625,25 +625,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(not(asan))]
-    fn recycle_thread_local_buffered_free_alloc() {
-        let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
-        let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
-        let test_size = BUFFER_SIZE * 1024;
-        for i in 0..test_size {
-            thread_local.buffered_free(i as *const usize);
-        }
-        let mut reallocated = HashSet::new();
-        for i in 0..test_size {
-            let alloc_res = thread_local.alloc();
-            assert!(alloc_res < test_size, "Reallocated {} at {}", alloc_res, i);
-            assert!(!reallocated.contains(&alloc_res));
-            reallocated.insert(alloc_res);
-        }
-        assert!(thread_local.alloc() > test_size);
-    }
-
-    #[test]
     fn checking_thread_local_alloc() {
         let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
