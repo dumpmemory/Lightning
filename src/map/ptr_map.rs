@@ -219,9 +219,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
                 .table
                 .get_with_hash(key, fkey, hash, false, &guard, &backoff)
             {
-                if fv | VAL_MUTEX_BIT == fv {
-                    // If the value is locked, spin
-                } else if let Some(val) = self.deref_val(fv) {
+                if let Some(val) = self.deref_val(fv) {
                     return Some(val);
                 }
                 backoff.spin();
