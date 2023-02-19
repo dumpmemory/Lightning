@@ -89,7 +89,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ptr = guard.alloc();
             let node_ref = &*node_ptr;
             let node_ver = node_ref.retire_ver.load(Relaxed);
-            let mut current_ver = self.epoch.load(Acquire);
+            let mut current_ver = self.epoch.load(Relaxed);
             let backoff = Backoff::new();
             debug_assert_ne!(
                 node_ptr as usize & Self::VAL_NODE_LOW_BITS,
@@ -144,7 +144,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             fence(Acquire); // Acquire: We want to get the version AFTER we read the value and other thread may changed the version in the process
             let node_ver = node_ref.birth_ver.load(Relaxed) & Self::VAL_NODE_LOW_BITS;
             if node_ver != val_ver || // checking node version for consistency
-                self.epoch.load(Acquire) != pre_ver
+                self.epoch.load(Relaxed) != pre_ver
             // Checking on epoch changing to avoid ABA and other problems
             {
                 return None;
@@ -183,7 +183,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         );
         let node_ptr = node_addr as *const PtrValueNode<V>;
         let node_ref = unsafe { node_ptr.as_ref().unwrap() };
-        node_ref.retire_ver.store(self.epoch.load(Acquire), Relaxed);
+        node_ref.retire_ver.store(self.epoch.load(Relaxed), Relaxed);
         guard.buffered_free(node_ptr);
     }
 }
