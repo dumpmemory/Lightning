@@ -1081,10 +1081,7 @@ impl<
                 );
                 return None;
             }
-            new_chunk.map(|new_chunk| {
-                let fval = Self::get_fast_value(addr);
-                Self::passive_migrate_entry(k, idx, fval, chunk, new_chunk, addr);
-            });
+            
             if let Some((new_idx, _)) = iter.next() {
                 idx = new_idx;
                 addr = chunk.entry_addr(idx);
@@ -2098,33 +2095,6 @@ impl<
             MIGRATION_LOGS.lock().push((epoch, migrated_entries))
         }
         return effective_copy;
-    }
-
-    #[inline(always)]
-    fn passive_migrate_entry(
-        fkey: FKey,
-        old_idx: usize,
-        fvalue: FastValue,
-        old_chunk_ins: ChunkPtr<K, V, A, ALLOC>,
-        new_chunk_ins: ChunkPtr<K, V, A, ALLOC>,
-        old_address: usize,
-    ) {
-        // Note: This does not make migration faster
-        // if fvalue.val < NUM_FIX_V {
-        //     // Value have no key, insertion in progress
-        //     return;
-        // }
-        // let mut num_moved = 0;
-        // Self::migrate_entry(
-        //     fkey,
-        //     old_idx,
-        //     fvalue,
-        //     old_chunk_ins,
-        //     new_chunk_ins,
-        //     old_address,
-        //     &mut num_moved,
-        // );
-        // new_chunk_ins.occupation.fetch_add(num_moved, AcqRel);
     }
 
     fn migrate_entry(
