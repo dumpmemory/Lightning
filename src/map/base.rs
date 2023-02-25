@@ -194,7 +194,7 @@ struct Partition<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     current_chunk: AtomicUsize,
     history_chunk: AtomicUsize,
     epoch: AtomicUsize,
-    arr_ver: usize,
+    arr_ver: AtomicUsize,
     _marker: PhantomData<(K, V, A, ALLOC)>,
 }
 
@@ -204,7 +204,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Clone for Partitio
             current_chunk: AtomicUsize::new(self.current_chunk.load(Relaxed)),
             history_chunk: AtomicUsize::new(self.history_chunk.load(Relaxed)),
             epoch: AtomicUsize::new(self.epoch.load(Relaxed)),
-            arr_ver: self.arr_ver,
+            arr_ver: AtomicUsize::new(self.arr_ver.load(Relaxed)),
             _marker: PhantomData,
         }
     }
@@ -288,9 +288,9 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     fn hash(&self, hash: usize) -> &Partition<K, V, A, ALLOC> {
         let hash_id = self.id_of_hash(hash);
         let part = self.at(hash_id);
-        let ver_dest = self.version - part.arr_ver;
-        let size_diff = ver_dest >> 1;
-        if size_diff > 0 {
+        if part.current().is_null() {
+            let ver_diff = self.version - part.arr_ver.load(Relaxed);
+            let size_diff = ver_diff >> 1;
             return self.at(ArrId(hash_id.0 >> size_diff << size_diff));
         } else {
             return part;
@@ -317,16 +317,19 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A, ALLOC> {
     fn epoch(&self) -> usize {
-        self.epoch.load(Acquire)
+        self.epoch.load(Relaxed)
     }
     fn set_epoch(&self, epoch: usize) {
         self.epoch.store(epoch, Release);
     }
+    fn set_arr_ver(&self, epoch: usize) {
+        self.arr_ver.store(epoch, Release);
+    }
     fn current<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
-        ChunkPtr::new(self.current_chunk.load(Acquire) as _)
+        ChunkPtr::new(self.current_chunk.load(Relaxed) as _)
     }
     fn history<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
-        ChunkPtr::new(self.history_chunk.load(Acquire) as _)
+        ChunkPtr::new(self.history_chunk.load(Relaxed) as _)
     }
     fn swap_in_history<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) -> bool {
         self.history_chunk
@@ -994,7 +997,7 @@ impl<
             }
             if part.epoch() != current_epoch {
                 continue;
-            }            
+            }
             if self.current_arr_ver() != arr_ver {
                 continue;
             }
@@ -1081,7 +1084,7 @@ impl<
                 );
                 return None;
             }
-            
+
             if let Some((new_idx, _)) = iter.next() {
                 idx = new_idx;
                 addr = chunk.entry_addr(idx);
@@ -1821,14 +1824,19 @@ impl<
         // Check if the chunk need to be split
         // During array splitting, partition pointers would be duplicated
         // This function however, would detect those duplicates by checking arr_ver with partition version
-        part.arr_ver < arr_ver
+        part.arr_ver.load(Relaxed) < arr_ver
     }
 
-    fn need_split_array<'a>(&self, old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>, part: &Partition<K, V, A, ALLOC>, arr_ver: usize) -> bool {
+    fn need_split_array<'a>(
+        &self,
+        old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
+        part: &Partition<K, V, A, ALLOC>,
+        arr_ver: usize,
+    ) -> bool {
         // Statsticly, a oversized partition indicates that other partitions in the array is also full
         // Such that we don't need to check every partitions in the array for it is expensive
         // Justification: Hash functions should be able to spread entries across all partitions evenly
-        old_chunk_ptr.capacity > self.max_cap && part.arr_ver == arr_ver
+        old_chunk_ptr.capacity > self.max_cap && part.arr_ver.load(Relaxed) == arr_ver
     }
 
     /// Failed return old shared
@@ -1855,10 +1863,10 @@ impl<
             if !self.split_array(arr_ver) {
                 return ResizeResult::SwapFailed;
             }
-            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, part, guard);
+            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard);
         }
         if self.need_split_chunk(part, arr_ver) {
-            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, part, guard);
+            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard);
         }
         self.resize_migration(old_chunk_ptr, chunk_epoch, arr_ver, part, guard)
     }
@@ -1866,16 +1874,54 @@ impl<
     fn split_array(&self, prev_arr_ver: usize) -> bool {
         debug_assert!(!Self::is_copying(prev_arr_ver));
         // First lock the array by swapping ver+1
-        if self.meta.array_version.compare_exchange(prev_arr_ver, prev_arr_ver + 1, AcqRel, Relaxed).is_ok() {
+        if self
+            .meta
+            .array_version
+            .compare_exchange(prev_arr_ver, prev_arr_ver + 1, AcqRel, Relaxed)
+            .is_ok()
+        {
             // Lock obtained. Should be safe to allocate new array and store
             let old_part_arr = self.partitions();
+            let new_arr_ver = prev_arr_ver + 2;
             debug_assert_eq!(old_part_arr.version, prev_arr_ver);
             let new_size = old_part_arr.len << 1; // x2
-            
+            let new_part_arr = PartitionArray::<K, V, A, ALLOC>::new(new_size, new_arr_ver);
+            unsafe {
+                (0..new_size).step_by(2).for_each(|new_idx| {
+                    // Copy chunk pointers from the old partition when new_idx is even number and
+                    // Put shadow chunk when the new_idx is odd number
+                    debug_assert_eq!(new_idx & 1, new_idx); // Assert new_idx is even number
+                    let old_idx = new_idx >> 1;
+                    let old_part = old_part_arr.at(ArrId(old_idx));
+                    let new_part_addr = (*new_part_arr).ptr_addr_of(ArrId(new_idx));
+                    let old_epoch = old_part.epoch();
+                    let old_arr_ver = old_part.arr_ver.load(Relaxed);
+                    debug_assert!(!Self::is_copying(old_epoch));
+                    ptr::write(
+                        new_part_addr as *mut _,
+                        Partition::<K, V, A, ALLOC> {
+                            current_chunk: AtomicUsize::new(old_part.current_chunk.load(Relaxed)),
+                            history_chunk: AtomicUsize::new(0), // We had already asserted no copying during array resize.
+                            epoch: AtomicUsize::new(old_epoch),
+                            arr_ver: AtomicUsize::new(old_arr_ver),
+                            _marker: PhantomData,
+                        },
+                    );
+                    // Prepare the duplicated shadow partition
+                    // Here we assume that the partition is all zeroed out so we only need to set `arr_ver`
+                    // Note that zero current chunk indicates shadow partition
+                    let new_dup_part = (*new_part_arr).at(ArrId(new_idx + 1));
+                    new_dup_part.arr_ver.store(old_arr_ver, Relaxed);
+                });
+            }
+            // Now the new array is initialized, set its pointer to meta
+            self.meta.partitions.store(new_part_arr as _, Relaxed); // Use store becasue we have the lock
+                                                                    // Set the partition version to unlock array
+            self.meta.array_version.store(new_arr_ver, Release);
+            return true; // Done
         } else {
             return false;
         }
-        unimplemented!()
     }
 
     fn split_migration<'a>(
@@ -1883,10 +1929,68 @@ impl<
         hash: usize,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
         chunk_epoch: usize,
+        arr_ver: usize,
         part: &Partition<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        unimplemented!()
+        // Following steps are exactly the same as resizing
+        if !part.swap_in_history(old_chunk_ptr) {
+            trace!("Cannot obtain lock for split, will retry");
+            return ResizeResult::SwapFailed;
+        }
+        let old_epoch = part.epoch();
+        if chunk_epoch != old_epoch || arr_ver != self.current_arr_ver() {
+            part.set_history(ChunkPtr::null());
+            debug!(
+                "$ Epoch changed from {} to {} after split migration lock",
+                chunk_epoch, old_epoch
+            );
+            return ResizeResult::SwapFailed;
+        }
+        let part_arr = self.partitions();
+        let ver_diff = part_arr.version - part.arr_ver.load(Relaxed);
+        let size_diff = ver_diff >> 1;
+        let hash_id = part_arr.id_of_hash(hash);
+        let home_id = hash_id.0 >> size_diff << size_diff;
+        let ends_id = (hash_id.0 >> size_diff + 1) << size_diff;
+        let chunk_capacity = old_chunk_ptr.capacity;
+        let pre_occupy = chunk_capacity - (chunk_capacity >> size_diff);
+        debug_assert!(size_diff > 0);
+        // Enumerate all shadow partition of this home partition
+        for id in home_id..ends_id {
+            let shadow_part = part_arr.at(ArrId(id));
+            let chunk = ChunkPtr::new(Chunk::<K, V, A, ALLOC>::alloc_chunk(
+                chunk_capacity,
+                &self.attachment_init_meta,
+            ));
+            chunk.occupation.store(pre_occupy, Relaxed);
+            shadow_part.set_epoch(old_epoch + 1);
+            shadow_part.set_history(old_chunk_ptr);
+            shadow_part.set_current(chunk);
+            // Set arr_ver after both history and current ready
+            shadow_part.set_arr_ver(part_arr.version);
+        }
+        // Now we can do the migration
+        let num_miugrated = self.migrate_entries(
+            old_chunk_ptr,
+            part_arr,
+            pre_occupy,
+            old_epoch,
+            guard,
+        );
+        part.erase_history(guard);
+        for id in home_id..ends_id {
+            let shadow_part = part_arr.at(ArrId(id));
+            shadow_part.set_history(ChunkPtr::null());
+            shadow_part.set_epoch(old_epoch + 2);
+        }
+        debug!(
+            ">>> Migration for {} completed. Migrated {} paritions, entries {}",
+            old_chunk_ptr.base,
+            ends_id - home_id,
+            num_miugrated
+        );
+        ResizeResult::Done
     }
 
     fn resize_migration<'a>(
@@ -1927,15 +2031,15 @@ impl<
             cap
         };
         // Preoccupie half of the new capacity for migration
-        let mut old_occupation = old_cap;
-        if old_occupation <= 256 {
+        let mut pre_occupation = old_cap;
+        if pre_occupation <= 256 {
             // The map is small, block all insertions until the migration is completed
-            old_occupation = new_cap;
+            pre_occupation = new_cap;
         }
         part.set_epoch(old_epoch + 1);
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
-            (*new_chunk).occupation.store(old_occupation, Relaxed);
+            (*new_chunk).occupation.store(pre_occupation, Relaxed);
         }
         let new_chunk_ptr = ChunkPtr::new(new_chunk);
         debug_assert_ne!(new_chunk_ptr.base, old_chunk_ptr.base);
@@ -1957,8 +2061,8 @@ impl<
         trace!("Initialize migration");
         let num_migrated = self.migrate_entries(
             old_chunk_ptr,
-            new_chunk_ptr,
-            old_occupation,
+            self.partitions(),
+            pre_occupation,
             old_epoch,
             &guard,
         );
@@ -1978,22 +2082,18 @@ impl<
     fn migrate_entries(
         &self,
         old_chunk: ChunkPtr<K, V, A, ALLOC>,
-        new_chunk: ChunkPtr<K, V, A, ALLOC>,
-        old_occupation: usize,
+        partitions: &PartitionArray<K, V, A, ALLOC>,
+        pre_occupation: usize,
         epoch: usize,
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
-        trace!(
-            "Migrating entries from {:?} to {:?}",
-            old_chunk.base,
-            new_chunk.base
-        );
+        trace!("Migrating entries from {:?}", old_chunk.base);
         #[cfg(debug_assertions)]
         let mut migrated_entries = vec![];
         let mut old_address = old_chunk.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk.capacity);
-        let mut effective_copy = 0;
         let mut idx = 0;
+        let mut effective_copies = vec![0; partitions.len];
         let backoff = crossbeam_utils::Backoff::new();
         while old_address < boundary {
             // iterate the old chunk to extract entries that is NOT empty
@@ -2040,14 +2140,24 @@ impl<
                         backoff.spin();
                         continue;
                     }
+                    let hash = if Self::WORD_KEY {
+                        hash_key::<_, H>(&fkey)
+                    } else {
+                        fkey
+                    };
+                    let part_id = partitions.id_of_hash(hash);
+                    let part = partitions.at(part_id);
+                    let new_chunk = part.current();
+                    let effective_copy = &mut effective_copies[part_id.0];
                     if !Self::migrate_entry(
                         fkey,
                         idx,
                         fvalue,
+                        hash,
                         old_chunk,
                         new_chunk,
                         old_address,
-                        &mut effective_copy,
+                        effective_copy,
                         #[cfg(debug_assertions)]
                         &mut migrated_entries,
                     ) {
@@ -2060,36 +2170,46 @@ impl<
             idx += 1;
         }
         // resize finished, make changes on the numbers
-        if effective_copy > old_occupation {
-            let delta = effective_copy - old_occupation;
-            new_chunk.occupation.fetch_add(delta, Relaxed);
-            trace!(
-                "Occupation {}-{} offset {}",
-                effective_copy,
-                old_occupation,
-                delta
-            );
-        } else if effective_copy < old_occupation {
-            let delta = old_occupation - effective_copy;
-            new_chunk.occupation.fetch_sub(delta, Relaxed);
-            trace!(
-                "Occupation {}-{} offset neg {}",
-                effective_copy,
-                old_occupation,
-                delta
-            );
-        } else {
-            trace!(
-                "Occupation {}-{} zero offset",
-                effective_copy,
-                old_occupation
-            );
-        }
+        let effective_copy = effective_copies
+            .into_iter()
+            .enumerate()
+            .filter(|(_, n)| *n > 0)
+            .map(|(part_id, effective_copy)| {
+                let id = ArrId(part_id);
+                let part = partitions.at(id);
+                let new_chunk = part.current();
+                if effective_copy > pre_occupation {
+                    let delta = effective_copy - pre_occupation;
+                    new_chunk.occupation.fetch_add(delta, Relaxed);
+                    trace!(
+                        "Occupation {}-{} offset {}",
+                        effective_copy,
+                        pre_occupation,
+                        delta
+                    );
+                } else if effective_copy < pre_occupation {
+                    let delta = pre_occupation - effective_copy;
+                    new_chunk.occupation.fetch_sub(delta, Relaxed);
+                    trace!(
+                        "Occupation {}-{} offset neg {}",
+                        effective_copy,
+                        pre_occupation,
+                        delta
+                    );
+                } else {
+                    trace!(
+                        "Occupation {}-{} zero offset",
+                        effective_copy,
+                        pre_occupation
+                    );
+                }
+                effective_copy
+            })
+            .sum();
         #[cfg(debug_assertions)]
         {
             debug!(
-                "* Migrated {} entries to new chunk, num logs {}",
-                effective_copy,
+                "* Migrated entries to new chunk, logs {}",
                 migrated_entries.len()
             );
             MIGRATION_LOGS.lock().push((epoch, migrated_entries))
@@ -2101,6 +2221,7 @@ impl<
         fkey: FKey,
         old_idx: usize,
         fvalue: FastValue,
+        hash: usize,
         old_chunk_ins: ChunkPtr<K, V, A, ALLOC>,
         new_chunk_ins: ChunkPtr<K, V, A, ALLOC>,
         old_address: usize,
@@ -2137,13 +2258,6 @@ impl<
         // Since the entry is primed, it is safe to read the key
         let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
         let key = old_attachment.get_key();
-
-        let hash = if Self::WORD_KEY {
-            hash_key::<_, H>(&fkey)
-        } else {
-            fkey
-        };
-
         let cap_mask = new_chunk_ins.cap_mask();
         let home_idx = hash & cap_mask;
         let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
