@@ -68,7 +68,7 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
-pub const PARTITION_MAX_CAP: usize = 8 * 1024 * 1024; // 8M. This number is selected to be the size of most commonly seen L3 cache
+pub const PARTITION_MAX_CAP: usize = 1024 * 1024; 
 pub const INIT_ARR_VER: usize = 0;
 
 const DELAY_LOG_CAP: usize = 10;
@@ -374,7 +374,7 @@ impl<
     }
 
     fn init_part_nums() -> usize {
-        num_cpus::get_physical().next_power_of_two()
+        4 // num_cpus::get_physical().next_power_of_two()
     }
 
     pub fn with_max_capacity(
@@ -1860,10 +1860,11 @@ impl<
         }
         if self.need_split_array(old_chunk_ptr, part, arr_ver) {
             // Try split array, if cannot, try again
-            if !self.split_array(arr_ver) {
+            if let Some(arr_ver) = self.split_array(arr_ver) {
+                return self.split_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard);
+            } else {
                 return ResizeResult::SwapFailed;
             }
-            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard);
         }
         if self.need_split_chunk(part, arr_ver) {
             return self.split_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard);
@@ -1871,7 +1872,7 @@ impl<
         self.resize_migration(old_chunk_ptr, chunk_epoch, arr_ver, part, guard)
     }
 
-    fn split_array(&self, prev_arr_ver: usize) -> bool {
+    fn split_array(&self, prev_arr_ver: usize) -> Option<usize> {
         debug_assert!(!Self::is_copying(prev_arr_ver));
         // First lock the array by swapping ver+1
         if self
@@ -1890,7 +1891,7 @@ impl<
                 (0..new_size).step_by(2).for_each(|new_idx| {
                     // Copy chunk pointers from the old partition when new_idx is even number and
                     // Put shadow chunk when the new_idx is odd number
-                    debug_assert_eq!(new_idx & 1, new_idx); // Assert new_idx is even number
+                    debug_assert!(new_idx % 2 == 0); // Assert new_idx is even number
                     let old_idx = new_idx >> 1;
                     let old_part = old_part_arr.at(ArrId(old_idx));
                     let new_part_addr = (*new_part_arr).ptr_addr_of(ArrId(new_idx));
@@ -1918,9 +1919,9 @@ impl<
             self.meta.partitions.store(new_part_arr as _, Relaxed); // Use store becasue we have the lock
                                                                     // Set the partition version to unlock array
             self.meta.array_version.store(new_arr_ver, Release);
-            return true; // Done
+            return Some(new_arr_ver); // Done
         } else {
-            return false;
+            return None;
         }
     }
 
@@ -1948,14 +1949,19 @@ impl<
             return ResizeResult::SwapFailed;
         }
         let part_arr = self.partitions();
-        let ver_diff = part_arr.version - part.arr_ver.load(Relaxed);
+        let part_arr_ver = part.arr_ver.load(Relaxed);
+        let ver_diff = part_arr.version - part_arr_ver;
         let size_diff = ver_diff >> 1;
         let hash_id = part_arr.id_of_hash(hash);
         let home_id = hash_id.0 >> size_diff << size_diff;
-        let ends_id = (hash_id.0 >> size_diff + 1) << size_diff;
+        let ends_id = ((hash_id.0 >> size_diff) + 1) << size_diff;
         let chunk_capacity = old_chunk_ptr.capacity;
         let pre_occupy = chunk_capacity - (chunk_capacity >> size_diff);
         debug_assert!(size_diff > 0);
+        debug!(
+            "Split from {} to {}, ver from {} to {}, ver_diff: {}, size_diff: {}", 
+            home_id, ends_id, part_arr_ver, part_arr.version, ver_diff, size_diff
+        );
         // Enumerate all shadow partition of this home partition
         for id in home_id..ends_id {
             let shadow_part = part_arr.at(ArrId(id));
@@ -1979,16 +1985,18 @@ impl<
             guard,
         );
         part.erase_history(guard);
+        let new_epoch = old_epoch + 2;
         for id in home_id..ends_id {
             let shadow_part = part_arr.at(ArrId(id));
             shadow_part.set_history(ChunkPtr::null());
-            shadow_part.set_epoch(old_epoch + 2);
+            shadow_part.set_epoch(new_epoch);
         }
         debug!(
-            ">>> Migration for {} completed. Migrated {} paritions, entries {}",
+            ">>> Migration for {} completed. Migrated {} paritions, entries {}, new epoch {}",
             old_chunk_ptr.base,
             ends_id - home_id,
-            num_miugrated
+            num_miugrated,
+            new_epoch
         );
         ResizeResult::Done
     }
@@ -2149,6 +2157,15 @@ impl<
                     let part = partitions.at(part_id);
                     let new_chunk = part.current();
                     let effective_copy = &mut effective_copies[part_id.0];
+                    debug_assert!(
+                        !new_chunk.is_null(), 
+                        "Cannot locate new chunk. Part number {}, 
+                        part arr_ver: {},
+                        arr_ver: {}",
+                        part_id.0,
+                        part.arr_ver.load(Acquire),
+                        partitions.version
+                    );
                     if !Self::migrate_entry(
                         fkey,
                         idx,
