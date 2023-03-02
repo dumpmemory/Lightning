@@ -31,6 +31,10 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
     fn now_epoch(&self, key: FKey) -> usize {
         self.table.now_epoch(&(), key)
     }
+
+    fn part_id(&self, key: FKey) -> (usize, usize) {
+        self.table.part_id(&(), key)
+    }
 }
 
 impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for WordMap<ALLOC, H> {
@@ -284,11 +288,12 @@ mod test {
     #[test]
     fn resize() {
         let _ = env_logger::try_init();
-        let map = WordMap::<System>::with_capacity(16);
-        for i in START_IDX..2048 {
+        let map = WordMap::<System>::with_capacity(8);
+        let test_size = 4096000;
+        for i in START_IDX..test_size {
             map.insert(i, i * 2);
         }
-        for i in START_IDX..2048 {
+        for i in START_IDX..test_size {
             match map.get(&i) {
                 Some(r) => assert_eq!(r, i * 2),
                 None => panic!("{}", i),
@@ -338,7 +343,7 @@ mod test {
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
         let num_threads = num_cpus::get();
-        let test_load = 4096;
+        let test_load = 40960;
         let repeat_load = 16;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
@@ -695,18 +700,28 @@ mod test {
         for i in 1..16 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
+                let mut ins_epochs = vec![(0, 0); repeats];
                 for j in 0..repeats {
                     let key = i * multiplier + j;
+                    let pre_ins_epoch = map.now_epoch(key);
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
+                    let post_ins_epoch = map.now_epoch(key);
+                    ins_epochs[j] = (pre_ins_epoch, post_ins_epoch);
                 }
                 for j in 0..repeats {
                     let key = i * multiplier + j;
+                    let pre_epoch = map.now_epoch(key);
+                    let pre_part_id = map.part_id(key);
                     assert_eq!(
                         map.insert(key, key),
                         Some(key),
-                        "reinserting at key {}, epoch {}",
+                        "reinserting at key {}, epoch pre {} now {}, part id pre {:?} now {:?}, ins epoch {:?}",
                         key,
-                        map.now_epoch(key)
+                        pre_epoch,
+                        map.now_epoch(key),
+                        pre_part_id,
+                        map.part_id(key),
+                        ins_epochs[j]
                     );
                 }
                 for j in 0..repeats {
