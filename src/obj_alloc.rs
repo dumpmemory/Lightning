@@ -11,7 +11,7 @@ use crate::{
     aarc::{Arc, AtomicArc},
     thread_local::ThreadLocal,
 };
-use std::{marker::PhantomData, mem, ptr, collections::VecDeque};
+use std::{collections::VecDeque, marker::PhantomData, mem, ptr};
 
 use crate::stack::LinkedRingBufferStack;
 
@@ -347,7 +347,7 @@ impl<const B: usize> TLBufferedStack<B> {
         Self { deque }
     }
 
-    fn head (&mut self) -> &Arc<ThreadLocalPage<B>> {
+    fn head(&mut self) -> &Arc<ThreadLocalPage<B>> {
         self.deque.front().unwrap()
     }
 
