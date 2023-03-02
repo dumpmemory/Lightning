@@ -447,7 +447,7 @@ impl<
             let (chunk, new_chunk, epoch, part, arr_ver) = self.chunk_refs(hash, guard);
             let mut v;
             if let Some((mut val, addr, aitem)) =
-                self.get_from_chunk(chunk, hash, key, fkey, &backoff, new_chunk, epoch)
+                self.get_from_chunk(chunk, hash, key, fkey, &backoff, epoch)
             {
                 'SPIN: loop {
                     v = val.val;
@@ -478,7 +478,7 @@ impl<
             // Looking into new chunk
             if let Some(new_chunk) = new_chunk {
                 if let Some((mut val, addr, aitem)) =
-                    self.get_from_chunk(new_chunk, hash, key, fkey, &backoff, None, epoch)
+                    self.get_from_chunk(new_chunk, hash, key, fkey, &backoff, epoch)
                 {
                     'SPIN_NEW: loop {
                         let v = val.val;
@@ -787,7 +787,7 @@ impl<
     ) -> SwapResult<K, V, A, ALLOC> {
         let backoff = crossbeam_utils::Backoff::new();
         loop {
-            let (chunk, new_chunk, epoch, part, arr_ver) = self.chunk_refs(hash, guard);
+            let (chunk, new_chunk, epoch, _part, _arr_ver) = self.chunk_refs(hash, guard);
             let update_chunk = new_chunk.unwrap_or(chunk);
             let mut result = None;
             let fast_mod_res = self.modify_entry(
@@ -862,7 +862,7 @@ impl<
                 (None, true) => {
                     // Here, we had checked that the new chunk does not have anything to swap
                     // Which can be that the old chunk may have the value.
-                    match self.get_from_chunk(chunk, hash, key, fkey, &backoff, None, epoch) {
+                    match self.get_from_chunk(chunk, hash, key, fkey, &backoff, epoch) {
                         Some((fv, addr, _)) => {
                             // This is a tranision state and we just don't bother for its complexity
                             // Simply retry and wait until the entry is moved to new chunk
@@ -886,7 +886,7 @@ impl<
         let backoff = crossbeam_utils::Backoff::new();
         let (fkey, hash) = Self::hash(fkey, key);
         'OUTER: loop {
-            let (chunk, new_chunk, _epoch, part, arr_ver) = self.chunk_refs(hash, &guard);
+            let (chunk, new_chunk, _epoch, _part, _arr_ver) = self.chunk_refs(hash, &guard);
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let old_chunk_val = new_chunk
                 .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Sentinel, true, &guard));
@@ -1049,7 +1049,6 @@ impl<
         key: &K,
         fkey: FKey,
         backoff: &Backoff,
-        new_chunk: Option<ChunkPtr<K, V, A, ALLOC>>,
         epoch: usize,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk.ptr as usize, 0);
