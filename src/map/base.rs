@@ -303,8 +303,13 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
                 let size_diff = ver_diff >> 1;
                 let home_id = ArrId(hash_id.0 >> size_diff << size_diff);
                 let home_part = self.at(home_id);
-                if !home_part.current().is_null() && part.current().is_null() {
-                    return (home_part, home_id, home_part.epoch());
+                let home_epoch = home_part.epoch();
+                // A strict checking to ensure the home part is what we expect
+                if !home_part.current().is_null()
+                    && !part.history().is_disabled()
+                    && part.current().is_null()
+                {
+                    return (home_part, home_id, home_epoch);
                 }
             } else if !part_current.is_null() {
                 return (part, hash_id, part_epoch);
@@ -976,7 +981,7 @@ impl<
     }
 
     #[inline]
-    fn part_of_hash(&self, hash: usize) -> ((&Partition<K, V, A, ALLOC>, ArrId , usize), usize) {
+    fn part_of_hash(&self, hash: usize) -> ((&Partition<K, V, A, ALLOC>, ArrId, usize), usize) {
         let parts = self.partitions();
         (parts.hash_part(hash), parts.version)
     }
@@ -1903,7 +1908,13 @@ impl<
             let new_size = old_part_arr.len << 1; // x2
             let new_part_arr = PartitionArray::<K, V, A, ALLOC>::new(new_size, new_arr_ver);
             let backoff = Backoff::new();
-            debug!("- Resizing array, prev version: {}, size {} to {}, mask {:b}", prev_arr_ver, old_part_arr.len, new_size,new_size - 1);
+            debug!(
+                "- Resizing array, prev version: {}, size {} to {}, mask {:b}",
+                prev_arr_ver,
+                old_part_arr.len,
+                new_size,
+                new_size - 1
+            );
             unsafe {
                 (0..new_size).step_by(2).for_each(|new_idx| {
                     loop {
@@ -1975,7 +1986,10 @@ impl<
         let part_arr = self.partitions();
         let part_arr_ver = part.arr_ver.load(Relaxed);
         let current_arr_ver = part_arr.version;
-        debug!("Veryfying partition array version: {} to {}", arr_ver, current_arr_ver);
+        debug!(
+            "Veryfying partition array version: {} to {}",
+            arr_ver, current_arr_ver
+        );
         if chunk_epoch != old_epoch || arr_ver != current_arr_ver {
             part.set_history(ChunkPtr::null());
             debug!(
@@ -1990,7 +2004,8 @@ impl<
         let home_id = hash_id.0 >> size_diff << size_diff;
         let ends_id = ((hash_id.0 >> size_diff) + 1) << size_diff;
         let chunk_capacity = old_chunk_ptr.capacity;
-        let pre_occupy = chunk_capacity - (chunk_capacity >> size_diff);
+        // A presertive size which still allow new insertions to the chunks
+        let pre_occupation = (chunk_capacity >> 1) + (chunk_capacity >> 2);
         debug_assert!(size_diff > 0);
         debug!(
             "Split {} from {} to {}, ver from {} to {}, ver_diff: {}, size_diff: {}, chunk base {}, part {:?}, part_arr_ver {}", 
@@ -2000,23 +2015,24 @@ impl<
             ver_diff, size_diff, old_chunk_ptr.base, 
             part as *const _ as usize,
             part.arr_ver.load(Relaxed)
-        );        
-        let chunks = (0..(ends_id - home_id)).map(|_| {
-            let chunk = ChunkPtr::new(Chunk::<K, V, A, ALLOC>::alloc_chunk(
-                chunk_capacity,
-                &self.attachment_init_meta,
-            ));
-            chunk.occupation.store(pre_occupy, Relaxed);
-            chunk
-        })
-        .collect_vec();
+        );
+        let chunks = (0..(ends_id - home_id))
+            .map(|_| {
+                let chunk = ChunkPtr::new(Chunk::<K, V, A, ALLOC>::alloc_chunk(
+                    chunk_capacity,
+                    &self.attachment_init_meta,
+                ));
+                chunk.occupation.store(pre_occupation, Relaxed);
+                chunk
+            })
+            .collect_vec();
         // Enumerate all shadow partition of this home partition
         // Must do it in reverse order such that insertions are not falling to new home part
-        for id in (home_id..ends_id).rev() { 
+        for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
             let chunk = chunks[id - home_id];
-            shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_history(old_chunk_ptr);
+            shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_current(chunk);
             fence(AcqRel); // Must ensure total order parts initialization
         }
@@ -2024,7 +2040,7 @@ impl<
         let num_miugrated = self.migrate_entries(
             old_chunk_ptr,
             part_arr,
-            pre_occupy,
+            pre_occupation,
             old_epoch,
             (home_id, ends_id),
             guard,
