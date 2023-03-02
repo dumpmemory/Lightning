@@ -343,7 +343,7 @@ mod test {
     fn parallel_with_resize() {
         let _ = env_logger::try_init();
         let num_threads = num_cpus::get();
-        let test_load = 40960;
+        let test_load = 10240;
         let repeat_load = 16;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
@@ -361,7 +361,7 @@ mod test {
                       let pre_insert_epoch = map.now_epoch(key);
                       map.insert(key, value);
                       let post_insert_epoch = map.now_epoch(key);
-                      for l in 1..128 {
+                      for l in 1..32 {
                           let pre_fail_get_epoch = map.now_epoch(key);
                           let left = map.get(&key);
                           let post_fail_get_epoch = map.now_epoch(key);

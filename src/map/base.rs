@@ -1883,7 +1883,7 @@ impl<
         }
         if self.need_split_array(old_chunk_ptr, part, arr_ver) {
             // Fail and let the upper caller try again
-            self.split_array(arr_ver);
+            self.split_array(arr_ver, guard);
             return ResizeResult::SwapFailed;
         }
         if self.need_split_chunk(part, arr_ver) {
@@ -1892,7 +1892,7 @@ impl<
         self.resize_migration(old_chunk_ptr, chunk_epoch, arr_ver, part, guard)
     }
 
-    fn split_array(&self, prev_arr_ver: usize) -> Option<usize> {
+    fn split_array<'a>(&self, prev_arr_ver: usize, guard: &'a Guard) -> Option<usize> {
         debug_assert!(!Self::is_copying(prev_arr_ver));
         // First lock the array by swapping ver+1
         if self
@@ -1902,7 +1902,8 @@ impl<
             .is_ok()
         {
             // Lock obtained. Should be safe to allocate new array and store
-            let old_part_arr = self.partitions();
+            let old_part_arr_addr = self.meta.partitions.load(Relaxed);
+            let old_part_arr = PartitionArray::<K, V, A, ALLOC>::ref_from_addr(old_part_arr_addr);
             let new_arr_ver = prev_arr_ver + 2;
             debug_assert_eq!(old_part_arr.version, prev_arr_ver);
             let new_size = old_part_arr.len << 1; // x2
@@ -1961,6 +1962,11 @@ impl<
             self.meta.partitions.store(new_part_arr as _, Relaxed); // Use store becasue we have the lock
                                                                     // Set the partition version to unlock array
             self.meta.array_version.store(new_arr_ver, Release);
+            unsafe {
+                guard.defer_unchecked(move || {
+                    libc::free(old_part_arr_addr as _);
+                })
+            }
             debug!("- Resizing array complete, prev version: {}", prev_arr_ver);
             return Some(new_arr_ver); // Done
         } else {
