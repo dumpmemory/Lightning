@@ -327,20 +327,20 @@ fn run_perf_test_set<'a, T: Collection>(
         //     1.0,
         //     stride,
         // );
-        // let of = vec![{
-        //     println!("Oversize");
-        //     let oversize_measurement =
-        //         run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
-        //     write_measurements(
-        //         &format!(
-        //             "{}_{}_oversize.csv",
-        //             file_name,
-        //             format!("{}_overflow", ds_name)
-        //         ),
-        //         &oversize_measurement,
-        //     );
-        //     ("overflow", oversize_measurement)
-        // }];
+        let of = vec![{
+            println!("Oversize");
+            let oversize_measurement =
+                run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
+            write_measurements(
+                &format!(
+                    "{}_{}_oversize.csv",
+                    file_name,
+                    format!("{}_overflow", ds_name)
+                ),
+                &oversize_measurement,
+            );
+            ("overflow", oversize_measurement)
+        }];
         let lo = run_and_record_contention::<T>(
             file_name,
             &format!("{}_lo", ds_name),
@@ -369,7 +369,7 @@ fn run_perf_test_set<'a, T: Collection>(
                 ("lo", lo),
                 ("mi", mi),
                 ("hi", hi),
-                // ("of", of),
+                ("of", of),
             ],
         )
     } else {
