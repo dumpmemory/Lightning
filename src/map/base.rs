@@ -389,7 +389,7 @@ impl<
     }
 
     fn init_part_nums() -> usize {
-        4 // num_cpus::get_physical().next_power_of_two()
+        num_cpus::get_physical().next_power_of_two()
     }
 
     pub fn with_max_capacity(
@@ -2030,6 +2030,7 @@ impl<
         for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
             let chunk = chunks[id - home_id];
+            debug_assert_ne!(chunk.base, old_chunk_ptr.base);
             shadow_part.set_history(old_chunk_ptr);
             fence(AcqRel); // Must ensure total order parts initialization
             shadow_part.set_epoch(old_epoch + 1);
@@ -2213,10 +2214,6 @@ impl<
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
-                    if Self::get_fast_key(old_address) != fkey {
-                        backoff.spin();
-                        continue;
-                    }
                     let hash = if Self::WORD_KEY {
                         hash_key::<_, H>(&fkey)
                     } else {
