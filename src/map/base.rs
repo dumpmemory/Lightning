@@ -68,7 +68,7 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
-pub const PARTITION_MAX_CAP: usize = 256 * 1024;
+pub const PARTITION_MAX_CAP: usize = 64 * 1024;
 pub const INIT_ARR_VER: usize = 0;
 
 pub const DISABLED_CHUNK_PTR: usize = 1;
@@ -294,28 +294,22 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     fn hash_part(&self, hash: usize) -> (&Partition<K, V, A, ALLOC>, ArrId, usize) {
         let hash_id = self.id_of_hash(hash);
         let part = self.at(hash_id);
-        let backoff = Backoff::new();
-        loop {
-            let part_epoch = part.epoch();
-            let part_current = part.current();
-            if part_current.is_null() && part.history().is_null() {
-                let ver_diff = self.version - part.arr_ver.load(Relaxed);
-                let size_diff = ver_diff >> 1;
-                let home_id = ArrId(hash_id.0 >> size_diff << size_diff);
-                let home_part = self.at(home_id);
-                let home_epoch = home_part.epoch();
-                // A strict checking to ensure the home part is what we expect
-                if !home_part.current().is_null()
-                    && !part.history().is_disabled()
-                    && part.current().is_null()
-                {
-                    return (home_part, home_id, home_epoch);
-                }
-            } else if !part_current.is_null() {
-                return (part, hash_id, part_epoch);
+        let part_epoch = part.epoch();
+        let ver_diff = self.version - part.arr_ver.load(Relaxed);
+        let home_part = if ver_diff > 0 {
+            let size_diff = ver_diff >> 1;
+            let home_id = ArrId(hash_id.0 >> size_diff << size_diff);
+            Some((self.at(home_id), home_id))
+        } else {
+            None
+        };
+        if let Some((home_part, home_id)) = home_part {
+            let home_epoch = home_part.epoch();
+            if home_part.history().is_null() {
+                return (home_part, home_id, home_epoch);
             }
-            backoff.spin();
         }
+        return (part, hash_id, part_epoch);
     }
 
     fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Partition<K, V, A, ALLOC>> + 'a {
@@ -391,7 +385,7 @@ impl<
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
-        Self::with_max_capacity(cap, PARTITION_MAX_CAP, attachment_init_meta)
+        Self::with_max_capacity(min(PARTITION_MAX_CAP, cap), PARTITION_MAX_CAP, attachment_init_meta)
     }
 
     fn init_part_nums() -> usize {
@@ -2037,9 +2031,9 @@ impl<
             let shadow_part = part_arr.at(ArrId(id));
             let chunk = chunks[id - home_id];
             shadow_part.set_history(old_chunk_ptr);
+            fence(AcqRel); // Must ensure total order parts initialization
             shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_current(chunk);
-            fence(AcqRel); // Must ensure total order parts initialization
         }
         // Now we can do the migration
         let num_miugrated = self.migrate_entries(
@@ -2052,11 +2046,12 @@ impl<
         );
         part.erase_history(guard);
         let new_epoch = old_epoch + 2;
-        for id in home_id..ends_id {
+        for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
-            shadow_part.set_history(ChunkPtr::null());
             shadow_part.set_arr_ver(current_arr_ver);
             shadow_part.set_epoch(new_epoch);
+            fence(AcqRel);
+            shadow_part.set_history(ChunkPtr::null());
             debug!(
                 "Done with split migrating to partitioned chunk {} at {}, part range {:?}, arr ver {}", 
                 shadow_part.current().base, id, (home_id, ends_id), current_arr_ver
