@@ -818,13 +818,14 @@ pub mod tests {
                     let _ = env_logger::try_init();
                     hook_panic();
                     let repeats: usize = base::PARTITION_MAX_CAP * 2;
+                    let multplier = 1 << 32;
                     let map = Arc::new(map_init(8));
                     let mut threads = vec![];
                     for i in 1..32 {
                         let map = map.clone();
                         threads.push(thread::spawn(move || {
                             for j in 0..repeats {
-                                let n = i * 100000 + j;
+                                let n = i * multplier + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 let prev_epoch = map.now_epoch(&key);
@@ -859,7 +860,7 @@ pub mod tests {
                                 );
                             }
                             for j in 0..repeats {
-                                let n = i * 100000 + j;
+                                let n = i * multplier + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 assert_eq!(
@@ -873,7 +874,7 @@ pub mod tests {
                                 );
                             }
                             for j in 0..repeats {
-                                let n = i * 100000 + j;
+                                let n = i * multplier + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 assert_eq!(
