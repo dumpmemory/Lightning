@@ -306,7 +306,9 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         };
         if let Some((home_part, home_id)) = home_part {
             let home_epoch = home_part.epoch();
-            if home_part.history().is_null() {
+            let home_current = home_part.current();
+            let home_history = home_part.history();
+            if !home_current.is_null() && home_history.is_null() && !home_history.is_disabled() {
                 return (home_part, home_id, home_epoch);
             }
         }
@@ -2156,7 +2158,7 @@ impl<
         part.erase_history(guard);
         part.set_epoch(old_epoch + 2);
         debug!(
-            "!!! Migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {:?}",
+            "!!! Resize migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {:?}",
             old_chunk_ptr.base,
             new_chunk_ptr.base,
             old_chunk_ptr.capacity,

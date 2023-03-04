@@ -378,7 +378,7 @@ impl<'a, T: Clone + Default, const N: usize> ListItemRef<'a, T, N> {
 
 pub unsafe fn logged_defer_destory<T>(guard: &Guard, ptr: Shared<'_, T>, msg: &'_ str) {
     guard.defer_unchecked(move || {
-        debug!("LOGGED_DEFER_DESTORY: {:?}, msg: {}", ptr, msg);
+        trace!("LOGGED_DEFER_DESTORY: {:?}, msg: {}", ptr, msg);
         ptr.into_owned()
     })
 }
