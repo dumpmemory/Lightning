@@ -547,13 +547,14 @@ mod test {
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
                     let repeats: usize = crate::map::base::PARTITION_MAX_CAP * crate::map::base::INIT_ARR_SIZE;
+                    let multplier = 1 << 32;
                     let map = Arc::new(map_init(8));
                     let mut threads = vec![];
                     for i in 1..64 {
                         let map = map.clone();
                         threads.push(thread::spawn(move || {
                             for j in 0..repeats {
-                                let n = i * 100000 + j;
+                                let n = i * multplier + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 let prev_epoch = map.map.now_epoch(&key);
@@ -588,7 +589,7 @@ mod test {
                                 );
                             }
                             for j in 0..repeats {
-                                let n = i * 100000 + j;
+                                let n = i * multplier + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 assert_eq!(
@@ -601,7 +602,7 @@ mod test {
                                 );
                             }
                             for j in 0..repeats {
-                                let n = i * 100000 + j;
+                                let n = i * multplier + j;
                                 let key = key_from(n);
                                 let value = val_from(&key, n);
                                 assert_eq!(

@@ -741,14 +741,14 @@ mod test {
         let _ = env_logger::try_init();
         hook_panic();
         let repeats: usize = base::PARTITION_MAX_CAP * base::INIT_ARR_SIZE ;
-        let multplier = 100000;
+        let multplier = 1 << 32;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];
         for i in 1..32 {
             let map = map.clone();
             threads.push(thread::spawn(move || {
                 for j in START_IDX..repeats {
-                    let key = i * 100000 + j;
+                    let key = i * multplier + j;
                     let prev_epoch = map.now_epoch(key);
                     assert_eq!(map.insert(key, key), None, "inserting at key {}", key);
                     let post_epoch = map.now_epoch(key);
