@@ -318,7 +318,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     }
     fn clear<'a>(&self, guard: &'a Guard) {
         self.iter().for_each(|part| unsafe {
-            let mut current = part.non_null_current();
+            let mut current = part.current();
             let mut history = part.history();
             guard.defer_unchecked(move || {
                 current.destory();
