@@ -740,7 +740,7 @@ mod test {
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
         hook_panic();
-        let repeats: usize = 20480;
+        let repeats: usize = base::PARTITION_MAX_CAP * base::INIT_ARR_SIZE ;
         let multplier = 100000;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
         let mut threads = vec![];

@@ -70,6 +70,7 @@ pub const ALL_HOPS_TAKEN: HopBits = !0;
 
 pub const PARTITION_MAX_CAP: usize = 64 * 1024;
 pub const INIT_ARR_VER: usize = 0;
+pub const INIT_ARR_SIZE: usize = 8;
 
 pub const DISABLED_CHUNK_PTR: usize = 1;
 
@@ -389,7 +390,7 @@ impl<
     }
 
     fn init_part_nums() -> usize {
-        4 // num_cpus::get_physical().next_power_of_two()
+        INIT_ARR_SIZE // num_cpus::get_physical().next_power_of_two()
     }
 
     pub fn with_max_capacity(

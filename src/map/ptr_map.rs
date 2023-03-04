@@ -817,7 +817,7 @@ pub mod tests {
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
                     hook_panic();
-                    let repeats: usize = 20480;
+                    let repeats: usize = base::PARTITION_MAX_CAP * base::INIT_ARR_SIZE;
                     let map = Arc::new(map_init(8));
                     let mut threads = vec![];
                     for i in 1..64 {
