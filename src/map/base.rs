@@ -318,7 +318,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     }
     fn clear<'a>(&self, guard: &'a Guard) {
         self.iter().for_each(|part| unsafe {
-            let mut current = part.current();
+            let mut current = part.non_null_current();
             let mut history = part.history();
             guard.defer_unchecked(move || {
                 current.destory();
@@ -327,7 +327,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         });
     }
     fn key_capacity(&self) -> usize {
-        self.iter().map(|part| part.current().capacity).sum()
+        self.iter().map(|part| part.non_null_current().capacity).sum()
     }
 }
 
@@ -343,6 +343,16 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A,
     }
     fn current<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
         ChunkPtr::new(self.current_chunk.load(Relaxed) as _)
+    }
+    fn non_null_current<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
+        let backoff = Backoff::new();
+        loop {
+            let current_addr = self.current_chunk.load(Relaxed);
+            if current_addr > 0 {
+                return ChunkPtr::new(current_addr as _);
+            }
+            backoff.spin();
+        }
     }
     fn history<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
         ChunkPtr::new(self.history_chunk.load(Relaxed) as _)
@@ -2874,7 +2884,7 @@ impl<
         let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version);
         parts.iter().enumerate().for_each(|(i, part)| {
             let new_part = unsafe { &(*new_parts).at(ArrId(i)) };
-            let current = part.current();
+            let current = part.non_null_current();
             let history = part.history();
             let epoch = part.epoch();
             unsafe {
