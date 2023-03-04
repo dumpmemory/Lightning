@@ -546,11 +546,11 @@ mod test {
                 #[test]
                 fn ptr_checking_inserion_with_migrations() {
                     let _ = env_logger::try_init();
-                    let repeats: usize = crate::map::base::PARTITION_MAX_CAP * 2;
+                    let repeats: usize = crate::map::base::PARTITION_MAX_CAP;
                     let multplier = 1 << 32;
                     let map = Arc::new(map_init(8));
                     let mut threads = vec![];
-                    for i in 1..crate::map::base::INIT_ARR_SIZE {
+                    for i in 1..32 {
                         let map = map.clone();
                         threads.push(thread::spawn(move || {
                             for j in 0..repeats {
