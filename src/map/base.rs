@@ -1012,6 +1012,7 @@ impl<
         &Partition<K, V, A, ALLOC>,
         usize,
     ) {
+        let backoff = Backoff::new();
         loop {
             let arr_ver = self.current_arr_ver();
             let ((part, _, current_epoch), _) = self.part_of_hash(hash);
@@ -1019,24 +1020,30 @@ impl<
             let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
             if Self::is_copying(arr_ver) {
+                backoff.snooze();
                 continue;
             }
             if history_chunk == current_chunk || history_chunk.is_disabled() {
+                backoff.snooze();
                 continue;
             }
             if is_copying {
                 if history_chunk.is_null() || current_chunk.is_null() {
+                    backoff.snooze();
                     continue;
                 }
             } else {
                 if !history_chunk.is_null() && !current_chunk.is_null() {
+                    backoff.snooze();
                     continue;
                 }
             }
             if part.epoch() != current_epoch {
+                backoff.snooze();
                 continue;
             }
             if self.current_arr_ver() != arr_ver {
+                backoff.snooze();
                 continue;
             }
             if is_copying {
