@@ -1,4 +1,8 @@
-use std::{cell::RefCell, cmp::min, collections::VecDeque};
+use std::{
+    cell::RefCell,
+    cmp::min,
+    collections::{self, VecDeque},
+};
 
 #[cfg(debug_assertions)]
 use parking_lot::Mutex;
@@ -296,22 +300,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         let hash_id = self.id_of_hash(hash);
         let part = self.at(hash_id);
         let part_epoch = part.epoch();
-        let ver_diff = self.version - part.arr_ver.load(Relaxed);
-        let home_part = if ver_diff > 0 {
-            let size_diff = ver_diff >> 1;
-            let home_id = ArrId(hash_id.0 >> size_diff << size_diff);
-            Some((self.at(home_id), home_id))
-        } else {
-            None
-        };
-        if let Some((home_part, home_id)) = home_part {
-            let home_epoch = home_part.epoch();
-            let home_current = home_part.current();
-            let home_history = home_part.history();
-            if !home_current.is_null() && home_history.is_null() && !home_history.is_disabled() {
-                return (home_part, home_id, home_epoch);
-            }
-        }
         return (part, hash_id, part_epoch);
     }
 
@@ -319,17 +307,32 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         (0..self.len).map(move |i| self.at(ArrId(i)))
     }
     fn clear<'a>(&self, guard: &'a Guard) {
-        self.iter().for_each(|part| unsafe {
-            let mut current = part.current();
-            let mut history = part.history();
-            guard.defer_unchecked(move || {
-                current.destory();
-                history.destory();
-            });
+        let mut marked = collections::HashSet::<usize>::new();
+        let mut marked_ptrs = Vec::with_capacity(self.len << 1);
+        self.iter().for_each(|part| {
+            let current = part.current();
+            let history = part.history();
+            if !current.is_null() && !marked.contains(&current.base) {
+                marked.insert(current.base);
+                marked_ptrs.push(current);
+            }
+            if !history.is_null() && !history.is_disabled() && !marked.contains(&history.base) {
+                marked.insert(history.base);
+                marked_ptrs.push(history);
+            }
         });
+        unsafe {
+            guard.defer_unchecked(move || {
+                for mut ptr in marked_ptrs {
+                    ptr.destory();
+                }
+            });
+        }
     }
     fn key_capacity(&self) -> usize {
-        self.iter().map(|part| part.non_null_current().capacity).sum()
+        self.iter()
+            .map(|part| part.non_null_current().capacity)
+            .sum()
     }
 }
 
@@ -398,7 +401,11 @@ impl<
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
-        Self::with_max_capacity(min(PARTITION_MAX_CAP, cap), PARTITION_MAX_CAP, attachment_init_meta)
+        Self::with_max_capacity(
+            min(PARTITION_MAX_CAP, cap),
+            PARTITION_MAX_CAP,
+            attachment_init_meta,
+        )
     }
 
     fn init_part_nums() -> usize {
@@ -1014,16 +1021,17 @@ impl<
             if Self::is_copying(arr_ver) {
                 continue;
             }
-            if history_chunk == current_chunk
-                || current_chunk.is_null()
-                || history_chunk.is_disabled()
-            {
+            if history_chunk == current_chunk || history_chunk.is_disabled() {
                 continue;
             }
-            if is_copying && history_chunk.is_null() {
-                continue;
-            } else if !is_copying && !history_chunk.is_null() {
-                continue;
+            if is_copying {
+                if history_chunk.is_null() {
+                    continue;
+                }
+            } else {
+                if !history_chunk.is_null() && !current_chunk.is_null() {
+                    continue;
+                }
             }
             if part.epoch() != current_epoch {
                 continue;
@@ -1039,8 +1047,10 @@ impl<
                     part,
                     arr_ver,
                 );
-            } else {
+            } else if !current_chunk.is_null() {
                 return (current_chunk, None, current_epoch, part, arr_ver);
+            } else {
+                return (history_chunk, None, current_epoch, part, arr_ver);
             }
         }
     }
@@ -1873,7 +1883,7 @@ impl<
         &self,
         hash: usize,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
-        chunk_epoch: usize,
+        old_epoch: usize,
         part: &Partition<K, V, A, ALLOC>,
         arr_ver: usize,
         check: bool,
@@ -1893,9 +1903,9 @@ impl<
             return ResizeResult::SwapFailed;
         }
         if self.need_split_chunk(part, arr_ver) {
-            return self.split_migration(hash, old_chunk_ptr, chunk_epoch, arr_ver, part, guard);
+            return self.split_migration(hash, old_chunk_ptr, old_epoch, arr_ver, part, guard);
         }
-        self.resize_migration(old_chunk_ptr, chunk_epoch, arr_ver, part, guard)
+        self.resize_migration(old_chunk_ptr, old_epoch, arr_ver, part, guard)
     }
 
     fn split_array<'a>(&self, prev_arr_ver: usize, guard: &'a Guard) -> Option<usize> {
@@ -1943,12 +1953,11 @@ impl<
                             continue;
                         }
                         debug_assert_eq!(old_part.history_chunk.load(Relaxed), DISABLED_CHUNK_PTR);
+                        let old_chunk_addr = old_part.current_chunk.load(Relaxed);
                         ptr::write(
                             new_part_addr as *mut _,
                             Partition::<K, V, A, ALLOC> {
-                                current_chunk: AtomicUsize::new(
-                                    old_part.current_chunk.load(Relaxed),
-                                ),
+                                current_chunk: AtomicUsize::new(old_chunk_addr),
                                 history_chunk: AtomicUsize::new(0), // We had already asserted no copying during array resize.
                                 epoch: AtomicUsize::new(old_epoch),
                                 arr_ver: AtomicUsize::new(old_arr_ver),
@@ -1956,9 +1965,11 @@ impl<
                             },
                         );
                         // Prepare the duplicated shadow partition
-                        // Here we assume that the partition is all zeroed out so we only need to set `arr_ver`
+                        // Here we assume that the partition is all zeroed out
                         // Note that zero current chunk indicates shadow partition
                         let new_dup_part = (*new_part_arr).at(ArrId(new_idx + 1));
+                        new_dup_part.history_chunk.store(old_chunk_addr, Relaxed);
+                        new_dup_part.epoch.store(old_epoch, Relaxed);
                         new_dup_part.arr_ver.store(old_arr_ver, Relaxed);
                         break;
                     }
@@ -1984,36 +1995,44 @@ impl<
         &self,
         hash: usize,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
-        chunk_epoch: usize,
+        old_epoch: usize,
         arr_ver: usize,
         part: &Partition<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
         // Following steps are exactly the same as resizing
-        if !part.swap_in_history(old_chunk_ptr) {
-            trace!("Cannot obtain lock for split, will retry");
-            return ResizeResult::SwapFailed;
-        }
-        let old_epoch = part.epoch();
         let part_arr = self.partitions();
         let part_arr_ver = part.arr_ver.load(Relaxed);
         let current_arr_ver = part_arr.version;
-        debug!(
-            "Veryfying partition array version: {} to {}",
-            arr_ver, current_arr_ver
-        );
-        if chunk_epoch != old_epoch || arr_ver != current_arr_ver {
-            part.set_history(ChunkPtr::null());
-            debug!(
-                "$ Epoch changed from {} to {}, arr_ver {} to {} after split migration lock",
-                chunk_epoch, old_epoch, arr_ver, current_arr_ver
-            );
-            return ResizeResult::SwapFailed;
-        }
         let ver_diff = current_arr_ver - part_arr_ver;
         let size_diff = ver_diff >> 1;
         let hash_id = part_arr.id_of_hash(hash);
         let home_id = hash_id.0 >> size_diff << size_diff;
+        let home_part = part_arr.at(ArrId(home_id));
+        if !home_part.swap_in_history(old_chunk_ptr) {
+            trace!("Cannot obtain lock for split, will retry");
+            return ResizeResult::SwapFailed;
+        }
+        debug_assert_eq!(home_part.history().base, old_chunk_ptr.base);
+        debug_assert_eq!(
+            part.history().base,
+            old_chunk_ptr.base,
+            "At this point all relevant parts should have history been set"
+        );
+        debug!(
+            "Veryfying partition array version: {} to {}",
+            arr_ver, current_arr_ver
+        );
+        let home_epoch = home_part.epoch();
+        if old_epoch != home_epoch || arr_ver != current_arr_ver {
+            home_part.set_history(ChunkPtr::null());
+            debug!(
+                "$ Epoch changed from {} to {}, arr_ver {} to {} after split migration lock",
+                old_epoch, old_epoch, arr_ver, current_arr_ver
+            );
+            return ResizeResult::SwapFailed;
+        }
+
         let ends_id = ((hash_id.0 >> size_diff) + 1) << size_diff;
         let chunk_capacity = old_chunk_ptr.capacity;
         // A presertive size which still allow new insertions to the chunks
@@ -2028,7 +2047,7 @@ impl<
             part as *const _ as usize,
             part.arr_ver.load(Relaxed)
         );
-        let chunks = (0..(ends_id - home_id))
+        let pre_gen_chunks = (0..(ends_id - home_id))
             .map(|_| {
                 let chunk = ChunkPtr::new(Chunk::<K, V, A, ALLOC>::alloc_chunk(
                     chunk_capacity,
@@ -2042,9 +2061,7 @@ impl<
         // Must do it in reverse order such that insertions are not falling to new home part
         for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
-            let chunk = chunks[id - home_id];
-            shadow_part.set_history(old_chunk_ptr);
-            fence(AcqRel); // Must ensure total order parts initialization
+            let chunk = pre_gen_chunks[id - home_id];
             shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_current(chunk);
         }
@@ -2057,7 +2074,7 @@ impl<
             (home_id, ends_id),
             guard,
         );
-        part.erase_history(guard);
+        home_part.erase_history(guard);
         let new_epoch = old_epoch + 2;
         for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
