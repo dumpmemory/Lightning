@@ -1025,7 +1025,7 @@ impl<
                 continue;
             }
             if history_chunk == current_chunk {
-                if !Self::is_copying(current_epoch) && current_epoch == part.epoch() && self.current_arr_ver() == arr_ver {
+                if !Self::is_copying(current_epoch) && current_epoch == part.epoch() {
                     return (history_chunk, None, current_epoch, part, arr_ver); // On watch list, need to test for correctness
                 } else {
                     backoff.spin();
