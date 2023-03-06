@@ -290,9 +290,11 @@ impl<T, const B: usize> TLAlloc<T, B> {
         unsafe {
             let idx = self.buffered_idx as usize;
             if let Err(overflowed_addr) = self.buffered_free[idx].as_mut().push_back(ptr as usize) {
+                // current buffer is full, moving to the other buffer
                 let new_idx = (idx + 1) & 1;
+                self.buffered_idx = new_idx as _;
                 if let Err(overflowed_addr) = self.buffered_free[new_idx].as_mut().push_back(overflowed_addr) {
-                    // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
+                    // The other buffer is full, moving the buffer to the free list and alloc a new bufferend free
                     if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
                         &mut self.buffered_free[new_idx],
                         Arc::new(ThreadLocalPage::new()),
@@ -303,7 +305,6 @@ impl<T, const B: usize> TLAlloc<T, B> {
                         .as_mut()
                         .push_back(overflowed_addr)
                         .unwrap();
-                    self.buffered_idx = new_idx as _;
                 } else {
                     return;
                 }
