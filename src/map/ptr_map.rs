@@ -2,14 +2,14 @@ use std::cell::Cell;
 use std::intrinsics::{forget, prefetch_read_data};
 use std::mem::MaybeUninit;
 
-use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
+use crate::obj_alloc::{self, Aligned, AllocGuard};
 
 use super::base::*;
 use super::*;
 
 pub type PtrTable<K, V, ALLOC, H> =
     Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
-const ALLOC_BUFFER_SIZE: usize = 32;
+const ALLOC_BUFFER_SIZE: usize = 8;
 
 pub struct PtrHashMap<
     K: Clone + Hash + Eq,
