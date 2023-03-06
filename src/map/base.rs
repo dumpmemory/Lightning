@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 
 use itertools::Itertools;
 
-use crate::thread_id;
+use crate::{thread_id, counter::Counter};
 
 use super::*;
 
@@ -150,7 +150,7 @@ pub struct Table<
 > {
     meta: ChunkMeta,
     attachment_init_meta: A::InitMeta,
-    count: AtomicUsize,
+    count: Counter,
     init_cap: usize,
     max_cap: usize,
     mark: PhantomData<(H, ALLOC)>,
@@ -429,7 +429,7 @@ impl<
                 partitions: AtomicUsize::new(partitions as _),
                 array_version: AtomicUsize::new(INIT_ARR_VER),
             },
-            count: AtomicUsize::new(0),
+            count: Counter::new(),
             init_cap: cap,
             max_cap,
             attachment_init_meta,
@@ -587,7 +587,7 @@ impl<
             };
             match value_insertion {
                 ModResult::Done(fv, v, idx) => {
-                    self.count.fetch_add(1, Relaxed);
+                    self.count.incr(1);
                     delay_log!(
                         "New val insert key {}, fval {} was {}, idx {}",
                         fkey,
@@ -767,7 +767,7 @@ impl<
         let len = self.len();
         let old_part_addr = self.meta.partitions.swap(new_parts as _, AcqRel);
         PartitionArray::<K, V, A, ALLOC>::ref_from_addr(old_part_addr).clear(&guard);
-        self.count.fetch_sub(len, AcqRel);
+        self.count.decr(len as _);
     }
 
     pub fn swap<'a, F: Fn(FVal) -> Option<FVal> + Copy + 'static>(
@@ -922,7 +922,7 @@ impl<
                             chunk.base,
                             new_chunk.map(|c| c.base)
                         );
-                        self.count.fetch_sub(1, Relaxed);
+                        self.count.decr(1);
                         return Some((Self::offset_v_out(fval), val.unwrap()));
                     }
                     ModResult::Fail => {
@@ -950,7 +950,7 @@ impl<
                         idx,
                         chunk.base, new_chunk.map(|c| c.base)
                     );
-                    self.count.fetch_sub(1, Relaxed);
+                    self.count.decr(1);
                     return Some((Self::offset_v_out(fval), val.unwrap()));
                 }
                 Some(ModResult::Fail) | Some(ModResult::Sentinel) => {
@@ -1069,7 +1069,7 @@ impl<
     }
 
     pub fn len(&self) -> usize {
-        self.count.load(Relaxed)
+        self.count.count() as _
     }
 
     fn get_from_chunk(
@@ -2928,7 +2928,7 @@ impl<
                 partitions: AtomicUsize::new(new_parts as _),
                 array_version: AtomicUsize::new(parts.version),
             },
-            count: AtomicUsize::new(0),
+            count: Counter::new(),
             init_cap: self.init_cap,
             max_cap: self.max_cap,
             attachment_init_meta: self.attachment_init_meta.clone(),

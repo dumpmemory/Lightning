@@ -30,6 +30,7 @@ pub mod aarc;
 pub mod obj_alloc;
 pub mod rand;
 pub mod thread_local;
+pub mod counter;
 
 #[cfg(test)]
 mod tests_misc;

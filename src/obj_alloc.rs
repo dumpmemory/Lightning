@@ -115,7 +115,7 @@ pub struct Aligned<T>(T);
 
 impl<T, const B: usize> SharedAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
-    const BUMP_SIZE: usize = 256 * 1024 * Self::OBJ_SIZE;
+    const BUMP_SIZE: usize = 128 * 1024 * Self::OBJ_SIZE;
 
     fn new() -> Self {
         Self {
