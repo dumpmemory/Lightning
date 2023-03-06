@@ -622,9 +622,6 @@ impl<
                 }
                 ModResult::TableFull => {
                     reset_locked_old();
-                    if new_chunk.is_none() {
-                        self.check_migration(hash, chunk, epoch, part, arr_ver, false, &guard);
-                    }
                     backoff.spin();
                     continue;
                 }
