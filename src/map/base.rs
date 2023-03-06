@@ -1020,30 +1020,34 @@ impl<
             let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
             if Self::is_copying(arr_ver) {
-                backoff.snooze();
+                backoff.spin();
                 continue;
             }
-            if history_chunk == current_chunk || history_chunk.is_disabled() {
-                backoff.snooze();
+            if history_chunk == current_chunk {
+                backoff.spin();
+                continue;
+            }
+            if history_chunk.is_disabled() {
+                backoff.spin();
                 continue;
             }
             if is_copying {
                 if history_chunk.is_null() || current_chunk.is_null() {
-                    backoff.snooze();
+                    backoff.spin();
                     continue;
                 }
             } else {
                 if !history_chunk.is_null() && !current_chunk.is_null() {
-                    backoff.snooze();
+                    backoff.spin();
                     continue;
                 }
             }
             if part.epoch() != current_epoch {
-                backoff.snooze();
+                backoff.spin();
                 continue;
             }
             if self.current_arr_ver() != arr_ver {
-                backoff.snooze();
+                backoff.spin();
                 continue;
             }
             if is_copying {
