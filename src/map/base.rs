@@ -331,7 +331,10 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     }
     fn key_capacity(&self) -> usize {
         self.iter()
-            .map(|part| part.non_null_current().capacity)
+            .filter_map(|part| {
+                let current = part.current();
+                (!current.is_null()).then(|| current.capacity) 
+            })
             .sum()
     }
 }
@@ -348,16 +351,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A,
     }
     fn current<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
         ChunkPtr::new(self.current_chunk.load(Relaxed) as _)
-    }
-    fn non_null_current<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
-        let backoff = Backoff::new();
-        loop {
-            let current_addr = self.current_chunk.load(Relaxed);
-            if current_addr > 0 {
-                return ChunkPtr::new(current_addr as _);
-            }
-            backoff.spin();
-        }
     }
     fn history<'a>(&self) -> ChunkPtr<'a, K, V, A, ALLOC> {
         ChunkPtr::new(self.history_chunk.load(Relaxed) as _)
@@ -2841,22 +2834,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline(always)]
-    fn swap_hop_bit(&self, idx: usize, src_pos: usize, dest_pos: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
-        let set_bit = 1 << dest_pos;
-        let unset_mask = !(1 << src_pos);
-        loop {
-            unsafe {
-                let orig_bits = intrinsics::atomic_load_acquire(ptr);
-                let target_bits = orig_bits | set_bit & unset_mask;
-                if intrinsics::atomic_cxchg_acqrel_relaxed(ptr, orig_bits, target_bits).1 {
-                    return;
-                }
-            }
-        }
-    }
-
-    #[inline(always)]
     fn iter_slot_skipable<'a>(&self, home_idx: usize, skip: bool) -> SlotIter {
         let hop_bits = if !Self::FAT_VAL && ENABLE_SKIPPING && skip {
             self.get_hop_bits(home_idx)
@@ -2925,14 +2902,16 @@ impl<
         let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version);
         parts.iter().enumerate().for_each(|(i, part)| {
             let new_part = unsafe { &(*new_parts).at(ArrId(i)) };
-            let current = part.non_null_current();
+            let current = part.current();
             let history = part.history();
             let epoch = part.epoch();
-            unsafe {
-                let total_size = current.total_size;
-                let new_chunk_ptr = libc::malloc(total_size);
-                libc::memcpy(new_chunk_ptr, current.ptr as _, total_size);
-                new_part.set_current(ChunkPtr::new(new_chunk_ptr as _));
+            if !current.is_null() {
+                unsafe {
+                    let total_size = current.total_size;
+                    let new_chunk_ptr = libc::malloc(total_size);
+                    libc::memcpy(new_chunk_ptr, current.ptr as _, total_size);
+                    new_part.set_current(ChunkPtr::new(new_chunk_ptr as _));
+                }
             }
             if !history.is_null() {
                 unsafe {
