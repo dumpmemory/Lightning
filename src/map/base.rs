@@ -1012,11 +1012,15 @@ impl<
         let backoff = Backoff::new();
         loop {
             let arr_ver = self.current_arr_ver();
-            let ((part, _, current_epoch), _) = self.part_of_hash(hash);
+            let ((part, _, current_epoch), obtained_arr_ver) = self.part_of_hash(hash);
             let current_chunk = part.current();
             let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
             if Self::is_copying(arr_ver) {
+                backoff.spin();
+                continue;
+            }
+            if arr_ver != obtained_arr_ver {
                 backoff.spin();
                 continue;
             }
