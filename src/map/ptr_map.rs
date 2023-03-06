@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::intrinsics::forget;
+use std::intrinsics::{forget, prefetch_read_data};
 use std::mem::MaybeUninit;
 
 use crate::obj_alloc::{self, Aligned, AllocGuard, Allocator};
@@ -87,10 +87,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn ref_val(&self, d: V, guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) -> usize {
         unsafe {
             let node_ptr = guard.alloc();
-            let node_ref = &*node_ptr;
-            let node_ver = node_ref.retire_ver.load(Relaxed);
+            prefetch_read_data(node_ptr, 3);
             let mut current_ver = self.epoch.load(Relaxed);
             let backoff = Backoff::new();
+            let node_ref = &*node_ptr;
+            let node_ver = node_ref.retire_ver.load(Relaxed);
             debug_assert_ne!(
                 node_ptr as usize & Self::VAL_NODE_LOW_BITS,
                 node_ptr as usize
