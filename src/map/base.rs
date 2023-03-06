@@ -2078,8 +2078,9 @@ impl<
         for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
             let chunk = pre_gen_chunks[id - home_id];
-            shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_current(chunk);
+            fence(AcqRel);
+            shadow_part.set_epoch(old_epoch + 1);
         }
         // Now we can do the migration
         let num_miugrated = self.migrate_entries(
@@ -2095,9 +2096,9 @@ impl<
         for id in (home_id..ends_id).rev() {
             let shadow_part = part_arr.at(ArrId(id));
             shadow_part.set_arr_ver(current_arr_ver);
-            shadow_part.set_epoch(new_epoch);
-            fence(AcqRel);
             shadow_part.set_history(ChunkPtr::null());
+            fence(AcqRel);
+            shadow_part.set_epoch(new_epoch);
             debug!(
                 "Done with split migrating to partitioned chunk {} at {}, part range {:?}, arr ver {}", 
                 shadow_part.current().base, id, (home_id, ends_id), current_arr_ver
@@ -2175,10 +2176,11 @@ impl<
             new_cap,
             old_epoch
         );
-        part.set_epoch(old_epoch + 1);
         part.set_current(new_chunk_ptr); // Stump becasue we have the lock already
                                          // Not going to take multithreading resize
-                                         // Experiments shows there is no significant improvement in performance
+                                         // Experiments shows there is no significant improvement in performance'
+        fence(AcqRel);
+        part.set_epoch(old_epoch + 1);
         trace!("Initialize migration");
         let num_migrated = self.migrate_entries(
             old_chunk_ptr,
@@ -2188,8 +2190,9 @@ impl<
             (0, 0),
             &guard,
         );
-        part.erase_history(guard);
+        fence(AcqRel);
         part.set_epoch(old_epoch + 2);
+        part.erase_history(guard);
         debug!(
             "!!! Resize migration for {:?} completed, new chunk is {:?}, size from {} to {}, old epoch {}, num {:?}",
             old_chunk_ptr.base,
