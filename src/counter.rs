@@ -22,12 +22,12 @@ const FAST_THREADS: usize = 64;
 const THREADS_MASK: usize = FAST_THREADS - 1;
 
 pub struct Counter {
-    counters: [Cell<*mut AtomicIsize>; FAST_THREADS]
+    counters: Box<[Cell<*mut AtomicIsize>; FAST_THREADS]>
 }
 
 impl Counter {
     pub fn new() -> Self {
-        Self { counters: unsafe { mem::transmute([0isize; FAST_THREADS]) } }
+        Self { counters: Box::new(unsafe { mem::transmute([0isize; FAST_THREADS]) }) }
     }
     #[inline(always)]
     fn tl_get(&self) -> &AtomicIsize {
