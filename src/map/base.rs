@@ -1016,16 +1016,17 @@ impl<
         loop {
             let arr_ver = self.current_arr_ver();
             let ((part, _, current_epoch), _) = self.part_of_hash(hash);
-            let current_chunk = part.current();
-            let history_chunk = part.history();
+            let mut current_chunk = part.current();
+            let mut history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
             if Self::is_copying(arr_ver) {
                 backoff.spin();
                 continue;
             }
             if history_chunk == current_chunk {
-                backoff.spin();
-                continue;
+                // backoff.spin();
+                // continue;
+                return (history_chunk, None, current_epoch, part, arr_ver); // On watch list, need to test for correctness
             }
             if history_chunk.is_disabled() {
                 backoff.spin();
