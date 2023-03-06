@@ -391,9 +391,10 @@ fn run_and_record_contention<'a, 'b, T: Collection>(
     cont: f64,
     stride: usize,
 ) -> Vec<(&'static str, Vec<(usize, Option<Measurement>, usize)>)> {
-    println!("Testing {}", name);    
+    println!("Testing {}", name);
     println!("Insert heavy");
-    let insert_measurement = run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
+    let insert_measurement =
+        run_and_measure_mix::<T>(Mix::insert_heavy(), 0.75, load, cont, stride);
     write_measurements(
         &format!("{}_{}_insertion.csv", task, name),
         &insert_measurement,

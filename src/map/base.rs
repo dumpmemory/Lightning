@@ -1016,17 +1016,20 @@ impl<
         loop {
             let arr_ver = self.current_arr_ver();
             let ((part, _, current_epoch), _) = self.part_of_hash(hash);
-            let mut current_chunk = part.current();
-            let mut history_chunk = part.history();
+            let current_chunk = part.current();
+            let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
             if Self::is_copying(arr_ver) {
                 backoff.spin();
                 continue;
             }
             if history_chunk == current_chunk {
-                // backoff.spin();
-                // continue;
-                return (history_chunk, None, current_epoch, part, arr_ver); // On watch list, need to test for correctness
+                if !Self::is_copying(current_epoch) && current_epoch == part.epoch() && self.current_arr_ver() != arr_ver {
+                    return (history_chunk, None, current_epoch, part, arr_ver); // On watch list, need to test for correctness
+                } else {
+                    backoff.spin();
+                    continue;
+                }
             }
             if history_chunk.is_disabled() {
                 backoff.spin();
@@ -2154,7 +2157,6 @@ impl<
             // The map is small, block all insertions until the migration is completed
             pre_occupation = new_cap;
         }
-        part.set_epoch(old_epoch + 1);
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
             (*new_chunk).occupation.store(pre_occupation, Relaxed);
@@ -2173,6 +2175,7 @@ impl<
             new_cap,
             old_epoch
         );
+        part.set_epoch(old_epoch + 1);
         part.set_current(new_chunk_ptr); // Stump becasue we have the lock already
                                          // Not going to take multithreading resize
                                          // Experiments shows there is no significant improvement in performance
