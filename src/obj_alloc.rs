@@ -27,10 +27,11 @@ pub struct TLAlloc<T, const B: usize> {
     buffer_addr: usize,
     buffer_limit: usize,
     free_list: TLBufferedStack<B>,
-    buffered_free: Arc<ThreadLocalPage<B>>,
+    buffered_free: [Arc<ThreadLocalPage<B>>; 2],
     shared: Arc<SharedAlloc<T, B>>,
-    guard_count: usize,
     defer_free: Vec<usize>,
+    guard_count: usize,
+    buffered_idx: u8,
     #[cfg(debug_assertions)]
     #[cfg(asan)]
     asan: Arc<ASan>,
@@ -94,7 +95,8 @@ impl<T, const B: usize> Allocator<T, B> {
             .into_iter()
             .map(|thread| {
                 let mut thread_res = vec![];
-                thread_res.append(&mut thread.buffered_free.all());
+                thread_res.append(&mut thread.buffered_free[0].all());
+                thread_res.append(&mut thread.buffered_free[1].all());
                 thread_res.append(&mut thread.defer_free.clone());
                 thread_res.append(&mut thread.free_list.all());
                 return thread_res;
@@ -201,14 +203,19 @@ impl<T, const B: usize> TLAlloc<T, B> {
 
     #[inline(always)]
     pub fn new<'a>(buffer: usize, limit: usize, alloc: &'a Allocator<T, B>) -> Self {
+        let buffered_free = [
+            Arc::new(ThreadLocalPage::new()),
+            Arc::new(ThreadLocalPage::new()),
+        ];
         Self {
             free_list: TLBufferedStack::new(),
-            buffered_free: Arc::new(ThreadLocalPage::new()),
+            buffered_free,
             buffer_addr: buffer,
             buffer_limit: limit,
             shared: alloc.shared.clone(),
-            guard_count: 0,
             defer_free: Vec::with_capacity(64),
+            guard_count: 0,
+            buffered_idx: 0,
             #[cfg(debug_assertions)]
             #[cfg(asan)]
             asan: alloc.asan.clone(),
@@ -223,6 +230,16 @@ impl<T, const B: usize> TLAlloc<T, B> {
             #[cfg(asan)]
             self.asan.alloc(addr);
             return addr;
+        }
+        unsafe {
+            // Take an object from alternative buffered free
+            let buffer_idx = ((self.buffered_idx + 1) & 1) as usize;
+            if let Some(addr) = self.buffered_free[buffer_idx].as_mut().pop_back() {
+                #[cfg(debug_assertions)]
+                #[cfg(asan)]
+                self.asan.alloc(addr);
+                return addr;
+            }
         }
         if self.buffer_addr + Self::OBJ_SIZE > self.buffer_limit {
             // Allocate new buffer
@@ -248,17 +265,12 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 }
             }
         }
-        // NEVER take freed objects from `self.buffered_free`
         let obj_addr = self.buffer_addr;
         self.buffer_addr += Self::OBJ_SIZE;
         debug_assert!(self.buffer_addr <= self.buffer_limit);
         #[cfg(debug_assertions)]
         #[cfg(asan)]
         self.asan.alloc(obj_addr);
-        // let obj_addr = unsafe { libc::malloc(Self::OBJ_SIZE) } as usize;
-        // unsafe {
-        //     libc::memset(obj_addr as *mut c_void, 0, Self::OBJ_SIZE);
-        // }
         return obj_addr;
     }
 
@@ -276,18 +288,25 @@ impl<T, const B: usize> TLAlloc<T, B> {
     #[inline(always)]
     pub fn buffered_free(&mut self, ptr: *const T) {
         unsafe {
-            if let Err(overflowed_addr) = self.buffered_free.as_mut().push_back(ptr as usize) {
-                // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
-                if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
-                    &mut self.buffered_free,
-                    Arc::new(ThreadLocalPage::new()),
-                )) {
-                    (&*self.shared).attach_objs(overflow_buffer);
+            let idx = self.buffered_idx as usize;
+            if let Err(overflowed_addr) = self.buffered_free[idx].as_mut().push_back(ptr as usize) {
+                let new_idx = (idx + 1) & 1;
+                if let Err(overflowed_addr) = self.buffered_free[new_idx].as_mut().push_back(overflowed_addr) {
+                    // The buffer is full, moving current buffer to the free list and alloc a new bufferend free
+                    if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
+                        &mut self.buffered_free[new_idx],
+                        Arc::new(ThreadLocalPage::new()),
+                    )) {
+                        (&*self.shared).attach_objs(overflow_buffer);
+                    }
+                    self.buffered_free[new_idx]
+                        .as_mut()
+                        .push_back(overflowed_addr)
+                        .unwrap();
+                    self.buffered_idx = new_idx as _;
+                } else {
+                    return;
                 }
-                self.buffered_free
-                    .as_mut()
-                    .push_back(overflowed_addr)
-                    .unwrap();
             }
         }
         #[cfg(debug_assertions)]
@@ -297,29 +316,32 @@ impl<T, const B: usize> TLAlloc<T, B> {
 
     #[inline(always)]
     pub fn return_resources(&mut self) {
-        unsafe {
-            // Return buffer space
-            if self.buffer_addr < self.buffer_limit {
-                (&*self.shared)
-                    .free_buffer
-                    .push((self.buffer_addr, self.buffer_limit))
-            }
-
-            // let mut free_node = mem::replace(&mut self.free_list.head, Arc::null());
-            // while !free_node.is_null() {
-            //     let next_next =
-            //         mem::replace(&mut free_node.as_mut().next, AtomicArc::null()).into_arc();
-            //     if free_node.pos > 0 {
-            //         (&*self.shared).attach_objs(free_node);
-            //     }
-            //     free_node = next_next;
-            // }
-            if self.buffered_free.pos > 0 {
-                (&*self.shared).attach_objs(mem::replace(
-                    &mut self.buffered_free,
-                    Arc::new(ThreadLocalPage::new()),
-                ));
-            }
+        // Return buffer space
+        if self.buffer_addr < self.buffer_limit {
+            (&*self.shared)
+                .free_buffer
+                .push((self.buffer_addr, self.buffer_limit))
+        }
+        // let mut free_node = mem::replace(&mut self.free_list.head, Arc::null());
+        // while !free_node.is_null() {
+        //     let next_next =
+        //         mem::replace(&mut free_node.as_mut().next, AtomicArc::null()).into_arc();
+        //     if free_node.pos > 0 {
+        //         (&*self.shared).attach_objs(free_node);
+        //     }
+        //     free_node = next_next;
+        // }
+        if self.buffered_free[0].pos > 0 {
+            (&*self.shared).attach_objs(mem::replace(
+                &mut self.buffered_free[0],
+                Arc::new(ThreadLocalPage::new()),
+            ));
+        }
+        if self.buffered_free[1].pos > 0 {
+            (&*self.shared).attach_objs(mem::replace(
+                &mut self.buffered_free[1],
+                Arc::new(ThreadLocalPage::new()),
+            ));
         }
     }
 }

@@ -1066,7 +1066,10 @@ impl<
             } else if !current_chunk.is_null() {
                 return (current_chunk, None, current_epoch, part, arr_ver);
             } else {
-                debug_assert!(!history_chunk.is_null() , "Can't be both current and history are empty");
+                debug_assert!(
+                    !history_chunk.is_null(),
+                    "Can't be both current and history are empty"
+                );
                 return (history_chunk, None, current_epoch, part, arr_ver);
             }
         }

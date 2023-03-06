@@ -527,7 +527,7 @@ impl<'a, K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher
                 .table
                 .insert(InsertOp::Insert, &self.key, Some(&()), 0, fval)
         {
-            let (val_ptr, node_addr) = self.map.ptr_of_val(fv);
+            let (_val_ptr, node_addr) = self.map.ptr_of_val(fv);
             // debug!(
             //     "Mutex key {:?} switched from {:?} to {:?}",
             //     self.key,
@@ -559,8 +559,6 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 #[cfg(test)]
 pub mod tests {
     use std::panic;
-    use std::process;
-    use std::sync::atomic::*;
     use test::Bencher;
 
     use crate::{
