@@ -85,11 +85,6 @@ thread_local! {
     static DELAYED_LOG: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 }
 
-#[cfg(debug_assertions)]
-lazy_static! {
-    static ref MIGRATION_LOGS: Mutex<Vec<(usize, Vec<MigratedEntry>)>> = Mutex::new(vec![]);
-}
-
 enum ModResult<V> {
     Replaced(FVal, Option<V>, usize), // (origin fval, val, index)
     Existed(FVal, Option<V>, usize),
@@ -2236,8 +2231,6 @@ impl<
         _guard: &crossbeam_epoch::Guard,
     ) -> usize {
         trace!("Migrating entries from {:?}", old_chunk.base);
-        #[cfg(debug_assertions)]
-        let mut migrated_entries = vec![];
         let mut old_address = old_chunk.base as usize;
         let boundary = old_address + chunk_size_of(old_chunk.capacity);
         let mut idx = 0;
@@ -2324,8 +2317,6 @@ impl<
                         new_chunk,
                         old_address,
                         effective_copy,
-                        #[cfg(debug_assertions)]
-                        &mut migrated_entries,
                     ) {
                         backoff.spin();
                         continue;
@@ -2372,14 +2363,6 @@ impl<
                 effective_copy
             })
             .sum();
-        #[cfg(debug_assertions)]
-        {
-            debug!(
-                "* Migrated entries to new chunk, logs {}",
-                migrated_entries.len()
-            );
-            MIGRATION_LOGS.lock().push((epoch, migrated_entries))
-        }
         return result;
     }
 
@@ -2392,17 +2375,12 @@ impl<
         new_chunk_ins: ChunkPtr<K, V, A, ALLOC>,
         old_address: usize,
         effective_copy: &mut usize,
-        #[cfg(debug_assertions)] migrated: &mut Vec<MigratedEntry>,
     ) -> bool {
         if fkey == EMPTY_KEY {
-            #[cfg(debug_assertions)]
-            migrated.push(((fkey, fvalue), 0, 222, thread_id()));
             return false;
         }
         // Will not migrate meta keys
         if fkey <= MAX_META_KEY || fvalue.is_primed() {
-            #[cfg(debug_assertions)]
-            migrated.push(((fkey, fvalue), 0, 111, thread_id()));
             return true;
         }
         // Insert entry into new chunk, in case of failure, skip this entry
@@ -2414,8 +2392,6 @@ impl<
         if !Self::cas_value(old_address, fvalue.val, primed_orig).1 {
             // here the ownership have been taken by other thread
             trace!("Entry {} has changed", fkey);
-            #[cfg(debug_assertions)]
-            migrated.push(((fkey, fvalue), 0, 999, thread_id()));
             return false;
         }
 
@@ -2441,8 +2417,6 @@ impl<
                 if probe {
                     // New value in the new chunk, just put a sentinel and abort migration on this slot
                     Self::store_sentinel(old_address);
-                    #[cfg(debug_assertions)]
-                    migrated.push(((fkey, fvalue), idx, 888, thread_id()));
                     return true;
                 }
             } else if k == EMPTY_KEY {
@@ -2479,8 +2453,6 @@ impl<
                     }
                     Self::store_sentinel(old_address);
                     *effective_copy += 1;
-                    #[cfg(debug_assertions)]
-                    migrated.push(((fkey, fvalue), idx, 0, thread_id()));
                     return true;
                 } else {
                     // Here we didn't put the fval into the new chunk due to slot conflict with
@@ -3118,20 +3090,6 @@ pub fn get_delayed_log<'a>(num: usize) -> Vec<String> {
         let s = len - num;
         list.range(s..).cloned().collect()
     })
-}
-
-#[cfg(debug_assertions)]
-pub fn dump_migration_log() {
-    let logs = MIGRATION_LOGS.lock();
-    logs.iter().for_each(|(epoch, item)| {
-        item.iter().for_each(|((k, v), pos, stat, th)| {
-            let v = v.val;
-            println!(
-                "e {} k {}, v {}, p {} s {} t {}",
-                epoch, k, v, pos, stat, th
-            );
-        });
-    });
 }
 
 #[cfg(test)]

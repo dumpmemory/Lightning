@@ -257,7 +257,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 mod test {
     use crate::{
         map::{
-            base::{dump_migration_log, get_delayed_log},
+            base::{get_delayed_log},
             *,
         },
         tests_misc::{assert_all_thread_passed, hook_panic},
