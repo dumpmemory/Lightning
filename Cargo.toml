@@ -20,6 +20,7 @@ static_assertions = "1"
 lazy_static = "1.4.0"
 page_size = "0.5"
 itertools = "0.10"
+smallvec = "1.10.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 affinity = "*"

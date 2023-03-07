@@ -110,12 +110,14 @@ impl<T, const B: usize> Allocator<T, B> {
     }
 }
 
+const BUMP_NUM: usize = 16 * 1024;
+
 #[repr(align(8))]
 pub struct Aligned<T>(T);
 
 impl<T, const B: usize> SharedAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
-    const BUMP_BYTES: usize = 4096 * Self::OBJ_SIZE;
+    const BUMP_BYTES: usize = BUMP_NUM * Self::OBJ_SIZE;
 
     fn new() -> Self {
         Self {
@@ -654,7 +656,7 @@ mod test {
     fn checking_thread_local_alloc() {
         let shared_alloc = Allocator::<_, BUFFER_SIZE>::new();
         let mut thread_local = TLAlloc::new(0, 0, &shared_alloc);
-        let test_size = BUFFER_SIZE * 1024;
+        let test_size = 8 * BUMP_NUM;
         let mut allocated = HashSet::new();
         for _ in 0..test_size {
             let addr = thread_local.alloc();
