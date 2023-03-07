@@ -4,13 +4,10 @@ use std::{
     collections::{self, VecDeque},
 };
 
-#[cfg(debug_assertions)]
-use parking_lot::Mutex;
-
 use itertools::Itertools;
 use smallvec::{smallvec, SmallVec};
 
-use crate::{counter::Counter, thread_id};
+use crate::{counter::Counter};
 
 use super::*;
 
@@ -20,9 +17,6 @@ pub type HopVer = ();
 pub type HopTuple = (HopBits, HopVer);
 
 const HOP_TUPLE_SIZE: usize = mem::size_of::<HopTuple>();
-
-#[cfg(debug_assertions)]
-pub type MigratedEntry = ((usize, FastValue), usize, usize, u64);
 
 pub const ENABLE_HOPSOTCH: bool = cfg!(feature = "hopsotch");
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
