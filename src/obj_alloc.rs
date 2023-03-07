@@ -115,7 +115,7 @@ pub struct Aligned<T>(T);
 
 impl<T, const B: usize> SharedAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
-    const BUMP_SIZE: usize = 128 * 1024 * Self::OBJ_SIZE;
+    const BUMP_SIZE: usize = 16 * 1024 * Self::OBJ_SIZE;
 
     fn new() -> Self {
         Self {
@@ -293,7 +293,10 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 // current buffer is full, moving to the other buffer
                 let new_idx = (idx + 1) & 1;
                 self.buffered_idx = new_idx as _;
-                if let Err(overflowed_addr) = self.buffered_free[new_idx].as_mut().push_back(overflowed_addr) {
+                if let Err(overflowed_addr) = self.buffered_free[new_idx]
+                    .as_mut()
+                    .push_back(overflowed_addr)
+                {
                     // The other buffer is full, moving the buffer to the free list and alloc a new bufferend free
                     if let Some(overflow_buffer) = self.free_list.append_page(mem::replace(
                         &mut self.buffered_free[new_idx],

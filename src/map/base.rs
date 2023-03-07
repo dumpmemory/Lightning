@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 
 use itertools::Itertools;
 
-use crate::{thread_id, counter::Counter};
+use crate::{counter::Counter, thread_id};
 
 use super::*;
 
@@ -333,7 +333,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         self.iter()
             .filter_map(|part| {
                 let current = part.current();
-                (!current.is_null()).then(|| current.capacity) 
+                (!current.is_null()).then(|| current.capacity)
             })
             .sum()
     }

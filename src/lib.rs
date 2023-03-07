@@ -27,10 +27,10 @@ pub mod stack;
 pub mod ttl_cache;
 
 pub mod aarc;
+pub mod counter;
 pub mod obj_alloc;
 pub mod rand;
 pub mod thread_local;
-pub mod counter;
 
 #[cfg(test)]
 mod tests_misc;
