@@ -115,7 +115,7 @@ pub struct Aligned<T>(T);
 
 impl<T, const B: usize> SharedAlloc<T, B> {
     const OBJ_SIZE: usize = mem::size_of::<Aligned<T>>();
-    const BUMP_SIZE: usize = 16 * 1024 * Self::OBJ_SIZE;
+    const BUMP_BYTES: usize = 4096 * Self::OBJ_SIZE;
 
     fn new() -> Self {
         Self {
@@ -132,12 +132,12 @@ impl<T, const B: usize> SharedAlloc<T, B> {
             return pair;
         }
         let ptr = unsafe {
-            let heap = libc::malloc(Self::BUMP_SIZE);
-            libc::memset(heap, 0, Self::BUMP_SIZE);
+            let heap = libc::malloc(Self::BUMP_BYTES);
+            libc::memset(heap, 0, Self::BUMP_BYTES);
             heap as usize
         };
         self.all_buffers.push(ptr);
-        (ptr, ptr + Self::BUMP_SIZE)
+        (ptr, ptr + Self::BUMP_BYTES)
     }
 
     #[inline(always)]
