@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    cmp::min,
+    cmp::{max, min},
     collections::{self, VecDeque},
 };
 
@@ -72,7 +72,7 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
-pub const PARTITION_MAX_CAP: usize = 64 * 1024;
+pub const DEFAULT_PARTITION_MAX_CAP: usize = 64 * 1024;
 pub const INIT_ARR_VER: usize = 0;
 pub const INIT_ARR_SIZE: usize = 8;
 
@@ -152,6 +152,7 @@ pub struct Table<
     attachment_init_meta: A::InitMeta,
     count: Counter,
     init_cap: usize,
+    init_arr_len: usize,
     max_cap: usize,
     mark: PhantomData<(H, ALLOC)>,
 }
@@ -394,15 +395,14 @@ impl<
     const WORD_KEY: bool = mem::size_of::<K>() == 0;
 
     pub fn with_capacity(cap: usize, attachment_init_meta: A::InitMeta) -> Self {
-        Self::with_max_capacity(
-            min(PARTITION_MAX_CAP, cap),
-            PARTITION_MAX_CAP,
-            attachment_init_meta,
-        )
+        Self::with_max_capacity(cap, DEFAULT_PARTITION_MAX_CAP, attachment_init_meta)
     }
 
-    fn init_part_nums() -> usize {
-        INIT_ARR_SIZE // num_cpus::get_physical().next_power_of_two()
+    fn init_part_nums(user_cap: usize, max_cap: usize) -> usize {
+        min(
+            max(INIT_ARR_SIZE, user_cap / max_cap),
+            num_cpus::get_physical()
+        ).next_power_of_two()
     }
 
     pub fn with_max_capacity(
@@ -410,16 +410,16 @@ impl<
         max_cap: usize,
         attachment_init_meta: A::InitMeta,
     ) -> Self {
-        trace!("Creating chunk with capacity {}", cap);
-        if !is_power_of_2(cap) {
-            error!("Capacity is not power of 2, got {}", cap);
-            panic!("Capacity is not power of 2, got {}", cap);
-        }
-        let init_arr_len = Self::init_part_nums();
+        let init_arr_len = Self::init_part_nums(cap, max_cap);
         let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len, INIT_ARR_VER);
+        let init_partition_cap = (cap > (init_arr_len << 2))
+            .then(|| cap / init_arr_len)
+            .unwrap_or(cap)
+            .next_power_of_two();
         unsafe {
             (*partitions).iter().for_each(|part| {
-                let chunk = Chunk::<K, V, A, ALLOC>::alloc_chunk(cap, &attachment_init_meta);
+                let chunk =
+                    Chunk::<K, V, A, ALLOC>::alloc_chunk(init_partition_cap, &attachment_init_meta);
                 part.set_current(ChunkPtr::new(chunk));
                 part.set_epoch(2);
             });
@@ -430,7 +430,8 @@ impl<
                 array_version: AtomicUsize::new(INIT_ARR_VER),
             },
             count: Counter::new(),
-            init_cap: cap,
+            init_cap: init_partition_cap,
+            init_arr_len,
             max_cap,
             attachment_init_meta,
             mark: PhantomData,
@@ -754,7 +755,7 @@ impl<
 
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
-        let init_arr_len = Self::init_part_nums();
+        let init_arr_len = self.init_arr_len;
         let new_parts = PartitionArray::new(init_arr_len, INIT_ARR_VER);
         unsafe {
             (*new_parts).iter().for_each(|part| {
@@ -2931,6 +2932,7 @@ impl<
             count: Counter::new(),
             init_cap: self.init_cap,
             max_cap: self.max_cap,
+            init_arr_len: self.init_arr_len,
             attachment_init_meta: self.attachment_init_meta.clone(),
             mark: PhantomData,
         }
