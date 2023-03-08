@@ -2299,8 +2299,8 @@ impl<
                         (part_start, part_end),
                         old_chunk.base
                     );
-                    debug_assert!(part_id.0 >= part_start);
-                    debug_assert!(part_id.0 < part_end);
+                    debug_assert!(part_id.0 >= part_start, "Got {} < {}", part_id.0, part_start);
+                    debug_assert!(part_id.0 < part_end, "Got {} >= {}", part_id.0, part_end);
                     let effective_copy = &mut effective_copies[part_id.0 - part_start];
                     if !Self::migrate_entry(
                         fkey,
