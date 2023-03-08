@@ -537,7 +537,7 @@ impl<
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
-                    backoff.snooze();
+                    backoff.spin();
                     continue;
                 }
             } else {
@@ -546,7 +546,7 @@ impl<
                         continue;
                     }
                     ResizeResult::SwapFailed => {
-                        backoff.snooze();
+                        backoff.spin();
                         continue;
                     }
                     ResizeResult::NoNeed => {}
@@ -1894,7 +1894,6 @@ impl<
         check: bool,
         guard: &Guard,
     ) -> ResizeResult {
-        debug_assert!(!Self::is_copying(arr_ver));
         if check {
             let occupation = old_chunk_ptr.occupation.load(Relaxed);
             let occu_limit = old_chunk_ptr.occu_limit;
@@ -1902,12 +1901,19 @@ impl<
                 return ResizeResult::NoNeed;
             }
         }
+        if Self::is_copying(arr_ver) {
+            debug!("Array is copying");
+            return ResizeResult::SwapFailed;
+        }
         if self.need_split_array(old_chunk_ptr, part, arr_ver) {
             // Fail and let the upper caller try again
             return self
                 .split_array(arr_ver, parts, guard)
                 .map(|_| ResizeResult::Done)
-                .unwrap_or(ResizeResult::SwapFailed);
+                .unwrap_or_else(|| {
+                    debug!("Cannot split array");
+                    ResizeResult::SwapFailed
+                });
         }
         if self.need_split_chunk(part, arr_ver) {
             return self.split_migration(
@@ -1923,7 +1929,12 @@ impl<
         self.resize_migration(hash, old_chunk_ptr, old_epoch, arr_ver, part, parts, guard)
     }
 
-    fn split_array<'a>(&self, prev_arr_ver: usize, parts: &PartitionArray<K, V, A, ALLOC>, guard: &'a Guard) -> Option<usize> {
+    fn split_array<'a>(
+        &self,
+        prev_arr_ver: usize,
+        parts: &PartitionArray<K, V, A, ALLOC>,
+        guard: &'a Guard,
+    ) -> Option<usize> {
         debug_assert!(!Self::is_copying(prev_arr_ver));
 
         let backoff = Backoff::new();
@@ -1949,62 +1960,66 @@ impl<
                 new_size,
                 new_size - 1
             );
-            unsafe {
-                (0..new_size).step_by(2).for_each(|new_idx| {
-                    loop {
-                        // Copy chunk pointers from the old partition when new_idx is even number and
-                        // Put shadow chunk when the new_idx is odd number
-                        debug_assert!(new_idx % 2 == 0); // Assert new_idx is even number
-                        let old_idx = new_idx >> 1;
-                        let old_part = old_part_arr.at(ArrId(old_idx));
-                        let new_part_addr = (*new_part_arr).ptr_addr_of(ArrId(new_idx));
-                        let old_epoch = old_part.epoch();
-                        let old_current = old_part.current_chunk.load(Relaxed);
-                        let old_history = old_part.history_chunk.load(Relaxed);
-                        let old_ver = old_part.arr_ver.load(Relaxed);
-                        let expecting_history =
-                            (old_current == 0).then_some(old_history).unwrap_or(0);
-                        if Self::is_copying(old_epoch) {
-                            backoff.snooze();
-                            continue;
-                        }
-                        if !old_part
-                            .history_chunk
-                            .compare_exchange(
-                                expecting_history,
-                                DISABLED_CHUNK_PTR,
-                                AcqRel,
-                                Relaxed,
-                            )
-                            .is_ok()
-                        {
-                            backoff.spin();
-                            continue;
-                        }
-                        debug_assert_eq!(old_part.history_chunk.load(Relaxed), DISABLED_CHUNK_PTR);
-                        ptr::write(
-                            new_part_addr as *mut _,
-                            Partition::<K, V, A, ALLOC> {
-                                current_chunk: AtomicUsize::new(old_current),
-                                history_chunk: AtomicUsize::new(old_history), // We had already asserted no copying during array resize.
-                                epoch: AtomicUsize::new(old_epoch),
-                                arr_ver: AtomicUsize::new(old_ver),
-                                _marker: PhantomData,
-                            },
-                        );
-                        // Prepare the duplicated shadow partition
-                        // Here we assume that the partition is all zeroed out
-                        // Note that zero current chunk indicates shadow partition
-                        let dup_chunk = (old_current != 0)
-                            .then_some(old_current)
-                            .unwrap_or(old_history);
-                        let new_dup_part = (*new_part_arr).at(ArrId(new_idx + 1));
-                        new_dup_part.history_chunk.store(dup_chunk, Relaxed);
-                        new_dup_part.epoch.store(old_epoch, Relaxed);
-                        new_dup_part.arr_ver.store(old_ver, Relaxed);
-                        break;
+            let process_part = |new_idx| unsafe {
+                // Copy chunk pointers from the old partition when new_idx is even number and
+                // Put shadow chunk when the new_idx is odd number
+                debug_assert!(new_idx % 2 == 0); // Assert new_idx is even number
+                let old_idx = new_idx >> 1;
+                let old_part = old_part_arr.at(ArrId(old_idx));
+                let new_part_addr = (*new_part_arr).ptr_addr_of(ArrId(new_idx));
+                let old_epoch = old_part.epoch();
+                let old_current = old_part.current_chunk.load(Relaxed);
+                let old_history = old_part.history_chunk.load(Relaxed);
+                let old_ver = old_part.arr_ver.load(Relaxed);
+                let expecting_history = (old_current == 0).then_some(old_history).unwrap_or(0);
+                if Self::is_copying(old_epoch) {
+                    return false;
+                }
+                if !old_part
+                    .history_chunk
+                    .compare_exchange(expecting_history, DISABLED_CHUNK_PTR, AcqRel, Relaxed)
+                    .is_ok()
+                {
+                    return false;
+                }
+                debug_assert_eq!(old_part.history_chunk.load(Relaxed), DISABLED_CHUNK_PTR);
+                ptr::write(
+                    new_part_addr as *mut _,
+                    Partition::<K, V, A, ALLOC> {
+                        current_chunk: AtomicUsize::new(old_current),
+                        history_chunk: AtomicUsize::new(old_history), // We had already asserted no copying during array resize.
+                        epoch: AtomicUsize::new(old_epoch),
+                        arr_ver: AtomicUsize::new(old_ver),
+                        _marker: PhantomData,
+                    },
+                );
+                // Prepare the duplicated shadow partition
+                // Here we assume that the partition is all zeroed out
+                // Note that zero current chunk indicates shadow partition
+                let dup_chunk = (old_current != 0)
+                    .then_some(old_current)
+                    .unwrap_or(old_history);
+                let new_dup_part = (*new_part_arr).at(ArrId(new_idx + 1));
+                new_dup_part.history_chunk.store(dup_chunk, Relaxed);
+                new_dup_part.epoch.store(old_epoch, Relaxed);
+                new_dup_part.arr_ver.store(old_ver, Relaxed);
+                true
+            };
+            loop {
+                let all_set = (0..new_size).step_by(2).all(|idx| {
+                    let part = unsafe { (*new_part_arr).at(ArrId(idx)) };
+                    let mut been_set = part.epoch() > 0;
+                    if !been_set {
+                        been_set = process_part(idx);
                     }
+                    if !been_set {
+                        backoff.snooze();
+                    }
+                    been_set
                 });
+                if all_set {
+                    break;
+                }
             }
             // Now the new array is initialized, set its pointer to meta
             self.meta.partitions.store(new_part_arr as _, Relaxed); // Use store becasue we have the lock
@@ -2041,10 +2056,11 @@ impl<
         let home_part = parts.at(ArrId(home_id));
         if Self::is_copying(arr_ver) || self.meta.array_version.load(Acquire) != arr_ver {
             // Array split have the highest priority
+            debug!("Array version is not right");
             return ResizeResult::SwapFailed;
         }
         if !home_part.swap_in_history(old_chunk_ptr) {
-            trace!("Cannot obtain lock for split, will retry");
+            debug!("Cannot obtain lock for split, will retry");
             return ResizeResult::SwapFailed;
         }
         debug_assert_eq!(home_part.history().base, old_chunk_ptr.base);
@@ -2307,7 +2323,12 @@ impl<
                         (part_start, part_end),
                         old_chunk.base
                     );
-                    debug_assert!(part_id.0 >= part_start, "Got {} < {}", part_id.0, part_start);
+                    debug_assert!(
+                        part_id.0 >= part_start,
+                        "Got {} < {}",
+                        part_id.0,
+                        part_start
+                    );
                     debug_assert!(part_id.0 < part_end, "Got {} >= {}", part_id.0, part_end);
                     let effective_copy = &mut effective_copies[part_id.0 - part_start];
                     if !Self::migrate_entry(
