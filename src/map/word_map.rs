@@ -256,10 +256,7 @@ impl AttachmentItem<(), ()> for WordAttachmentItem {
 #[cfg(test)]
 mod test {
     use crate::{
-        map::{
-            base::{get_delayed_log},
-            *,
-        },
+        map::{base::get_delayed_log, *},
         tests_misc::{assert_all_thread_passed, hook_panic},
     };
     use alloc::sync::Arc;

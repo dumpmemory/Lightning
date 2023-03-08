@@ -7,7 +7,7 @@ use std::{
 use itertools::Itertools;
 use smallvec::{smallvec, SmallVec};
 
-use crate::{counter::Counter};
+use crate::counter::Counter;
 
 use super::*;
 
@@ -537,14 +537,16 @@ impl<
             // trace!("Insert {} at {:?}-{:?}", fkey, chunk_ptr, new_chunk_ptr);
             if let Some(new_chunk) = new_chunk {
                 if new_chunk.occupation.load(Acquire) >= new_chunk.occu_limit {
-                    backoff.spin();
+                    backoff.snooze();
                     continue;
                 }
             } else {
                 match self.check_migration(hash, chunk, epoch, part, parts, arr_ver, true, &guard) {
-                    ResizeResult::Done | ResizeResult::SwapFailed => {
-                        trace!("Retry insert due to resize");
-                        backoff.spin();
+                    ResizeResult::Done => {
+                        continue;
+                    }
+                    ResizeResult::SwapFailed => {
+                        backoff.snooze();
                         continue;
                     }
                     ResizeResult::NoNeed => {}
@@ -607,7 +609,7 @@ impl<
                 }
                 ModResult::TableFull => {
                     reset_locked_old();
-                    backoff.spin();
+                    backoff.snooze();
                     continue;
                 }
                 ModResult::Sentinel => {
@@ -999,15 +1001,11 @@ impl<
         loop {
             let arr_ver = self.current_arr_ver();
             let parts = self.partitions();
-            let ((part, _, current_epoch), obtained_arr_ver) =
+            let ((part, _, current_epoch), _obtained_arr_ver) =
                 (parts.hash_part(hash), parts.version);
             let current_chunk = part.current();
             let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
-            if arr_ver != obtained_arr_ver {
-                backoff.spin();
-                continue;
-            }
             if history_chunk == current_chunk {
                 if !Self::is_copying(current_epoch) && current_epoch == part.epoch() {
                     return (history_chunk, None, current_epoch, part, parts, arr_ver);
@@ -1881,7 +1879,7 @@ impl<
         // Statsticly, a oversized partition indicates that other partitions in the array is also full
         // Such that we don't need to check every partitions in the array for it is expensive
         // Justification: Hash functions should be able to spread entries across all partitions evenly
-        old_chunk_ptr.capacity > self.max_cap && part.arr_ver.load(Relaxed) == arr_ver
+        old_chunk_ptr.capacity >= self.max_cap && part.arr_ver.load(Relaxed) == arr_ver
     }
 
     /// Failed return old shared
@@ -1906,8 +1904,10 @@ impl<
         }
         if self.need_split_array(old_chunk_ptr, part, arr_ver) {
             // Fail and let the upper caller try again
-            self.split_array(arr_ver, guard);
-            return ResizeResult::SwapFailed;
+            return self
+                .split_array(arr_ver, parts, guard)
+                .map(|_| ResizeResult::Done)
+                .unwrap_or(ResizeResult::SwapFailed);
         }
         if self.need_split_chunk(part, arr_ver) {
             return self.split_migration(
@@ -1923,8 +1923,11 @@ impl<
         self.resize_migration(hash, old_chunk_ptr, old_epoch, arr_ver, part, parts, guard)
     }
 
-    fn split_array<'a>(&self, prev_arr_ver: usize, guard: &'a Guard) -> Option<usize> {
+    fn split_array<'a>(&self, prev_arr_ver: usize, parts: &PartitionArray<K, V, A, ALLOC>, guard: &'a Guard) -> Option<usize> {
         debug_assert!(!Self::is_copying(prev_arr_ver));
+
+        let backoff = Backoff::new();
+
         // First lock the array by swapping ver+1
         if self
             .meta
@@ -1939,7 +1942,6 @@ impl<
             debug_assert_eq!(old_part_arr.version, prev_arr_ver);
             let new_size = old_part_arr.len << 1; // x2
             let new_part_arr = PartitionArray::<K, V, A, ALLOC>::new(new_size, new_arr_ver);
-            let backoff = Backoff::new();
             debug!(
                 "- Resizing array, prev version: {}, size {} to {}, mask {:b}",
                 prev_arr_ver,
@@ -1960,15 +1962,20 @@ impl<
                         let old_current = old_part.current_chunk.load(Relaxed);
                         let old_history = old_part.history_chunk.load(Relaxed);
                         let old_ver = old_part.arr_ver.load(Relaxed);
+                        let expecting_history =
+                            (old_current == 0).then_some(old_history).unwrap_or(0);
                         if Self::is_copying(old_epoch) {
-                            // Wait until part migration is complete
-                            backoff.spin();
+                            backoff.snooze();
                             continue;
                         }
-                        let expecting_history = (old_current == 0).then_some(old_history).unwrap_or(0);
                         if !old_part
                             .history_chunk
-                            .compare_exchange(expecting_history, DISABLED_CHUNK_PTR, AcqRel, Relaxed)
+                            .compare_exchange(
+                                expecting_history,
+                                DISABLED_CHUNK_PTR,
+                                AcqRel,
+                                Relaxed,
+                            )
                             .is_ok()
                         {
                             backoff.spin();
@@ -2025,7 +2032,6 @@ impl<
         parts: &PartitionArray<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
     ) -> ResizeResult {
-        // Following steps are exactly the same as resizing
         let part_arr_ver = part.arr_ver.load(Relaxed);
         let current_arr_ver = parts.version;
         let ver_diff = current_arr_ver - part_arr_ver;
@@ -2033,6 +2039,10 @@ impl<
         let hash_id = parts.id_of_hash(hash);
         let home_id = hash_id.0 >> size_diff << size_diff;
         let home_part = parts.at(ArrId(home_id));
+        if Self::is_copying(arr_ver) || self.meta.array_version.load(Acquire) != arr_ver {
+            // Array split have the highest priority
+            return ResizeResult::SwapFailed;
+        }
         if !home_part.swap_in_history(old_chunk_ptr) {
             trace!("Cannot obtain lock for split, will retry");
             return ResizeResult::SwapFailed;
@@ -2086,9 +2096,8 @@ impl<
         for id in (home_id..ends_id).rev() {
             let shadow_part = parts.at(ArrId(id));
             let chunk = pre_gen_chunks[id - home_id];
-            shadow_part.set_current(chunk);
-            fence(AcqRel);
             shadow_part.set_epoch(old_epoch + 1);
+            shadow_part.set_current(chunk);
         }
         // Now we can do the migration
         let num_miugrated = self.migrate_entries(
@@ -2103,10 +2112,9 @@ impl<
         let new_epoch = old_epoch + 2;
         for id in (home_id..ends_id).rev() {
             let shadow_part = parts.at(ArrId(id));
+            shadow_part.set_epoch(new_epoch);
             shadow_part.set_arr_ver(current_arr_ver);
             shadow_part.set_history(ChunkPtr::null());
-            fence(AcqRel);
-            shadow_part.set_epoch(new_epoch);
             debug!(
                 "Done with split migrating to partitioned chunk {} at {}, part range {:?}, arr ver {}", 
                 shadow_part.current().base, id, (home_id, ends_id), current_arr_ver
@@ -2399,6 +2407,7 @@ impl<
         let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
         let (mut idx, mut count) = iter.next().unwrap();
+        let backoff = Backoff::new();
         loop {
             let addr = new_chunk_ins.entry_addr(idx);
             let k = Self::get_fast_key(addr);
@@ -2406,6 +2415,7 @@ impl<
                 let new_attachment = new_chunk_ins.attachment.prefetch(idx);
                 let probe = new_attachment.probe(&key);
                 if Self::get_fast_key(addr) != k {
+                    backoff.spin();
                     continue;
                 }
                 if probe {
@@ -2452,23 +2462,27 @@ impl<
                     // Here we didn't put the fval into the new chunk due to slot conflict with
                     // other thread. Need to retry
                     trace!("Migrate {} have conflict", fkey);
+                    backoff.spin();
                     continue;
                 }
             } else {
                 let v = Self::get_fast_value(addr);
                 let raw = v.val;
                 if Self::get_fast_key(addr) != k {
+                    backoff.spin();
                     continue;
                 }
                 if v.val == BACKWARD_SWAPPING_VALUE {
                     let backoff = crossbeam_utils::Backoff::new();
                     Self::wait_entry(addr, k, raw, &backoff);
                     iter = reiter();
+                    backoff.spin();
                     continue;
                 } else if v.val == FORWARD_SWAPPING_VALUE {
                     let backoff = crossbeam_utils::Backoff::new();
                     Self::wait_entry(addr, k, raw, &backoff);
                     iter.refresh_following(new_chunk_ins);
+                    backoff.spin();
                     continue;
                 }
             }
