@@ -73,6 +73,8 @@ pub const INIT_ARR_SIZE: usize = 8;
 
 pub const DISABLED_CHUNK_PTR: usize = 1;
 
+const CACHE_LINE_SIZE: usize = 8 * 1024;
+
 const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
 thread_local! {
@@ -117,6 +119,15 @@ pub enum SwapResult<'a, K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default>
     Failed,
 }
 
+pub struct ChunkSizes {
+    capacity: usize,
+    total_size: usize,
+    self_size_aligned: usize,
+    chunk_size_aligned: usize,
+    hop_size_aligned: usize,
+    page_size: usize,
+}
+
 pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
@@ -125,6 +136,7 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     empty_entries: AtomicUsize,
     total_size: usize,
     hop_base: usize,
+    origin: *mut PartitionArray<K, V, A, ALLOC>,
     pub attachment: A,
     shadow: PhantomData<(K, V, ALLOC)>,
 }
@@ -236,9 +248,23 @@ macro_rules! delay_log {
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, V, A, ALLOC> {
-    fn new(len: usize, version: usize) -> *mut Self {
+    fn new(len: usize, version: usize, chunk_size: usize) -> *mut Self {
         debug_assert!(len.is_power_of_two());
-        let obj_size = mem::size_of::<Self>() + len * mem::size_of::<Partition<K, V, A, ALLOC>>();
+
+        let parts_chunk_size = len * chunk_size;
+        let meta_parts_size = len * mem::size_of::<Partition<K, V, A, ALLOC>>();
+
+        let self_size = mem::size_of::<Self>();
+        let self_padding = align_padding(self_size, 8);
+        let self_total_size = self_size + self_padding;
+
+        let meta_parts_size = self_total_size + meta_parts_size;
+        let meta_parts_padding = align_padding(meta_parts_size, CACHE_LINE_SIZE);
+        let meta_parts_total_size = meta_parts_size + meta_parts_padding;
+
+        let parts_chunk_offset = meta_parts_size + meta_parts_padding;
+        let parts_meta_offset = meta_parts_size - parts_chunk_size;
+        let obj_size = parts_chunk_offset + parts_chunk_size;
         let raw_ptr = unsafe { libc::malloc(obj_size) };
         let arr_ptr = raw_ptr as _;
         let hash_shift = (mem::size_of::<usize>() as u32 * 8) - len.trailing_zeros();
@@ -402,7 +428,7 @@ impl<
         attachment_init_meta: A::InitMeta,
     ) -> Self {
         let init_arr_len = Self::init_part_nums(cap, max_cap);
-        let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len, INIT_ARR_VER);
+        let partitions = PartitionArray::<K, V, A, ALLOC>::new(init_arr_len, INIT_ARR_VER, 0);
         let init_partition_cap = (cap > (init_arr_len << 2))
             .then(|| cap / init_arr_len)
             .unwrap_or(cap)
@@ -749,7 +775,7 @@ impl<
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
         let init_arr_len = self.init_arr_len;
-        let new_parts = PartitionArray::new(init_arr_len, INIT_ARR_VER);
+        let new_parts = PartitionArray::new(init_arr_len, INIT_ARR_VER, 0);
         unsafe {
             (*new_parts).iter().for_each(|part| {
                 let chunk =
@@ -1952,7 +1978,7 @@ impl<
             let new_arr_ver = prev_arr_ver + 2;
             debug_assert_eq!(old_part_arr.version, prev_arr_ver);
             let new_size = old_part_arr.len << 1; // x2
-            let new_part_arr = PartitionArray::<K, V, A, ALLOC>::new(new_size, new_arr_ver);
+            let new_part_arr = PartitionArray::<K, V, A, ALLOC>::new(new_size, new_arr_ver, 0);
             debug!(
                 "- Resizing array, prev version: {}, size {} to {}, mask {:b}",
                 prev_arr_ver,
@@ -2639,7 +2665,7 @@ impl FastValue {
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALLOC> {
     const FAT_VAL: bool = mem::size_of::<V>() != 0;
 
-    fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
+    fn size_of(capacity: usize) -> ChunkSizes {
         let page_size = page_size::get_granularity();
         let self_size = mem::size_of::<Self>();
         let self_align = align_padding(self_size, 8);
@@ -2659,18 +2685,40 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_size_aligned = hop_size + hop_align;
         let total_size =
             self_size_aligned + chunk_size_aligned + hop_size_aligned + attachment_heap_size;
-        let ptr = alloc_mem::<ALLOC>(total_size) as *mut Self;
+        ChunkSizes {
+            total_size,
+            self_size_aligned,
+            chunk_size_aligned,
+            hop_size_aligned,
+            capacity,
+            page_size,
+        }
+    }
+
+    fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
+        let sizes = Self::size_of(capacity);
+        let ptr = alloc_mem::<ALLOC>(sizes.total_size) as *mut Self;
+        Self::initialize_chunk(ptr, capacity, &sizes, ptr::null_mut(), attachment_meta)
+    }
+
+    fn initialize_chunk(
+        ptr: *mut Chunk<K, V, A, ALLOC>,
+        capacity: usize,
+        sizes: &ChunkSizes,
+        origin: *mut PartitionArray<K, V, A, ALLOC>,
+        attachment_meta: &A::InitMeta,
+    ) -> *mut Self {
         let addr = ptr as usize;
-        let data_base = addr + self_size_aligned;
-        let hop_base = data_base + chunk_size_aligned;
-        let attachment_base = hop_base + hop_size_aligned;
+        let data_base = addr + sizes.self_size_aligned;
+        let hop_base = data_base + sizes.chunk_size_aligned;
+        let attachment_base = hop_base + sizes.hop_size_aligned;
         unsafe {
             Self::fill_zeros(
                 data_base,
                 hop_base,
-                chunk_size_aligned,
-                hop_size_aligned,
-                page_size,
+                sizes.chunk_size_aligned,
+                sizes.hop_size_aligned,
+                sizes.page_size,
             );
             // fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
             ptr::write(
@@ -2681,8 +2729,9 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     occupation: AtomicUsize::new(0),
                     empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
-                    total_size,
+                    total_size: sizes.total_size,
                     hop_base,
+                    origin,
                     attachment: A::new(attachment_base, attachment_meta),
                     shadow: PhantomData,
                 },
@@ -2872,7 +2921,7 @@ impl<
 {
     fn clone(&self) -> Self {
         let parts = self.partitions();
-        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version);
+        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version, 0);
         parts.iter().enumerate().for_each(|(i, part)| {
             let new_part = unsafe { &(*new_parts).at(ArrId(i)) };
             let current = part.current();
