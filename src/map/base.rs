@@ -2084,7 +2084,11 @@ impl<
                                                                     // Set the partition version to unlock array
             self.meta.array_version.store(new_arr_ver, Release);
 
-            PartitionArray::<K, V, A, ALLOC>::gc(old_part_arr_addr);
+            unsafe {
+                guard.defer_unchecked(move || {
+                    PartitionArray::<K, V, A, ALLOC>::gc(old_part_arr_addr);
+                });
+            }
 
             debug!("- Resizing array complete, prev version: {}", prev_arr_ver);
             return Some(new_arr_ver); // Done
@@ -2155,30 +2159,23 @@ impl<
         );
         let sizes = Chunk::<K, V, A, ALLOC>::size_of(self.max_cap);
         let chunks_to_alloc = ends_id - home_id;
-        let pre_gen_chunks = (0..chunks_to_alloc)
-            .map(|id| {
-                let ptr = parts.ptr_addr_of_part_chunk(ArrId(id + home_id));
-                let chunk = ChunkPtr::new(Chunk::<K, V, A, ALLOC>::initialize_chunk(
-                    ptr as _,
-                    self.max_cap,
-                    &sizes,
-                    parts.self_ptr(),
-                    &self.attachment_init_meta,
-                ));
-                chunk.occupation.store(pre_occupation, Relaxed);
-                chunk
-            })
-            .collect::<SmallVec<[ChunkPtr<_, _, _, _>; 8]>>();
-        parts.ref_cnt.fetch_add(chunks_to_alloc, AcqRel);
-
         // Enumerate all shadow partition of this home partition
         // Must do it in reverse order such that insertions are not falling to new home part
         for id in (home_id..ends_id).rev() {
             let shadow_part = parts.at(ArrId(id));
-            let chunk = pre_gen_chunks[id - home_id];
+            let ptr = parts.ptr_addr_of_part_chunk(ArrId(id));
+            let chunk = ChunkPtr::new(Chunk::<K, V, A, ALLOC>::initialize_chunk(
+                ptr as _,
+                self.max_cap,
+                &sizes,
+                parts.self_ptr(),
+                &self.attachment_init_meta,
+            ));
+            chunk.occupation.store(pre_occupation, Relaxed);
             shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_current(chunk);
         }
+        parts.ref_cnt.fetch_add(chunks_to_alloc, AcqRel);
         // Now we can do the migration
         let num_miugrated = self.migrate_entries(
             old_chunk_ptr,
