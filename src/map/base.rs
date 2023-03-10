@@ -298,7 +298,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     #[inline(always)]
     fn ptr_addr_of(&self, id: ArrId) -> usize {
         debug_assert!(id.0 < self.len);
-        let base_addr = self as *const Self as usize + mem::size_of::<Self>();
+        let base_addr = self as *const Self as usize + self.meta_array_offset;
         return base_addr + id.0 * mem::size_of::<Partition<K, V, A, ALLOC>>();
     }
 
