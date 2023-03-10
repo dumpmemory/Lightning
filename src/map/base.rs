@@ -227,7 +227,11 @@ struct PartitionArray<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     len: usize,
     hash_masking: usize,
     version: usize,
+    meta_array_offset: usize,
+    chunk_offset: usize,
     hash_shift: u32,
+    ref_cnt: AtomicUsize,
+    chunk_size: usize,
     _marker: PhantomData<(K, V, A, ALLOC)>,
 }
 
@@ -252,25 +256,27 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
         debug_assert!(len.is_power_of_two());
 
         let parts_chunk_size = len * chunk_size;
-        let meta_parts_size = len * mem::size_of::<Partition<K, V, A, ALLOC>>();
+        let meta_part_array_size = len * mem::size_of::<Partition<K, V, A, ALLOC>>();
 
         let self_size = mem::size_of::<Self>();
         let self_padding = align_padding(self_size, 8);
         let self_total_size = self_size + self_padding;
 
-        let meta_parts_size = self_total_size + meta_parts_size;
+        let meta_parts_size = self_total_size + meta_part_array_size;
         let meta_parts_padding = align_padding(meta_parts_size, CACHE_LINE_SIZE);
         let meta_parts_total_size = meta_parts_size + meta_parts_padding;
 
-        let parts_chunk_offset = meta_parts_size + meta_parts_padding;
-        let parts_meta_offset = meta_parts_size - parts_chunk_size;
-        let obj_size = parts_chunk_offset + parts_chunk_size;
-        let raw_ptr = unsafe { libc::malloc(obj_size) };
+        let meta_array_offset = self_total_size;
+        let chunk_offset = meta_parts_total_size;
+
+        let total_size = meta_parts_total_size + parts_chunk_size;
+
+        let raw_ptr = unsafe { libc::malloc(total_size) };
         let arr_ptr = raw_ptr as _;
         let hash_shift = (mem::size_of::<usize>() as u32 * 8) - len.trailing_zeros();
         let hash_masking = len - 1;
         unsafe {
-            libc::memset(raw_ptr, 0, obj_size);
+            libc::memset(raw_ptr, 0, meta_parts_size);
             ptr::write(
                 arr_ptr,
                 Self {
@@ -278,6 +284,10 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
                     hash_masking,
                     hash_shift,
                     version,
+                    chunk_size,
+                    meta_array_offset,
+                    chunk_offset,
+                    ref_cnt: AtomicUsize::new(1),
                     _marker: PhantomData,
                 },
             );
@@ -2921,7 +2931,8 @@ impl<
 {
     fn clone(&self) -> Self {
         let parts = self.partitions();
-        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version, 0);
+        let original_chunk_size = parts.chunk_size;
+        let new_parts = PartitionArray::<K, V, A, ALLOC>::new(parts.len, parts.version, original_chunk_size);
         parts.iter().enumerate().for_each(|(i, part)| {
             let new_part = unsafe { &(*new_parts).at(ArrId(i)) };
             let current = part.current();
