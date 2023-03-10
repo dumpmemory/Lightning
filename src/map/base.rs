@@ -67,7 +67,7 @@ pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
-pub const DEFAULT_PARTITION_MAX_CAP: usize = 64 * 1024;
+pub const DEFAULT_PARTITION_MAX_CAP: usize = 256 * 1024;
 pub const INIT_ARR_VER: usize = 0;
 pub const INIT_ARR_SIZE: usize = 8;
 
