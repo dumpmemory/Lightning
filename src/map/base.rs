@@ -2018,6 +2018,20 @@ impl<
                 new_size,
                 new_size - 1
             );
+            unsafe {
+                for i in 0..new_size {
+                    let chunk_addr = (*new_part_arr).ptr_addr_of_part_chunk(ArrId(i));
+                    Chunk::<K, V, A, ALLOC>::initialize_chunk(
+                        chunk_addr as _,
+                        self.max_cap,
+                        &chunk_sizes,
+                        new_part_arr as _,
+                        true,
+                        false,
+                        &self.attachment_init_meta,
+                    );
+                }
+            }
             let process_part = |new_idx| unsafe {
                 // Copy chunk pointers from the old partition when new_idx is even number and
                 // Put shadow chunk when the new_idx is odd number
@@ -2093,6 +2107,7 @@ impl<
             debug!("- Resizing array complete, prev version: {}", prev_arr_ver);
             return Some(new_arr_ver); // Done
         } else {
+            debug!("Cannot obtain lock for split array, will retry");
             return None;
         }
     }
@@ -2120,7 +2135,14 @@ impl<
             return ResizeResult::SwapFailed;
         }
         if !home_part.swap_in_history(old_chunk_ptr) {
-            debug!("Cannot obtain lock for split, will retry");
+            debug!(
+                "Cannot obtain lock for split migration home at {}, will retry",
+                home_id
+            );
+            debug_assert!(
+                !home_part.current().is_null(),
+                "Home partition must be available"
+            );
             return ResizeResult::SwapFailed;
         }
         debug_assert_eq!(home_part.history().base, old_chunk_ptr.base);
@@ -2146,7 +2168,7 @@ impl<
         let ends_id = ((hash_id.0 >> size_diff) + 1) << size_diff;
         let chunk_capacity = old_chunk_ptr.capacity;
         // A presertive size which still allow new insertions to the chunks
-        let pre_occupation = (chunk_capacity >> 1) + (chunk_capacity >> 2);
+        let pre_occupation = (chunk_capacity >> 1) + (chunk_capacity >> 3);
         debug_assert!(size_diff > 0);
         debug!(
             "Split {} from {} to {}, ver from {} to {}, ver_diff: {}, size_diff: {}, chunk base {}, part {:?}, part_arr_ver {}", 
@@ -2169,6 +2191,8 @@ impl<
                 self.max_cap,
                 &sizes,
                 parts.self_ptr(),
+                false,
+                true,
                 &self.attachment_init_meta,
             ));
             chunk.occupation.store(pre_occupation, Relaxed);
@@ -2738,7 +2762,15 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     fn alloc_chunk(capacity: usize, attachment_meta: &A::InitMeta) -> *mut Self {
         let sizes = Self::size_of(capacity);
         let ptr = alloc_mem::<ALLOC>(sizes.total_size) as *mut Self;
-        Self::initialize_chunk(ptr, capacity, &sizes, ptr::null_mut(), attachment_meta)
+        Self::initialize_chunk(
+            ptr,
+            capacity,
+            &sizes,
+            ptr::null_mut(),
+            true,
+            true,
+            attachment_meta,
+        )
     }
 
     fn initialize_chunk(
@@ -2746,6 +2778,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         capacity: usize,
         sizes: &ChunkSizes,
         origin: *const PartitionArray<K, V, A, ALLOC>,
+        fill_zeros: bool,
+        init_header: bool,
         attachment_meta: &A::InitMeta,
     ) -> *mut Self {
         let addr = ptr as usize;
@@ -2753,29 +2787,32 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_base = data_base + sizes.chunk_size_aligned;
         let attachment_base = hop_base + sizes.hop_size_aligned;
         unsafe {
-            Self::fill_zeros(
-                data_base,
-                hop_base,
-                sizes.chunk_size_aligned,
-                sizes.hop_size_aligned,
-                sizes.page_size,
-            );
-            // fill_zeros(data_base, chunk_size_aligned + hop_size_aligned);
-            ptr::write(
-                ptr,
-                Self {
-                    base: data_base,
-                    capacity,
-                    occupation: AtomicUsize::new(0),
-                    empty_entries: AtomicUsize::new(0),
-                    occu_limit: occupation_limit(capacity),
-                    total_size: sizes.total_size,
+            if fill_zeros {
+                Self::fill_zeros(
+                    data_base,
                     hop_base,
-                    origin,
-                    attachment: A::new(attachment_base, attachment_meta),
-                    shadow: PhantomData,
-                },
-            )
+                    sizes.chunk_size_aligned,
+                    sizes.hop_size_aligned,
+                    sizes.page_size,
+                );
+            }
+            if init_header {
+                ptr::write(
+                    ptr,
+                    Self {
+                        base: data_base,
+                        capacity,
+                        occupation: AtomicUsize::new(0),
+                        empty_entries: AtomicUsize::new(0),
+                        occu_limit: occupation_limit(capacity),
+                        total_size: sizes.total_size,
+                        hop_base,
+                        origin,
+                        attachment: A::new(attachment_base, attachment_meta),
+                        shadow: PhantomData,
+                    },
+                )
+            }
         };
         ptr
     }
