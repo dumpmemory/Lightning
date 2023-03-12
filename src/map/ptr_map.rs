@@ -2,6 +2,8 @@ use std::cell::Cell;
 use std::intrinsics::{forget, prefetch_read_data};
 use std::mem::MaybeUninit;
 
+use ahash::AHasher;
+
 use crate::obj_alloc::{self, Aligned, AllocGuard};
 
 use super::base::*;
@@ -15,7 +17,7 @@ pub struct PtrHashMap<
     K: Clone + Hash + Eq,
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = DefaultHasher,
+    H: Hasher + Default = AHasher,
 > {
     pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,

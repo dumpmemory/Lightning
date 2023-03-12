@@ -1,3 +1,5 @@
+use ahash::AHasher;
+
 use super::base::*;
 use super::word_map::*;
 use super::*;
@@ -15,7 +17,7 @@ pub struct LiteHashMap<
     K: Copy + Hash + Eq,
     V: Copy,
     ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = DefaultHasher,
+    H: Hasher + Default = AHasher,
 > {
     table: LiteTable<V, ALLOC, H>,
     shadow: PhantomData<(K, V, H)>,

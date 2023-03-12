@@ -1,5 +1,6 @@
 use crate::align_padding;
 use alloc::vec::Vec;
+use rand::Rng;
 use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
@@ -67,7 +68,7 @@ pub trait Map<K, V: Clone> {
 }
 
 #[inline(always)]
-pub fn hash<H: Hasher + Default>(num: usize) -> usize {
+pub fn hash_num<H: Hasher + Default>(num: usize) -> usize {
     let mut hasher = H::default();
     hasher.write_usize(num);
     hasher.finish() as usize
@@ -137,7 +138,9 @@ fn is_power_of_2(x: usize) -> bool {
 
 #[inline(always)]
 fn occupation_limit(cap: usize) -> usize {
-    (cap as f64 * 0.85f64) as usize
+    let mut rng = rand::thread_rng();
+    let ratio = rng.gen_range(0.9..0.95);
+    (cap as f64 * ratio) as usize
 }
 
 #[inline(always)]

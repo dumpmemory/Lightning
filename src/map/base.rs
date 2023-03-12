@@ -8,6 +8,7 @@ use itertools::Itertools;
 use smallvec::{smallvec, SmallVec};
 
 use crate::counter::Counter;
+use rand::prelude::*;
 
 use super::*;
 
@@ -2138,7 +2139,7 @@ impl<
         if !home_part.swap_in_history(old_chunk_ptr) {
             debug!(
                 "Cannot obtain lock for split migration home at {}, hash at {}, current {}, history {}, total parts {}, hash ({}){:0>64b}, will retry",
-                home_id, hash_id.0, home_part.current().base, home_part.history().base, parts.len, hash, hash
+                home_id, hash_id.0, home_part.current().ptr as usize, home_part.history().ptr as usize, parts.len, hash, hash
             );
             debug_assert!(
                 !home_part.current().is_null(),
@@ -2387,7 +2388,7 @@ impl<
                         continue;
                     }
                     let hash = if Self::WORD_KEY {
-                        hash_key::<_, H>(&fkey)
+                        hash_num::<H>(fkey)
                     } else {
                         fkey
                     };
@@ -2615,7 +2616,7 @@ impl<
         let fkey = Self::offset_k_in(fkey);
         if Self::WORD_KEY {
             debug_assert!(fkey > 0);
-            (fkey, hash_key::<_, H>(&fkey))
+            (fkey, hash_num::<H>(fkey))
         } else {
             let hash = hash_key::<_, H>(key);
             (hash as FKey, hash)
