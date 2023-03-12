@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     cmp::{max, min},
-    collections::{self, VecDeque},
+    collections::{self, VecDeque}, sync::atomic::AtomicU32,
 };
 
 use itertools::Itertools;
@@ -132,8 +132,8 @@ pub struct ChunkSizes {
 pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
     base: usize,
-    occu_limit: usize,
-    occupation: AtomicUsize,
+    occu_limit: u32,
+    occupation: AtomicU32,
     empty_entries: AtomicUsize,
     total_size: usize,
     hop_base: usize,
@@ -598,15 +598,17 @@ impl<
                     continue;
                 }
             } else {
-                match self.check_migration(hash, chunk, epoch, part, parts, arr_ver, &guard) {
-                    ResizeResult::Done => {
-                        continue;
+                if self.need_migration(chunk) {
+                    match self.do_migration(hash, chunk, epoch, part, parts, arr_ver, &guard) {
+                        ResizeResult::Done => {
+                            continue;
+                        }
+                        ResizeResult::SwapFailed => {
+                            backoff.spin();
+                            continue;
+                        }
+                        ResizeResult::NoNeed => {}
                     }
-                    ResizeResult::SwapFailed => {
-                        backoff.spin();
-                        continue;
-                    }
-                    ResizeResult::NoNeed => {}
                 }
             }
             let modify_chunk = new_chunk.unwrap_or(chunk);
@@ -666,7 +668,7 @@ impl<
                 }
                 ModResult::TableFull => {
                     reset_locked_old();
-                    backoff.snooze();
+                    self.do_migration(hash, chunk, epoch, part, parts, arr_ver, &guard);
                     continue;
                 }
                 ModResult::Sentinel => {
@@ -1516,7 +1518,7 @@ impl<
         let mut idx = 0;
         let cap = chunk.capacity;
         let mut counter = 0;
-        let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed));
+        let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed) as _);
         let cap_mask = chunk.cap_mask();
         while counter < cap {
             idx &= cap_mask;
@@ -1901,7 +1903,8 @@ impl<
             return Err(dest_idx);
         }
     }
-
+    
+    #[inline(always)]
     pub fn out_of_hop_range(
         home_idx: usize,
         dest_idx: usize,
@@ -1916,10 +1919,12 @@ impl<
         }
     }
 
+    #[inline(always)]
     fn current_arr_ver(&self) -> usize {
         self.meta.array_version.load(Relaxed)
     }
 
+    #[inline(always)]
     fn need_split_chunk<'a>(&self, part: &Partition<K, V, A, ALLOC>, arr_ver: usize) -> bool {
         // Check if the chunk need to be split
         // During array splitting, partition pointers would be duplicated
@@ -1927,6 +1932,7 @@ impl<
         part.arr_ver.load(Relaxed) < arr_ver
     }
 
+    #[inline(always)]
     fn need_split_array<'a>(
         &self,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
@@ -1940,8 +1946,17 @@ impl<
         old_chunk_ptr.capacity == self.max_cap && part.arr_ver.load(Relaxed) == arr_ver
     }
 
-    /// Failed return old shared
-    fn check_migration<'a>(
+    #[inline(always)]
+    fn need_migration<'a>(
+        &self,
+        old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
+    ) -> bool {
+        let occupation = old_chunk_ptr.occupation.load(Relaxed);
+        let occu_limit = old_chunk_ptr.occu_limit;
+        return occupation > occu_limit 
+    }
+
+    fn do_migration<'a>(
         &self,
         hash: usize,
         old_chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>,
@@ -1951,11 +1966,6 @@ impl<
         arr_ver: usize,
         guard: &Guard,
     ) -> ResizeResult {
-        let occupation = old_chunk_ptr.occupation.load(Relaxed);
-        let occu_limit = old_chunk_ptr.occu_limit;
-        if occupation < occu_limit {
-            return ResizeResult::NoNeed;
-        }
         if self.need_split_chunk(part, arr_ver) {
             return self.split_migration(
                 hash,
@@ -2197,7 +2207,7 @@ impl<
                 true,
                 &self.attachment_init_meta,
             ));
-            chunk.occupation.store(pre_occupation, Relaxed);
+            chunk.occupation.store(pre_occupation as _, Relaxed);
             shadow_part.set_epoch(old_epoch + 1);
             shadow_part.set_current(chunk);
         }
@@ -2281,7 +2291,7 @@ impl<
         }
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
-            (*new_chunk).occupation.store(pre_occupation, Relaxed);
+            (*new_chunk).occupation.store(pre_occupation as _, Relaxed);
         }
         let new_chunk_ptr = ChunkPtr::new(new_chunk);
         debug_assert_ne!(new_chunk_ptr.base, old_chunk_ptr.base);
@@ -2452,7 +2462,7 @@ impl<
                 let new_chunk = part.current();
                 if effective_copy > pre_occupation {
                     let delta = effective_copy - pre_occupation;
-                    new_chunk.occupation.fetch_add(delta, Relaxed);
+                    new_chunk.occupation.fetch_add(delta as _, Relaxed);
                     trace!(
                         "Occupation {}-{} offset {}",
                         effective_copy,
@@ -2461,7 +2471,7 @@ impl<
                     );
                 } else if effective_copy < pre_occupation {
                     let delta = pre_occupation - effective_copy;
-                    new_chunk.occupation.fetch_sub(delta, Relaxed);
+                    new_chunk.occupation.fetch_sub(delta as _, Relaxed);
                     trace!(
                         "Occupation {}-{} offset neg {}",
                         effective_copy,
@@ -2804,7 +2814,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     Self {
                         base: data_base,
                         capacity,
-                        occupation: AtomicUsize::new(0),
+                        occupation: AtomicU32::new(0),
                         empty_entries: AtomicUsize::new(0),
                         occu_limit: occupation_limit(capacity),
                         total_size: sizes.total_size,
@@ -2978,7 +2988,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         error!("Chunk dump: {:?}", res);
     }
 
-    pub fn occupation(&self) -> (usize, usize, usize) {
+    pub fn occupation(&self) -> (u32, u32, usize) {
         (
             self.occu_limit,
             self.occupation.load(Relaxed),

@@ -137,10 +137,10 @@ fn is_power_of_2(x: usize) -> bool {
 }
 
 #[inline(always)]
-fn occupation_limit(cap: usize) -> usize {
+fn occupation_limit(cap: usize) -> u32 {
     let mut rng = rand::thread_rng();
     let ratio = rng.gen_range(0.9..0.95);
-    (cap as f64 * ratio) as usize
+    (cap as f64 * ratio) as _
 }
 
 #[inline(always)]
