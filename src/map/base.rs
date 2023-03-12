@@ -1955,10 +1955,6 @@ impl<
         if occupation < occu_limit {
             return ResizeResult::NoNeed;
         }
-        if Self::is_copying(arr_ver) {
-            debug!("Array is copying");
-            return ResizeResult::SwapFailed;
-        }
         if self.need_split_chunk(part, arr_ver) {
             return self.split_migration(
                 hash,
@@ -2044,7 +2040,7 @@ impl<
                 let old_history = old_part.history_chunk.load(Relaxed);
                 let old_ver = old_part.arr_ver.load(Relaxed);
                 let expecting_history = (old_current == 0).then_some(old_history).unwrap_or(0);
-                if Self::is_copying(old_epoch) {
+                if Self::is_copying(old_epoch) || old_current == old_history {
                     return false;
                 }
                 if !old_part
@@ -2054,7 +2050,12 @@ impl<
                 {
                     return false;
                 }
+                if old_epoch != old_part.epoch() {
+                    old_part.history_chunk.store(expecting_history, Release);
+                    return false;
+                }
                 debug_assert_eq!(old_part.history_chunk.load(Relaxed), DISABLED_CHUNK_PTR);
+                debug_assert_ne!(old_current, old_history);
                 ptr::write(
                     new_part_addr as *mut _,
                     Partition::<K, V, A, ALLOC> {
@@ -2085,7 +2086,7 @@ impl<
                         been_set = process_part(idx);
                     }
                     if !been_set {
-                        backoff.snooze();
+                        backoff.spin();
                     }
                     been_set
                 });
@@ -2129,15 +2130,15 @@ impl<
         let hash_id = parts.id_of_hash(hash);
         let home_id = hash_id.0 >> size_diff << size_diff;
         let home_part = parts.at(ArrId(home_id));
-        if Self::is_copying(arr_ver) || self.meta.array_version.load(Acquire) != arr_ver {
+        if self.meta.array_version.load(Acquire) != arr_ver {
             // Array split have the highest priority
-            debug!("Array version is not right");
+            debug!("Array version is not matching");
             return ResizeResult::SwapFailed;
         }
         if !home_part.swap_in_history(old_chunk_ptr) {
             debug!(
-                "Cannot obtain lock for split migration home at {}, will retry",
-                home_id
+                "Cannot obtain lock for split migration home at {}, hash at {}, current {}, history {}, total parts {}, hash ({}){:0>64b}, will retry",
+                home_id, hash_id.0, home_part.current().base, home_part.history().base, parts.len, hash, hash
             );
             debug_assert!(
                 !home_part.current().is_null(),

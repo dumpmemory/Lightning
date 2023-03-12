@@ -155,5 +155,5 @@ fn alloc_mem<A: GlobalAlloc + Default>(size: usize) -> usize {
 
 #[inline(always)]
 unsafe fn fill_zeros(addr: usize, size: usize) {
-    ptr::write_bytes(addr as *mut u8, 0, size);
+    libc::memset(addr as _, 0, size);
 }
