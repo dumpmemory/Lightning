@@ -5,6 +5,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use ahash::AHasher;
+
 use crate::map::base::*;
 use crate::map::obj_map::WordObjectAttachment;
 
@@ -14,7 +16,7 @@ type ObjectTable<V, ALLOC, H> =
 pub struct TTLCache<
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = DefaultHasher,
+    H: Hasher + Default = AHasher,
 > {
     table: ObjectTable<V, ALLOC, H>,
 }

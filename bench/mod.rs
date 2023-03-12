@@ -330,7 +330,7 @@ fn run_perf_test_set<'a, T: Collection>(
         let of = vec![{
             println!("Oversize");
             let oversize_measurement =
-                run_and_measure_mix::<T>(Mix::insert_heavy(), 1.0, load, 0.0, stride);
+                run_and_measure_mix::<T>(Mix::insert_heavy(), 2.1, load - 1, 0.0, stride);
             write_measurements(
                 &format!(
                     "{}_{}_oversize.csv",

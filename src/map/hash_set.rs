@@ -1,3 +1,5 @@
+use ahash::AHasher;
+
 use super::base::*;
 use super::fat_map::HashTable;
 use super::*;
@@ -5,7 +7,7 @@ use super::*;
 pub struct HashSet<
     T: Clone + Hash + Eq,
     ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = DefaultHasher,
+    H: Hasher + Default = AHasher,
 > {
     table: HashTable<T, (), ALLOC, H>,
     shadow: PhantomData<H>,

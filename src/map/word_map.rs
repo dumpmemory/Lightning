@@ -1,3 +1,5 @@
+use ahash::AHasher;
+
 use super::base::*;
 use super::*;
 
@@ -14,7 +16,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> WordMap<ALLOC, H> {
 }
 
 #[derive(Clone)]
-pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = DefaultHasher> {
+pub struct WordMap<ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = AHasher> {
     table: WordTable<ALLOC, H>,
 }
 
@@ -89,7 +91,7 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
 pub struct WordMutexGuard<
     'a,
     ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = DefaultHasher,
+    H: Hasher + Default = AHasher,
 > {
     table: &'a WordTable<ALLOC, H>,
     key: FKey,

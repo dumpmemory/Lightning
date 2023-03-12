@@ -1,3 +1,5 @@
+use ahash::AHasher;
+
 use super::base::*;
 use super::*;
 
@@ -131,7 +133,7 @@ pub struct LockingHashMap<
     K: Clone + Hash + Eq,
     V: Clone,
     ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = DefaultHasher,
+    H: Hasher + Default = AHasher,
 > {
     table: HashTable<K, V, ALLOC, H>,
     shadow: PhantomData<H>,
