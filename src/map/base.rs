@@ -253,11 +253,18 @@ macro_rules! delay_log {
 }
 
 impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, V, A, ALLOC> {
+
+    const PARTITION_SIZE_BYTES: usize = mem::size_of::<Partition<K, V, A, ALLOC>>();
+    const PARTITION_SIZE_SHIFT: u32 = Self::PARTITION_SIZE_BYTES.trailing_zeros();    
+
     fn new(len: usize, version: usize, chunk_size: usize) -> *mut Self {
+        
         debug_assert!(len.is_power_of_two());
+        debug_assert_eq!(len << Self::PARTITION_SIZE_SHIFT, len * Self::PARTITION_SIZE_BYTES);
+        debug_assert_eq!(2, 2usize.next_power_of_two());
 
         let parts_chunk_size = len * chunk_size;
-        let meta_part_array_size = len * mem::size_of::<Partition<K, V, A, ALLOC>>();
+        let meta_part_array_size = len << Self::PARTITION_SIZE_SHIFT;
 
         let self_size = mem::size_of::<Self>();
         let self_padding = align_padding(self_size, 8);
@@ -310,8 +317,9 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> PartitionArray<K, 
     #[inline(always)]
     fn ptr_addr_of(&self, id: ArrId) -> usize {
         debug_assert!(id.0 < self.len);
+        debug_assert_eq!(id.0 * Self::PARTITION_SIZE_BYTES, id.0 << Self::PARTITION_SIZE_SHIFT);
         let base_addr = self.self_ptr() as usize + self.meta_array_offset;
-        return base_addr + id.0 * mem::size_of::<Partition<K, V, A, ALLOC>>();
+        return base_addr + (id.0 << Self::PARTITION_SIZE_SHIFT);
     }
 
     #[inline(always)]
