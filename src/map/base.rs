@@ -2035,7 +2035,7 @@ impl<
             let old_part_arr = PartitionArray::<K, V, A, ALLOC>::ref_from_addr(old_part_arr_addr);
             let new_arr_ver = prev_arr_ver + 2;
             debug_assert_eq!(old_part_arr.version, prev_arr_ver);
-            let new_size = old_part_arr.len << 1; // x2
+            let new_size = old_part_arr.len << 2; // x4
             let chunk_sizes = Chunk::<K, V, A, ALLOC>::size_of(self.max_cap);
             let chunk_total_size = chunk_sizes.total_size;
             let new_part_arr =
@@ -2065,7 +2065,7 @@ impl<
                 // Copy chunk pointers from the old partition when new_idx is even number and
                 // Put shadow chunk when the new_idx is odd number
                 debug_assert!(new_idx % 2 == 0); // Assert new_idx is even number
-                let old_idx = new_idx >> 1;
+                let old_idx = new_idx >> 2;
                 let old_part = old_part_arr.at(ArrId(old_idx));
                 let new_part_addr = (*new_part_arr).ptr_addr_of(ArrId(new_idx));
                 let old_epoch = old_part.epoch();
@@ -2102,17 +2102,19 @@ impl<
                 // Prepare the duplicated shadow partition
                 // Here we assume that the partition is all zeroed out
                 // Note that zero current chunk indicates shadow partition
-                let dup_chunk = (old_current != 0)
+                for i in 1..4 {
+                    let dup_chunk = (old_current != 0)
                     .then_some(old_current)
                     .unwrap_or(old_history);
-                let new_dup_part = (*new_part_arr).at(ArrId(new_idx + 1));
-                new_dup_part.history_chunk.store(dup_chunk, Relaxed);
-                new_dup_part.epoch.store(old_epoch, Relaxed);
-                new_dup_part.arr_ver.store(old_ver, Relaxed);
+                    let new_dup_part = (*new_part_arr).at(ArrId(new_idx + i));
+                    new_dup_part.history_chunk.store(dup_chunk, Relaxed);
+                    new_dup_part.epoch.store(old_epoch, Relaxed);
+                    new_dup_part.arr_ver.store(old_ver, Relaxed);
+                }
                 true
             };
             loop {
-                let all_set = (0..new_size).step_by(2).all(|idx| {
+                let all_set = (0..new_size).step_by(4).all(|idx| {
                     let part = unsafe { (*new_part_arr).at(ArrId(idx)) };
                     let mut been_set = part.epoch() > 0;
                     if !been_set {
@@ -2159,7 +2161,7 @@ impl<
         let part_arr_ver = part.arr_ver.load(Relaxed);
         let current_arr_ver = parts.version;
         let ver_diff = current_arr_ver - part_arr_ver;
-        let size_diff = ver_diff >> 1;
+        let size_diff = ver_diff;
         let hash_id = parts.id_of_hash(hash);
         let home_id = hash_id.0 >> size_diff << size_diff;
         let home_part = parts.at(ArrId(home_id));
@@ -2202,7 +2204,7 @@ impl<
         let ends_id = ((hash_id.0 >> size_diff) + 1) << size_diff;
         let chunk_capacity = old_chunk_ptr.capacity;
         // A presertive size which still allow new insertions to the chunks
-        let pre_occupation = (chunk_capacity >> 1) + (chunk_capacity >> 3);
+        let pre_occupation = chunk_capacity >> 1;
         debug_assert!(size_diff > 0);
         debug!(
             "Split {} from {} to {}, ver from {} to {}, ver_diff: {}, size_diff: {}, chunk base {}, part {:?}, part_arr_ver {}", 

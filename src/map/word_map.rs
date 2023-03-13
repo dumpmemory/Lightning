@@ -738,7 +738,7 @@ mod test {
     #[test]
     fn checking_inserion_with_migrations() {
         let _ = env_logger::try_init();
-        hook_panic();
+        //hook_panic();
         let repeats: usize = base::DEFAULT_PARTITION_MAX_CAP * base::INIT_ARR_SIZE;
         let multplier = 1 << 32;
         let map = Arc::new(WordMap::<System>::with_capacity(8));
