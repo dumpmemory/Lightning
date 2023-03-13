@@ -132,14 +132,9 @@ impl Default for PassthroughHasher {
 }
 
 #[inline(always)]
-fn is_power_of_2(x: usize) -> bool {
-    (x != 0) && ((x & (x - 1)) == 0)
-}
-
-#[inline(always)]
 fn occupation_limit(cap: usize) -> u32 {
-    let mut rng = rand::thread_rng();
-    let ratio = rng.gen_range(0.9..0.95);
+    //let mut rng = rand::thread_rng();
+    let ratio = 0.85; // rng.gen_range(0.75..0.85);
     (cap as f64 * ratio) as _
 }
 
