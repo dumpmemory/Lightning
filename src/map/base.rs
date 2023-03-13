@@ -48,6 +48,7 @@ pub const VAL_BIT_MASK: FVal = VAL_PRIME_VAL_MASK & (!VAL_KEY_DIGEST_MASK);
 pub const VAL_PRIME_BIT: FVal = HEADING_BIT;
 pub const VAL_PRIME_VAL_MASK: FVal = !VAL_PRIME_BIT;
 pub const ENTRY_SIZE: usize = mem::size_of::<EntryTemplate>();
+pub const ENTRY_SIZE_SHIFT: u32 = ENTRY_SIZE.trailing_zeros();
 pub const VAL_MUTEX_BIT: FVal = HEADING_BIT >> 1; // The second heading bit
 pub const WORD_MUTEX_DATA_BIT_MASK: FVal = !0 << 2 >> 2;
 
@@ -64,7 +65,7 @@ pub const FVAL_VER_BIT_MASK: FVal = !0 << FVAL_VER_POS & VAL_BIT_MASK;
 pub const FVAL_VAL_BIT_MASK: FVal = !FVAL_VER_BIT_MASK;
 
 pub const HOP_BYTES: usize = mem::size_of::<HopBits>();
-pub const HOP_TUPLE_BYTES: usize = mem::size_of::<HopTuple>();
+pub const HOP_TUPLE_SHIFT: u32 = mem::size_of::<HopTuple>().trailing_zeros();
 pub const NUM_HOPS: usize = HOP_BYTES * 8;
 pub const ALL_HOPS_TAKEN: HopBits = !0;
 
@@ -2921,7 +2922,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn entry_addr(&self, idx: usize) -> usize {
-        self.base + idx * ENTRY_SIZE
+        self.base + (idx << ENTRY_SIZE_SHIFT)
     }
 
     #[inline(always)]
@@ -2931,14 +2932,14 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn get_hop_bits(&self, idx: usize) -> HopBits {
-        let addr = self.hop_base + HOP_TUPLE_BYTES * idx;
+        let addr = self.hop_base + (idx << HOP_TUPLE_SHIFT);
         unsafe { intrinsics::atomic_load_acquire(addr as *mut HopBits) }
     }
 
     #[inline(always)]
     fn is_bit_set(&self, idx: usize, pos: usize) -> bool {
         unsafe {
-            let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+            let ptr = (self.hop_base + (idx << HOP_TUPLE_SHIFT)) as *mut HopBits;
             let set_bit = 1 << pos;
             intrinsics::atomic_load_acquire(ptr) & set_bit > 0
         }
@@ -2946,7 +2947,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn set_hop_bit(&self, idx: usize, pos: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+        let ptr = (self.hop_base + (idx << HOP_TUPLE_SHIFT)) as *mut HopBits;
         let set_bit = 1 << pos;
         unsafe {
             debug_assert!(
@@ -2961,7 +2962,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn unset_hop_bit(&self, idx: usize, pos: usize) {
-        let ptr = (self.hop_base + HOP_TUPLE_BYTES * idx) as *mut HopBits;
+        let ptr = (self.hop_base + (idx << HOP_TUPLE_SHIFT)) as *mut HopBits;
         let unset_bit = 1 << pos;
         unsafe {
             debug_assert!(
@@ -3183,7 +3184,7 @@ fn dealloc_mem<A: GlobalAlloc + Default + Default>(ptr: usize, size: usize) {
 
 #[inline]
 fn chunk_size_of(cap: usize) -> usize {
-    cap * ENTRY_SIZE
+    cap << ENTRY_SIZE_SHIFT
 }
 
 impl<V> Debug for ModResult<V> {
