@@ -2056,20 +2056,6 @@ impl<
                 new_size,
                 new_size - 1
             );
-            unsafe {
-                for i in 0..new_size {
-                    let chunk_addr = (*new_part_arr).ptr_addr_of_part_chunk(ArrId(i));
-                    Chunk::<K, V, A, ALLOC>::initialize_chunk(
-                        chunk_addr as _,
-                        self.max_cap,
-                        &chunk_sizes,
-                        new_part_arr as _,
-                        true,
-                        false,
-                        &self.attachment_init_meta,
-                    );
-                }
-            }
             let process_part = |new_idx| unsafe {
                 // Copy chunk pointers from the old partition when new_idx is even number and
                 // Put shadow chunk when the new_idx is odd number
@@ -2236,8 +2222,6 @@ impl<
                 self.max_cap,
                 &sizes,
                 parts.self_ptr(),
-                false,
-                true,
                 &self.attachment_init_meta,
             ));
             chunk.occupation.store(pre_occupation as _, Relaxed);
@@ -2788,7 +2772,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let chunk_align = align_padding(chunk_size, chunk_alignment);
         let chunk_size_aligned = chunk_size + chunk_align;
         let attachment_heap_size = A::heap_entry_size() * capacity;
-        let hop_size = HOP_TUPLE_SIZE * capacity;
+        let hop_size = capacity << HOP_TUPLE_SHIFT;
         let hop_alignment = if hop_size >= page_size { page_size } else { 8 };
         let hop_align = align_padding(hop_size, hop_alignment);
         let hop_size_aligned = hop_size + hop_align;
@@ -2812,8 +2796,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
             capacity,
             &sizes,
             ptr::null_mut(),
-            true,
-            true,
             attachment_meta,
         )
     }
@@ -2823,8 +2805,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         capacity: usize,
         sizes: &ChunkSizes,
         origin: *const PartitionArray<K, V, A, ALLOC>,
-        fill_zeros: bool,
-        init_header: bool,
         attachment_meta: &A::InitMeta,
     ) -> *mut Self {
         let addr = ptr as usize;
@@ -2832,32 +2812,28 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let hop_base = data_base + sizes.chunk_size_aligned;
         let attachment_base = hop_base + sizes.hop_size_aligned;
         unsafe {
-            if fill_zeros {
-                Self::fill_zeros(
-                    data_base,
+            Self::fill_zeros(
+                data_base,
+                hop_base,
+                sizes.chunk_size_aligned,
+                sizes.hop_size_aligned,
+                sizes.page_size,
+            );
+            ptr::write(
+                ptr,
+                Self {
+                    base: data_base,
+                    capacity,
+                    occupation: AtomicU32::new(0),
+                    empty_entries: AtomicUsize::new(0),
+                    occu_limit: occupation_limit(capacity),
+                    total_size: sizes.total_size,
                     hop_base,
-                    sizes.chunk_size_aligned,
-                    sizes.hop_size_aligned,
-                    sizes.page_size,
-                );
-            }
-            if init_header {
-                ptr::write(
-                    ptr,
-                    Self {
-                        base: data_base,
-                        capacity,
-                        occupation: AtomicU32::new(0),
-                        empty_entries: AtomicUsize::new(0),
-                        occu_limit: occupation_limit(capacity),
-                        total_size: sizes.total_size,
-                        hop_base,
-                        origin,
-                        attachment: A::new(attachment_base, attachment_meta),
-                        shadow: PhantomData,
-                    },
-                )
-            }
+                    origin,
+                    attachment: A::new(attachment_base, attachment_meta),
+                    shadow: PhantomData,
+                },
+            )
         };
         ptr
     }
