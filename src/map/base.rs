@@ -612,7 +612,7 @@ impl<
                 (parts.hash_part(hash), parts.version);
             let current_chunk = part.current();
             let history_chunk = part.history();
-            // let is_copying = Self::is_copying(epoch);
+            let is_copying = Self::is_copying(epoch);
             let chunk;
             let mut new_chunk = None;
             if history_chunk.is_disabled() || part.epoch() != epoch {
@@ -633,7 +633,7 @@ impl<
             } else {
                 chunk = current_chunk;
             }
-            if new_chunk.is_none() && self.need_migration(chunk) {
+            if !is_copying && new_chunk.is_none() && self.need_migration(chunk) {
                 match self.do_migration(hash, chunk, epoch, part, parts, arr_ver, &guard) {
                     ResizeResult::Done => {
                         continue;
@@ -2439,15 +2439,17 @@ impl<
                     );
                     debug_assert!(
                         part_id.0 >= part_start,
-                        "Got hashed {} < lower bound {}",
+                        "Got hashed {} < lower bound {}, hash {:0>64b}",
                         part_id.0,
-                        part_start
+                        part_start,
+                        hash
                     );
                     debug_assert!(
                         part_id.0 < part_end,
-                        "Got hashed {} >= upper bound {}",
+                        "Got hashed {} >= upper bound {}, hash {:0>64b}",
                         part_id.0,
-                        part_end
+                        part_end,
+                        hash
                     );
                     let effective_copy = &mut effective_copies[part_id.0 - part_start];
                     if !Self::migrate_entry(
