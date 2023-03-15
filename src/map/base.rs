@@ -2410,6 +2410,10 @@ impl<
                     // It can also be other thread have moved this key-value pair to the new chunk
                 }
                 _ => {
+                    if fkey == EMPTY_KEY {
+                        backoff.spin();
+                        continue;
+                    }
                     if Self::get_fast_key(old_address) != fkey {
                         backoff.spin();
                         continue;
