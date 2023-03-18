@@ -1,6 +1,5 @@
 use crate::align_padding;
 use alloc::vec::Vec;
-use rand::Rng;
 use core::alloc::{GlobalAlloc, Layout};
 use core::hash::Hasher;
 use core::marker::PhantomData;
@@ -10,6 +9,7 @@ use core::sync::atomic::{compiler_fence, fence, AtomicUsize};
 use core::{intrinsics, mem, ptr};
 use crossbeam_epoch::*;
 use crossbeam_utils::Backoff;
+use rand::Rng;
 use std::alloc::System;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
