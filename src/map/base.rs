@@ -636,7 +636,9 @@ impl<
             } else if current_chunk.is_null() {
                 chunk = history_chunk;
             } else if history_chunk != current_chunk {
-                self.emergency_migrate_slabs(hash, history_chunk, part, parts, &guard);
+                if self.iter_migrate_slabs(hash, history_chunk, part, parts, &guard) {
+                    continue;
+                }
                 if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
                     backoff.spin();
                     continue;
@@ -2326,20 +2328,20 @@ impl<
         ResizeResult::Done
     }
 
-    fn migrate_hash_slab(
+    fn iter_migrate_slabs(
         &self,
         hash: usize,
         old_chunk: ChunkPtr<K, V, A, ALLOC>,
         part: &Partition<K, V, A, ALLOC>,
         parts: &PartitionArray<K, V, A, ALLOC>,
         guard: &crossbeam_epoch::Guard,
-    ) {
+    ) -> bool {
         let part_arr_ver = part.arr_ver.load(Relaxed);
         let current_arr_ver = parts.version;
         let ver_diff = current_arr_ver - part_arr_ver;
         if ver_diff == 0 {
             // Wil not migrate resize with slab migration
-            return;
+            return false;
         }
         let size_diff = ver_diff;
         let hash_id = parts.id_of_hash(hash);
@@ -2347,52 +2349,17 @@ impl<
         let home_id = region << size_diff;
         let ends_id = (region + 1) << size_diff;
         let part_range = (home_id, ends_id);
-        let hash_slab_id = hash & MIGRATION_TOTAL_BITS_MASK;
-
-        debug_assert!(old_chunk.copied.len() > 1, "Actual copied {}", old_chunk.copied.len());
-
         let home_part = parts.at(ArrId(home_id));
         if home_part.current() == home_part.history() {
-            return;
+            return false;
         }
-        if !self.migrate_slab(hash_slab_id, old_chunk, parts, &part_range, guard) {
-            return;
-        }
-
-        if old_chunk.all_slabs_migrated() {
+        let migrated = (0..MIGRATION_TOTAL_BITS)
+            .map(|i| self.migrate_slab(i, old_chunk, parts, &part_range, guard))
+            .fold(false, |a, b| a || b);
+        if migrated {
             Self::wrapup_split_migration(old_chunk, parts, &part_range, guard);
         }
-    }
-
-    fn emergency_migrate_slabs(
-        &self,
-        hash: usize,
-        old_chunk: ChunkPtr<K, V, A, ALLOC>,
-        part: &Partition<K, V, A, ALLOC>,
-        parts: &PartitionArray<K, V, A, ALLOC>,
-        guard: &crossbeam_epoch::Guard
-    ) {
-        let part_arr_ver = part.arr_ver.load(Relaxed);
-        let current_arr_ver = parts.version;
-        let ver_diff = current_arr_ver - part_arr_ver;
-        if ver_diff == 0 {
-            // Wil not migrate resize with slab migration
-            return;
-        }
-        let size_diff = ver_diff;
-        let hash_id = parts.id_of_hash(hash);
-        let region = hash_id.0 >> size_diff;
-        let home_id = region << size_diff;
-        let ends_id = (region + 1) << size_diff;
-        let part_range = (home_id, ends_id);
-        let home_part = parts.at(ArrId(home_id));
-        if home_part.current() == home_part.history() {
-            return;
-        }
-        (0..MIGRATION_TOTAL_BITS).for_each(|i| {
-            self.migrate_slab(i, old_chunk, parts, &part_range, guard);
-        });
-        Self::wrapup_split_migration(old_chunk, parts, &part_range, guard);
+        return migrated;
     }
 
     fn wrapup_split_migration(
@@ -2404,7 +2371,7 @@ impl<
         let pre_occupation = old_chunk.capacity >> 1;
         let home_part = parts.at(ArrId(*home_id));
         let old_epoch = home_part.epoch.load(Relaxed);
-        if !Self::is_copying(old_epoch){
+        if !Self::is_copying(old_epoch) {
             return;
         }
         if !home_part.erase_history(guard) {
@@ -2412,7 +2379,8 @@ impl<
         }
         let part_range = (*home_id, *ends_id);
         let current_arr_ver = parts.version;
-        let num_migrated = Self::update_new_chunk_counter(&old_chunk, parts, pre_occupation, &part_range);
+        let num_migrated =
+            Self::update_new_chunk_counter(&old_chunk, parts, pre_occupation, &part_range);
         let new_epoch = old_epoch + 1;
         for id in (*home_id..*ends_id).rev() {
             let shadow_part = parts.at(ArrId(id));
@@ -3139,15 +3107,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     unsafe fn init_copied(&self, size: usize) {
         let ptr: *const _ = &self.copied;
         let vec = smallvec![0usize; size];
-        ptr::replace(
-            ptr as *mut SmallVec<[usize; COPIED_ARR_SIZE]>,
-            vec,
-        );
+        ptr::replace(ptr as *mut SmallVec<[usize; COPIED_ARR_SIZE]>, vec);
         fence(Release);
-    }
-
-    fn all_slabs_migrated(&self) -> bool {
-        self.migrations.iter().all(|bs| bs.load(Acquire) == !0)
     }
 }
 
