@@ -636,12 +636,11 @@ impl<
             } else if current_chunk.is_null() {
                 chunk = history_chunk;
             } else if history_chunk != current_chunk {
-                // if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
-                //     self.emergency_migrate_slabs(hash, history_chunk, part, parts, &guard)
-                // } else if is_copying {
-                //     self.migrate_hash_slab(hash, history_chunk, part, parts, &guard);
-                // }
                 self.emergency_migrate_slabs(hash, history_chunk, part, parts, &guard);
+                if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
+                    backoff.spin();
+                    continue;
+                }
                 new_chunk = Some(current_chunk);
                 chunk = history_chunk
             } else {
@@ -2408,11 +2407,11 @@ impl<
         if !Self::is_copying(old_epoch){
             return;
         }
-        let part_range = (*home_id, *ends_id);
-        let current_arr_ver = parts.version;
         if !home_part.erase_history(guard) {
             return;
         }
+        let part_range = (*home_id, *ends_id);
+        let current_arr_ver = parts.version;
         let num_migrated = Self::update_new_chunk_counter(&old_chunk, parts, pre_occupation, &part_range);
         let new_epoch = old_epoch + 1;
         for id in (*home_id..*ends_id).rev() {
@@ -2466,13 +2465,15 @@ impl<
             .filter(|(_, n)| *n > 0)
             .map(|(effective_copy, part_id)| {
                 let effective_copy = effective_copy.swap(0, AcqRel);
-                let id = ArrId(part_id);
-                let part = partitions.at(id);
-                let new_chunk = part.current();
-                debug_assert!(effective_copy <= pre_occupation);
-                new_chunk
-                    .occupation
-                    .fetch_sub((pre_occupation - effective_copy) as _, AcqRel);
+                if effective_copy > 0 {
+                    let id = ArrId(part_id);
+                    let part = partitions.at(id);
+                    let new_chunk = part.current();
+                    debug_assert!(effective_copy <= pre_occupation);
+                    new_chunk
+                        .occupation
+                        .fetch_sub((pre_occupation - effective_copy) as _, AcqRel);
+                }
                 effective_copy
             })
             .sum()
@@ -3137,9 +3138,10 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     unsafe fn init_copied(&self, size: usize) {
         let ptr: *const _ = &self.copied;
+        let vec = smallvec![0usize; size];
         ptr::replace(
             ptr as *mut SmallVec<[usize; COPIED_ARR_SIZE]>,
-            smallvec![0usize; size],
+            vec,
         );
         fence(Release);
     }
