@@ -6,6 +6,7 @@ use std::{
 };
 
 use itertools::Itertools;
+use libc::IFA_F_HOMEADDRESS;
 use smallvec::{smallvec, SmallVec};
 
 use crate::counter::Counter;
@@ -438,16 +439,20 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Partition<K, V, A,
     fn set_current<'a>(&self, chunk_ptr: ChunkPtr<'a, K, V, A, ALLOC>) {
         self.current_chunk.store(chunk_ptr.ptr as _, Release);
     }
-    fn erase_history<'a>(&self, guard: &'a Guard) {
+    fn erase_history<'a>(&self, guard: &'a Guard) -> bool {
         unsafe {
             let old_addr = self.history_chunk.swap(0, AcqRel);
-            guard.defer_unchecked(move || {
-                (ChunkPtr::<'a, K, V, A, ALLOC> {
-                    ptr: old_addr as _,
-                    _marker: PhantomData,
-                })
-                .dispose();
-            });
+            let is_some = old_addr != 0;
+            if is_some {
+                guard.defer_unchecked(move || {
+                    (ChunkPtr::<'a, K, V, A, ALLOC> {
+                        ptr: old_addr as _,
+                        _marker: PhantomData,
+                    })
+                    .dispose();
+                });
+            }
+            return is_some;
         }
     }
 }
@@ -631,10 +636,12 @@ impl<
             } else if current_chunk.is_null() {
                 chunk = history_chunk;
             } else if history_chunk != current_chunk {
-                if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
-                    backoff.spin();
-                    continue;
-                }
+                // if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
+                //     self.emergency_migrate_slabs(hash, history_chunk, part, parts, &guard)
+                // } else if is_copying {
+                //     self.migrate_hash_slab(hash, history_chunk, part, parts, &guard);
+                // }
+                self.emergency_migrate_slabs(hash, history_chunk, part, parts, &guard);
                 new_chunk = Some(current_chunk);
                 chunk = history_chunk
             } else {
@@ -660,12 +667,6 @@ impl<
             };
             let lock_old = new_chunk
                 .map(|_| self.modify_entry(chunk, hash, key, fkey, ModOp::Lock, true, &guard));
-            // match &lock_old {
-            //     Some(ModResult::Sentinel)=> {
-            //         continue;
-            //     }
-            //     _ => {}
-            // }
             let value_insertion =
                 self.modify_entry(modify_chunk, hash, key, fkey, mod_op, true, &guard);
             let result;
@@ -1316,12 +1317,14 @@ impl<
                             (FORWARD_SWAPPING_VALUE, false) => {
                                 Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
                                 iter.refresh_following(chunk);
+                                backoff.spin();
                                 continue 'MAIN;
                             }
                             (BACKWARD_SWAPPING_VALUE, false) => {
                                 // Reprobe
                                 Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
                                 iter = reiter();
+                                backoff.spin();
                                 continue 'MAIN;
                             }
                             (_, false) => {
@@ -1348,12 +1351,14 @@ impl<
                             // Only check terminal probing
                             Self::wait_entry(addr, k, raw, &backoff);
                             iter = reiter();
+                            backoff.spin();
                             continue 'MAIN;
                         }
                     }
                     FORWARD_SWAPPING_VALUE => {
                         Self::wait_entry(addr, k, raw, &backoff);
                         iter.refresh_following(chunk);
+                        backoff.spin();
                         continue 'MAIN;
                     }
                     _ => {}
@@ -2215,6 +2220,9 @@ impl<
         );
         let sizes = Chunk::<K, V, A, ALLOC>::size_of(self.max_cap);
         let chunks_to_alloc = ends_id - home_id;
+        unsafe {
+            old_chunk_ptr.init_copied(chunks_to_alloc);
+        }
         // Enumerate all shadow partition of this home partition
         // Must do it in reverse order such that insertions are not falling to new home part
         for id in (home_id..ends_id).rev() {
@@ -2232,10 +2240,7 @@ impl<
             shadow_part.set_current(chunk);
         }
         parts.ref_cnt.fetch_add(chunks_to_alloc, AcqRel);
-        // Now we can do the migration
-        let parts_range = (home_id, ends_id);
-        self.migrate_all_entries(old_chunk_ptr, parts, &parts_range, guard);
-        Self::wrapup_split_migration(old_chunk_ptr, parts, &parts_range, guard);
+        // Now real migrations will be triggered by other threads such that we can have parallelism
         ResizeResult::Done
     }
 
@@ -2345,6 +2350,12 @@ impl<
         let part_range = (home_id, ends_id);
         let hash_slab_id = hash & MIGRATION_TOTAL_BITS_MASK;
 
+        debug_assert!(old_chunk.copied.len() > 1, "Actual copied {}", old_chunk.copied.len());
+
+        let home_part = parts.at(ArrId(home_id));
+        if home_part.current() == home_part.history() {
+            return;
+        }
         if !self.migrate_slab(hash_slab_id, old_chunk, parts, &part_range, guard) {
             return;
         }
@@ -2375,6 +2386,10 @@ impl<
         let home_id = region << size_diff;
         let ends_id = (region + 1) << size_diff;
         let part_range = (home_id, ends_id);
+        let home_part = parts.at(ArrId(home_id));
+        if home_part.current() == home_part.history() {
+            return;
+        }
         (0..MIGRATION_TOTAL_BITS).for_each(|i| {
             self.migrate_slab(i, old_chunk, parts, &part_range, guard);
         });
@@ -2390,12 +2405,15 @@ impl<
         let pre_occupation = old_chunk.capacity >> 1;
         let home_part = parts.at(ArrId(*home_id));
         let old_epoch = home_part.epoch.load(Relaxed);
+        if !Self::is_copying(old_epoch){
+            return;
+        }
         let part_range = (*home_id, *ends_id);
         let current_arr_ver = parts.version;
-        debug_assert!(Self::is_copying(old_epoch));
-        let num_migrated =
-            Self::update_new_chunk_counter(&old_chunk, parts, pre_occupation, &part_range);
-        home_part.erase_history(guard);
+        if !home_part.erase_history(guard) {
+            return;
+        }
+        let num_migrated = Self::update_new_chunk_counter(&old_chunk, parts, pre_occupation, &part_range);
         let new_epoch = old_epoch + 1;
         for id in (*home_id..*ends_id).rev() {
             let shadow_part = parts.at(ArrId(id));
@@ -2447,7 +2465,7 @@ impl<
             .zip(*part_start..*part_end)
             .filter(|(_, n)| *n > 0)
             .map(|(effective_copy, part_id)| {
-                let effective_copy = effective_copy.load(Acquire);
+                let effective_copy = effective_copy.swap(0, AcqRel);
                 let id = ArrId(part_id);
                 let part = partitions.at(id);
                 let new_chunk = part.current();
@@ -2506,10 +2524,6 @@ impl<
         let mut base_addr = old_chunk.base + (start_id << ENTRY_SIZE_SHIFT);
         let bound_addr = old_chunk.base + (end_id << ENTRY_SIZE_SHIFT);
 
-        debug!(
-            "Migrating slab {}, entry {} to {}",
-            slab_id, start_id, end_id
-        );
         if cfg!(debug_assertions) && slab_mult_shift > 0 {
             if slab_id == MIGRATION_TOTAL_BITS - 1 {
                 assert_eq!(end_id, chunk_cap);
