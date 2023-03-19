@@ -2355,6 +2355,33 @@ impl<
         }
     }
 
+    fn emergency_migrate_slabs(
+        &self,
+        hash: usize,
+        old_chunk: ChunkPtr<K, V, A, ALLOC>,
+        part: &Partition<K, V, A, ALLOC>,
+        parts: &PartitionArray<K, V, A, ALLOC>,
+        guard: &crossbeam_epoch::Guard
+    ) {
+        let part_arr_ver = part.arr_ver.load(Relaxed);
+        let current_arr_ver = parts.version;
+        let ver_diff = current_arr_ver - part_arr_ver;
+        if ver_diff == 0 {
+            // Wil not migrate resize with slab migration
+            return;
+        }
+        let size_diff = ver_diff;
+        let hash_id = parts.id_of_hash(hash);
+        let region = hash_id.0 >> size_diff;
+        let home_id = region << size_diff;
+        let ends_id = (region + 1) << size_diff;
+        let part_range = (home_id, ends_id);
+        (0..MIGRATION_TOTAL_BITS).for_each(|i| {
+            self.migrate_slab(i, old_chunk, parts, &part_range, guard);
+        });
+        Self::wrapup_split_migration(old_chunk, parts, &part_range, guard);
+    }
+
     fn wrapup_split_migration(
         old_chunk: ChunkPtr<K, V, A, ALLOC>,
         parts: &PartitionArray<K, V, A, ALLOC>,
