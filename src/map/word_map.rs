@@ -88,11 +88,8 @@ impl<ALLOC: GlobalAlloc + Default, H: Hasher + Default> Map<FKey, FVal> for Word
     }
 }
 
-pub struct WordMutexGuard<
-    'a,
-    ALLOC: GlobalAlloc + Default = System,
-    H: Hasher + Default = AHasher,
-> {
+pub struct WordMutexGuard<'a, ALLOC: GlobalAlloc + Default = System, H: Hasher + Default = AHasher>
+{
     table: &'a WordTable<ALLOC, H>,
     key: FKey,
     value: FVal,

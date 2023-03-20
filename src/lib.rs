@@ -5,6 +5,7 @@
 #![feature(atomic_mut_ptr)]
 #![feature(thread_id_value)]
 #![feature(maybe_uninit_uninit_array)]
+#![feature(mem_copy_fn)]
 
 #[macro_use]
 extern crate log;
