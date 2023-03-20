@@ -21,7 +21,7 @@ pub type HopTuple = (HopBits, HopVer);
 
 const HOP_TUPLE_SIZE: usize = mem::size_of::<HopTuple>();
 
-pub const ENABLE_HOPSOTCH: bool = cfg!(feature = "hopsotch");
+pub const ENABLE_HOPSOTCH: bool = false; // cfg!(feature = "hopsotch");
 pub const ENABLE_SKIPPING: bool = true & ENABLE_HOPSOTCH;
 
 pub const EMPTY_KEY: FKey = 0;
@@ -83,11 +83,9 @@ type MigrationBits = AtomicU8;
 const MIGRATION_BITS_SIZE: usize = mem::size_of::<MigrationBits>() * 8;
 const MIGRATION_BITS_SHIFT: u32 = MIGRATION_BITS_SIZE.trailing_zeros();
 const MIGRATION_BITS_MASK: usize = MIGRATION_BITS_SIZE - 1;
-const MIGRATION_TOTAL_BITS: usize = 256;
+const MIGRATION_TOTAL_BITS: usize = 64;
 const MIGRATION_BITS_ARR_SIZE: usize = MIGRATION_TOTAL_BITS / MIGRATION_BITS_SIZE;
 const MIGRATION_TOTAL_BITS_SHIFT: u32 = MIGRATION_TOTAL_BITS.trailing_zeros();
-const MIGRATION_TOTAL_BITS_MASK: usize = MIGRATION_TOTAL_BITS - 1;
-type MigrationChanges = SmallVec<[usize; 8]>;
 
 const DELAY_LOG_CAP: usize = 10;
 #[cfg(debug_assertions)]
