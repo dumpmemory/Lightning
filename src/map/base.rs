@@ -78,6 +78,7 @@ pub const INIT_ARR_SIZE: usize = 8;
 pub const DISABLED_CHUNK_PTR: usize = 1;
 
 const CACHE_LINE_SIZE: usize = 64;
+const KEY_SIZE: usize = mem::size_of::<FKey>();
 
 type MigrationBits = AtomicU8;
 const MIGRATION_BITS_SIZE: usize = mem::size_of::<MigrationBits>() * 8;
@@ -1649,7 +1650,7 @@ impl<
 
     #[inline(always)]
     fn cas_tombstone(entry_addr: usize, original: FVal) -> bool {
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         unsafe {
             intrinsics::atomic_cxchg_acqrel_relaxed(addr as *mut FVal, original, TOMBSTONE_VALUE).1
         }
@@ -1657,14 +1658,14 @@ impl<
     #[inline(always)]
     fn cas_value(entry_addr: usize, original: FVal, value: FVal) -> (FVal, bool) {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         unsafe { intrinsics::atomic_cxchg_acqrel_relaxed(addr as *mut FVal, original, value) }
     }
 
     #[inline(always)]
     fn store_value(entry_addr: usize, value: FVal) {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         unsafe { intrinsics::atomic_store_release(addr as *mut FVal, value) }
     }
 
@@ -1679,14 +1680,14 @@ impl<
 
     #[inline(always)]
     fn store_raw_value(entry_addr: usize, value: FVal) {
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         unsafe { intrinsics::atomic_store_release(addr as *mut FVal, value) };
     }
 
     #[inline(always)]
     fn store_sentinel(entry_addr: usize) {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         unsafe { intrinsics::atomic_store_release(addr as *mut FVal, SENTINEL_VALUE) };
     }
 
@@ -1697,7 +1698,7 @@ impl<
 
     #[inline(always)]
     fn cas_sentinel(entry_addr: usize, original: FVal) -> bool {
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         let (val, done) = unsafe {
             intrinsics::atomic_cxchg_acqrel_relaxed(addr as *mut FVal, original, SENTINEL_VALUE)
         };
@@ -2988,7 +2989,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     #[inline(always)]
     fn get_fast_value(entry_addr: usize) -> FastValue {
         debug_assert!(entry_addr > 0);
-        let addr = entry_addr + mem::size_of::<FKey>();
+        let addr = entry_addr + KEY_SIZE;
         let val = unsafe { intrinsics::atomic_load_acquire(addr as *mut FVal) };
         FastValue::new(val)
     }
