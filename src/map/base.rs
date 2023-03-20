@@ -144,6 +144,7 @@ pub struct ChunkSizes {
 const COPIED_ARR_SIZE: usize = 8;
 pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     capacity: usize,
+    cap_mask: usize,
     base: usize,
     occu_limit: u32,
     occupation: AtomicU32,
@@ -1166,7 +1167,7 @@ impl<
         epoch: usize,
     ) -> Option<(FastValue, usize, A::Item)> {
         debug_assert_ne!(chunk.ptr as usize, 0);
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         let home_idx = hash & cap_mask;
         let reiter = || chunk.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
@@ -1252,7 +1253,7 @@ impl<
         read_attachment: bool,
         _guard: &'a Guard,
     ) -> ModResult<V> {
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         let backoff = crossbeam_utils::Backoff::new();
         let home_idx = hash & cap_mask;
         let reiter = || chunk.iter_slot_skipable(home_idx, false);
@@ -1547,7 +1548,7 @@ impl<
         let cap = chunk.capacity;
         let mut counter = 0;
         let mut res = Vec::with_capacity(chunk.occupation.load(Relaxed) as _);
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         while counter < cap {
             idx &= cap_mask;
             let addr = chunk.entry_addr(idx);
@@ -1753,7 +1754,7 @@ impl<
             return Ok(dest_idx);
         }
 
-        let cap_mask = chunk.cap_mask();
+        let cap_mask = chunk.cap_mask;
         let cap = chunk.capacity;
         let target_key_digest = key_digest(fkey);
         let overflowing = home_idx + hops >= cap;
@@ -2640,7 +2641,7 @@ impl<
         // Since the entry is primed, it is safe to read the key
         let old_attachment = old_chunk_ins.attachment.prefetch(old_idx);
         let key = old_attachment.get_key();
-        let cap_mask = new_chunk_ins.cap_mask();
+        let cap_mask = new_chunk_ins.cap_mask;
         let home_idx = hash & cap_mask;
         let reiter = || new_chunk_ins.iter_slot_skipable(home_idx, false);
         let mut iter = reiter();
@@ -2916,6 +2917,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                 Self {
                     base: data_base,
                     capacity,
+                    cap_mask: capacity - 1,
                     occupation: AtomicU32::new(0),
                     empty_entries: AtomicUsize::new(0),
                     occu_limit: occupation_limit(capacity),
@@ -2997,11 +2999,6 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
     }
 
     #[inline(always)]
-    fn cap_mask(&self) -> usize {
-        self.capacity - 1
-    }
-
-    #[inline(always)]
     fn get_hop_bits(&self, idx: usize) -> HopBits {
         let addr = self.hop_base + (idx << HOP_TUPLE_SHIFT);
         unsafe { intrinsics::atomic_load_acquire(addr as *mut HopBits) }
@@ -3057,7 +3054,7 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
         let pos = 0;
         SlotIter {
             num_probed: 0,
-            cap_mask: self.cap_mask(),
+            cap_mask: self.cap_mask,
             home_idx,
             hop_bits,
             pos,
