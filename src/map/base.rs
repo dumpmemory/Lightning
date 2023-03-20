@@ -83,7 +83,7 @@ type MigrationBits = AtomicU8;
 const MIGRATION_BITS_SIZE: usize = mem::size_of::<MigrationBits>() * 8;
 const MIGRATION_BITS_SHIFT: u32 = MIGRATION_BITS_SIZE.trailing_zeros();
 const MIGRATION_BITS_MASK: usize = MIGRATION_BITS_SIZE - 1;
-const MIGRATION_TOTAL_BITS: usize = 64;
+const MIGRATION_TOTAL_BITS: usize = 16;
 const MIGRATION_TOTAL_MASK: usize = MIGRATION_TOTAL_BITS - 1;
 const MIGRATION_BITS_ARR_SIZE: usize = MIGRATION_TOTAL_BITS / MIGRATION_BITS_SIZE;
 const MIGRATION_TOTAL_BITS_SHIFT: u32 = MIGRATION_TOTAL_BITS.trailing_zeros();
@@ -151,7 +151,8 @@ pub struct Chunk<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> {
     total_size: usize,
     hop_base: usize,
     origin: *const PartitionArray<K, V, A, ALLOC>,
-    migrations: Migrations,
+    migrating: Migrations,
+    migrated: Migrations,
     copied: SmallVec<[AtomicUsize; COPIED_ARR_SIZE]>,
     pub attachment: A,
     shadow: PhantomData<(K, V, ALLOC)>,
@@ -2352,14 +2353,11 @@ impl<
         if home_part.current() == home_part.history() {
             return false;
         }
-        let migrated = (0..MIGRATION_TOTAL_BITS)
+        (0..MIGRATION_TOTAL_BITS)
             .map(|i| (i + hash) & MIGRATION_TOTAL_MASK)
             .map(|i| self.migrate_slab(i, old_chunk, parts, &part_range, guard))
             .fold(false, |a, b| a || b);
-        if migrated {
-            Self::wrapup_split_migration(old_chunk, parts, &part_range, guard);
-        }
-        return migrated;
+        return Self::wrapup_split_migration(old_chunk, parts, &part_range, guard);
     }
 
     fn wrapup_split_migration(
@@ -2367,15 +2365,20 @@ impl<
         parts: &PartitionArray<K, V, A, ALLOC>,
         (home_id, ends_id): &(usize, usize),
         guard: &crossbeam_epoch::Guard,
-    ) {
+    ) -> bool {
+        if !old_chunk.migrated.iter().all(|bs| {
+            bs.load(Acquire) == !0
+        }) {
+            return false;
+        } 
         let pre_occupation = old_chunk.capacity >> 1;
         let home_part = parts.at(ArrId(*home_id));
         let old_epoch = home_part.epoch.load(Relaxed);
         if !Self::is_copying(old_epoch) {
-            return;
+            return false;
         }
         if !home_part.erase_history(guard) {
-            return;
+            return false;
         }
         let part_range = (*home_id, *ends_id);
         let current_arr_ver = parts.version;
@@ -2400,6 +2403,7 @@ impl<
             num_migrated,
             new_epoch
         );
+        return true;
     }
 
     fn migrate_all_entries(
@@ -2461,13 +2465,14 @@ impl<
         // Prepare to slab migration parameters
         let slab_bits_arr_id = slab_id >> MIGRATION_BITS_SHIFT;
         let slab_bits_id = slab_id & MIGRATION_BITS_MASK;
-        let slabt_bit_set = 1 << slab_bits_id;
+        let slab_bit_set = 1 << slab_bits_id;
 
         // Set the slab bits to claim the slab
-        let slab_bits_atom = &old_chunk.migrations[slab_bits_arr_id];
+        let slab_bits_atom = &old_chunk.migrating[slab_bits_arr_id];
+        let slab_bits_fin_atom = &old_chunk.migrated[slab_bits_arr_id];
         loop {
             let current_slab_bits = slab_bits_atom.load(Relaxed);
-            let new_slab_bits = current_slab_bits | slabt_bit_set;
+            let new_slab_bits = current_slab_bits | slab_bit_set;
             if new_slab_bits == current_slab_bits {
                 // Slab claimed, exit
                 return false;
@@ -2608,6 +2613,7 @@ impl<
         for (i, n) in local_copied.into_iter().enumerate() {
             old_chunk.copied[i].fetch_add(n, Relaxed);
         }
+        slab_bits_fin_atom.fetch_or(slab_bit_set, Relaxed);
         return true;
     }
 
@@ -2927,7 +2933,8 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
                     total_size: sizes.total_size,
                     hop_base,
                     origin,
-                    migrations: mem::zeroed(),
+                    migrating: mem::zeroed(),
+                    migrated: mem::zeroed(),
                     copied: smallvec![],
                     attachment: A::new(attachment_base, attachment_meta),
                     shadow: PhantomData,
