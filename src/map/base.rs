@@ -80,11 +80,11 @@ pub const DISABLED_CHUNK_PTR: usize = 1;
 const CACHE_LINE_SIZE: usize = 64;
 const KEY_SIZE: usize = mem::size_of::<FKey>();
 
-type MigrationBits = AtomicU8;
+type MigrationBits = AtomicU32;
 const MIGRATION_BITS_SIZE: usize = mem::size_of::<MigrationBits>() * 8;
 const MIGRATION_BITS_SHIFT: u32 = MIGRATION_BITS_SIZE.trailing_zeros();
 const MIGRATION_BITS_MASK: usize = MIGRATION_BITS_SIZE - 1;
-const MIGRATION_TOTAL_BITS: usize = 16;
+const MIGRATION_TOTAL_BITS: usize = 32;
 const MIGRATION_TOTAL_MASK: usize = MIGRATION_TOTAL_BITS - 1;
 const MIGRATION_BITS_ARR_SIZE: usize = MIGRATION_TOTAL_BITS / MIGRATION_BITS_SIZE;
 const MIGRATION_TOTAL_BITS_SHIFT: u32 = MIGRATION_TOTAL_BITS.trailing_zeros();
@@ -629,6 +629,7 @@ impl<
             let is_copying = Self::is_copying(epoch);
             let chunk;
             let mut new_chunk = None;
+            let mut can_migrate_slabs = false;
             if history_chunk.is_disabled() || part.epoch() != epoch {
                 backoff.spin();
                 continue;
@@ -638,13 +639,11 @@ impl<
             } else if current_chunk.is_null() {
                 chunk = history_chunk;
             } else if history_chunk != current_chunk {
-                if self.iter_migrate_slabs(hash, history_chunk, part, parts, &guard) {
-                    continue;
-                }
                 if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
-                    backoff.spin();
+                    self.iter_migrate_slabs(hash, history_chunk, part, parts, &guard);
                     continue;
                 }
+                can_migrate_slabs = true;
                 new_chunk = Some(current_chunk);
                 chunk = history_chunk
             } else {
@@ -834,7 +833,9 @@ impl<
                 }
                 None => {}
             }
-            if !is_copying && new_chunk.is_none() && self.need_migration(chunk) {
+            if can_migrate_slabs {
+                self.iter_migrate_slabs(hash, history_chunk, part, parts, &guard);
+            } else if !is_copying && new_chunk.is_none() && self.need_migration(chunk) {
                 self.do_migration(hash, chunk, epoch, part, parts, arr_ver, &guard);
             }
             return res;
@@ -2448,7 +2449,6 @@ impl<
         _guard: &crossbeam_epoch::Guard,
     ) -> bool {
         trace!("Migrating entries from {:?}", old_chunk.base);
-        let backoff = crossbeam_utils::Backoff::new();
 
         // Prepare to slab migration parameters
         let slab_bits_arr_id = slab_id >> MIGRATION_BITS_SHIFT;
@@ -2458,22 +2458,11 @@ impl<
         // Set the slab bits to claim the slab
         let slab_bits_atom = &old_chunk.migrating[slab_bits_arr_id];
         let slab_bits_fin_atom = &old_chunk.migrated[slab_bits_arr_id];
-        loop {
-            let current_slab_bits = slab_bits_atom.load(Relaxed);
-            let new_slab_bits = current_slab_bits | slab_bit_set;
-            if new_slab_bits == current_slab_bits {
-                // Slab claimed, exit
-                return false;
-            }
-            if slab_bits_atom
-                .compare_exchange(current_slab_bits, new_slab_bits, AcqRel, Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-            backoff.spin();
+        let fetched_bits = slab_bits_atom.fetch_or(slab_bit_set, Relaxed);
+        if fetched_bits | slab_bit_set == fetched_bits {
+            // If the bit already set
+            return false;
         }
-        backoff.reset();
 
         let chunk_cap = old_chunk.capacity;
         let slab_mult_shift = chunk_cap
@@ -2496,6 +2485,7 @@ impl<
         let mut local_copied: SmallVec<[usize; COPIED_ARR_SIZE]> =
             smallvec![0usize; old_chunk.copied.len()];
 
+        let backoff = crossbeam_utils::Backoff::new();
         while key_addr < bound_addr {
             // iterate the old chunk to extract entries that is NOT empty
             let fkey = Self::get_fast_key(key_addr);
@@ -2984,13 +2974,12 @@ impl<K, V, A: Attachment<K, V>, ALLOC: GlobalAlloc + Default> Chunk<K, V, A, ALL
 
     #[inline(always)]
     fn get_fast_key(key_addr: usize) -> FKey {
-        unsafe { intrinsics::atomic_load_acquire(key_addr as *mut FKey) }
+        unsafe { intrinsics::atomic_load_relaxed(key_addr as *mut FKey) }
     }
 
     #[inline(always)]
     fn get_fast_value(val_addr: usize) -> FastValue {
-        let addr = val_addr;
-        let val = unsafe { intrinsics::atomic_load_acquire(addr as *mut FVal) };
+        let val = unsafe { intrinsics::atomic_load_relaxed(val_addr as *mut FVal) };
         FastValue::new(val)
     }
 
