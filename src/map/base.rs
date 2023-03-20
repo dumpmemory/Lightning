@@ -84,6 +84,7 @@ const MIGRATION_BITS_SIZE: usize = mem::size_of::<MigrationBits>() * 8;
 const MIGRATION_BITS_SHIFT: u32 = MIGRATION_BITS_SIZE.trailing_zeros();
 const MIGRATION_BITS_MASK: usize = MIGRATION_BITS_SIZE - 1;
 const MIGRATION_TOTAL_BITS: usize = 64;
+const MIGRATION_TOTAL_MASK: usize = MIGRATION_TOTAL_BITS - 1;
 const MIGRATION_BITS_ARR_SIZE: usize = MIGRATION_TOTAL_BITS / MIGRATION_BITS_SIZE;
 const MIGRATION_TOTAL_BITS_SHIFT: u32 = MIGRATION_TOTAL_BITS.trailing_zeros();
 
@@ -2352,6 +2353,7 @@ impl<
             return false;
         }
         let migrated = (0..MIGRATION_TOTAL_BITS)
+            .map(|i| (i + hash) & MIGRATION_TOTAL_MASK)
             .map(|i| self.migrate_slab(i, old_chunk, parts, &part_range, guard))
             .fold(false, |a, b| a || b);
         if migrated {
