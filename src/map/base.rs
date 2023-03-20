@@ -2366,9 +2366,12 @@ impl<
         (home_id, ends_id): &(usize, usize),
         guard: &crossbeam_epoch::Guard,
     ) -> bool {
+        // Does all slab migrated?
         if !old_chunk.migrated.iter().all(|bs| {
             bs.load(Acquire) == !0
         }) {
+            // If not, just skip this turn
+            // Another thread will wrapup after they finised their job
             return false;
         } 
         let pre_occupation = old_chunk.capacity >> 1;
