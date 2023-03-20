@@ -648,18 +648,6 @@ impl<
             } else {
                 chunk = current_chunk;
             }
-            if !is_copying && new_chunk.is_none() && self.need_migration(chunk) {
-                match self.do_migration(hash, chunk, epoch, part, parts, arr_ver, &guard) {
-                    ResizeResult::Done => {
-                        continue;
-                    }
-                    ResizeResult::SwapFailed => {
-                        // backoff.spin();
-                        // continue;
-                    }
-                    ResizeResult::NoNeed => {}
-                }
-            }
             let modify_chunk = new_chunk.unwrap_or(chunk);
             let masked_value = fvalue & VAL_BIT_MASK;
             let mod_op = match op {
@@ -843,6 +831,9 @@ impl<
                     }
                 }
                 None => {}
+            }
+            if !is_copying && new_chunk.is_none() && self.need_migration(chunk) {
+                self.do_migration(hash, chunk, epoch, part, parts, arr_ver, &guard);
             }
             return res;
         }
