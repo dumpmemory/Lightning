@@ -1261,101 +1261,82 @@ impl<
         let mut addr = chunk.entry_addr(idx);
         'MAIN: loop {
             let k = Self::get_fast_key(addr);
-            if k == EMPTY_KEY {
-                // trace!("Inserting {}", fkey);
-                let hop_adjustment = Self::need_hop_adjustment(chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
-                match op {
-                    ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
-                        let cas_fval = if hop_adjustment {
-                            // Use empty key to block probing progression for hops
-                            BACKWARD_SWAPPING_VALUE
-                        } else {
-                            fval
-                        };
-                        let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, cas_fval);
-                        match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
-                            (_, true) => {
-                                chunk.occupation.fetch_add(1, AcqRel);
-                                let attachment = chunk.attachment.prefetch(idx);
-                                attachment.set_key(key.clone());
-                                if Self::FAT_VAL {
-                                    val.map(|val| attachment.set_value((*val).clone(), 0));
-                                    Self::store_raw_value(addr, fval);
-                                    Self::store_key(addr, fkey);
-                                } else {
-                                    Self::store_key(addr, fkey);
-                                    match Self::adjust_hops(
-                                        hop_adjustment,
-                                        chunk,
-                                        fkey,
-                                        fval,
-                                        home_idx,
-                                        idx,
-                                        count,
-                                    ) {
-                                        Ok(new_idx) => {
-                                            idx = new_idx;
-                                        }
-                                        Err(new_idx) => {
-                                            let new_addr = chunk.entry_addr(new_idx);
-                                            Self::store_value(new_addr, TOMBSTONE_VALUE);
-                                            return ModResult::TableFull;
+            let v = Self::get_fast_value(addr);
+            let raw = v.val;
+            match (k, raw) {
+                (EMPTY_KEY, _) => {
+                    let hop_adjustment = Self::need_hop_adjustment(chunk, count); // !Self::FAT_VAL && count > NUM_HOPS;
+                    match op {
+                        ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
+                            let cas_fval = if hop_adjustment {
+                                // Use empty key to block probing progression for hops
+                                BACKWARD_SWAPPING_VALUE
+                            } else {
+                                fval
+                            };
+                            let primed_fval = Self::if_fat_val_then_val(LOCKED_VALUE, cas_fval);
+                            match Self::cas_value(addr, EMPTY_VALUE, primed_fval) {
+                                (_, true) => {
+                                    chunk.occupation.fetch_add(1, AcqRel);
+                                    let attachment = chunk.attachment.prefetch(idx);
+                                    attachment.set_key(key.clone());
+                                    if Self::FAT_VAL {
+                                        val.map(|val| attachment.set_value((*val).clone(), 0));
+                                        Self::store_raw_value(addr, fval);
+                                        Self::store_key(addr, fkey);
+                                    } else {
+                                        Self::store_key(addr, fkey);
+                                        match Self::adjust_hops(
+                                            hop_adjustment,
+                                            chunk,
+                                            fkey,
+                                            fval,
+                                            home_idx,
+                                            idx,
+                                            count,
+                                        ) {
+                                            Ok(new_idx) => {
+                                                idx = new_idx;
+                                            }
+                                            Err(new_idx) => {
+                                                let new_addr = chunk.entry_addr(new_idx);
+                                                Self::store_value(new_addr, TOMBSTONE_VALUE);
+                                                return ModResult::TableFull;
+                                            }
                                         }
                                     }
+                                    return ModResult::Done(0, None, idx);
                                 }
-                                return ModResult::Done(0, None, idx);
-                            }
-                            (SENTINEL_VALUE, false) => return ModResult::Sentinel,
-                            (FORWARD_SWAPPING_VALUE, false) => {
-                                Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
-                                iter.refresh_following(chunk);
-                                backoff.spin();
-                                continue 'MAIN;
-                            }
-                            (BACKWARD_SWAPPING_VALUE, false) => {
-                                // Reprobe
-                                Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
-                                iter = reiter();
-                                backoff.spin();
-                                continue 'MAIN;
-                            }
-                            (_, false) => {
-                                backoff.spin();
-                                continue;
+                                (SENTINEL_VALUE, false) => return ModResult::Sentinel,
+                                (FORWARD_SWAPPING_VALUE, false) => {
+                                    Self::wait_entry(addr, k, FORWARD_SWAPPING_VALUE, &backoff);
+                                    iter.refresh_following(chunk);
+                                    backoff.spin();
+                                    continue 'MAIN;
+                                }
+                                (BACKWARD_SWAPPING_VALUE, false) => {
+                                    // Reprobe
+                                    Self::wait_entry(addr, k, BACKWARD_SWAPPING_VALUE, &backoff);
+                                    iter = reiter();
+                                    backoff.spin();
+                                    continue 'MAIN;
+                                }
+                                (_, false) => {
+                                    backoff.spin();
+                                    continue;
+                                }
                             }
                         }
-                    }
-                    ModOp::Sentinel => return ModResult::NotFound,
-                    ModOp::Tombstone => return ModResult::NotFound,
-                    ModOp::SwapFastVal(_) => return ModResult::NotFound,
-                    ModOp::Lock => {}
-                };
-            } else {
-                let v = Self::get_fast_value(addr);
-                let raw = v.val;
-                let mut is_sentinel = false;
-                match raw {
-                    SENTINEL_VALUE => {
-                        is_sentinel = true;
-                    }
-                    BACKWARD_SWAPPING_VALUE => {
-                        if iter.terminal {
-                            // Only check terminal probing
-                            Self::wait_entry(addr, k, raw, &backoff);
-                            iter = reiter();
-                            backoff.spin();
-                            continue 'MAIN;
-                        }
-                    }
-                    FORWARD_SWAPPING_VALUE => {
-                        Self::wait_entry(addr, k, raw, &backoff);
-                        iter.refresh_following(chunk);
-                        backoff.spin();
-                        continue 'MAIN;
-                    }
-                    _ => {}
+                        ModOp::Sentinel => return ModResult::NotFound,
+                        ModOp::Tombstone => return ModResult::NotFound,
+                        ModOp::SwapFastVal(_) => return ModResult::NotFound,
+                        ModOp::Lock => {}
+                    };
                 }
-                if is_sentinel {
+                (_, SENTINEL_VALUE) if k == fkey => {
+                    return ModResult::Sentinel;
+                }
+                (_, SENTINEL_VALUE) => {
                     match &op {
                         ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) => {
                             return ModResult::Sentinel;
@@ -1363,7 +1344,22 @@ impl<
                         _ => {}
                     }
                 }
-                if k == fkey {
+                (_, BACKWARD_SWAPPING_VALUE) => {
+                    if iter.terminal {
+                        // Only check terminal probing
+                        Self::wait_entry(addr, k, raw, &backoff);
+                        iter = reiter();
+                        backoff.spin();
+                        continue 'MAIN;
+                    }
+                }
+                (_, FORWARD_SWAPPING_VALUE) => {
+                    Self::wait_entry(addr, k, raw, &backoff);
+                    iter.refresh_following(chunk);
+                    backoff.spin();
+                    continue 'MAIN;
+                }
+                (_, _) if k == fkey => {
                     let attachment = chunk.attachment.prefetch(idx);
                     let key_probe = attachment.probe(&key);
                     if Self::get_fast_key(addr) != k {
@@ -1490,9 +1486,7 @@ impl<
                                         return ModResult::Aborted(act_val);
                                     }
                                 }
-                            }
-                        } else if is_sentinel {
-                            return ModResult::Sentinel;
+                            } 
                         } else {
                             // Other tags (except tombstone and locks)
                             if cfg!(debug_assertions) {
@@ -1513,6 +1507,7 @@ impl<
                         }
                     }
                 }
+                _ => {}
             }
             // trace!("Reprobe inserting {} got {}", fkey, k);
             if let Some(new_iter) = iter.next() {
