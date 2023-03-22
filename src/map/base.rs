@@ -1085,30 +1085,50 @@ impl<
             let current_chunk = part.current();
             let history_chunk = part.history();
             let is_copying = Self::is_copying(current_epoch);
-
-            if current_epoch == part.epoch() {
-                if !is_copying {
-                    if !history_chunk.is_null() && current_chunk.is_null() {
-                        // For placeholders of split but unmigrated chunks
-                        return (history_chunk, None, current_epoch, part, parts, arr_ver);
-                    } else if !current_chunk.is_null() {
-                        return (current_chunk, None, current_epoch, part, parts, arr_ver);
-                    }
-                } else if !history_chunk.is_null()
-                    && !current_chunk.is_null()
-                    && current_chunk != history_chunk
-                {
-                    return (
-                        history_chunk,
-                        Some(current_chunk),
-                        current_epoch,
-                        part,
-                        parts,
-                        arr_ver,
-                    );
+            if history_chunk == current_chunk {
+                if !Self::is_copying(current_epoch) && current_epoch == part.epoch() {
+                    return (history_chunk, None, current_epoch, part, parts, arr_ver);
+                // On watch list, need to test for correctness
+                } else {
+                    backoff.spin();
+                    continue;
                 }
             }
-            backoff.spin();
+            if part.epoch() != current_epoch
+                || history_chunk.is_disabled()
+                || self.current_arr_ver() != arr_ver
+            {
+                backoff.spin();
+                continue;
+            }
+            if is_copying {
+                if history_chunk.is_null() || current_chunk.is_null() {
+                    backoff.spin();
+                    continue;
+                }
+                return (
+                    history_chunk,
+                    Some(current_chunk),
+                    current_epoch,
+                    part,
+                    parts,
+                    arr_ver,
+                );
+            } else {
+                if !history_chunk.is_null() && !current_chunk.is_null() {
+                    backoff.spin();
+                    continue;
+                }
+                if !current_chunk.is_null() {
+                    return (current_chunk, None, current_epoch, part, parts, arr_ver);
+                } else {
+                    debug_assert!(
+                        !history_chunk.is_null(),
+                        "Can't be both current and history are empty"
+                    );
+                    return (history_chunk, None, current_epoch, part, parts, arr_ver);
+                }
+            }
         }
     }
 
@@ -1205,8 +1225,6 @@ impl<
         let (mut key_addr, mut val_addr) = chunk.entry_addr(idx);
         loop {
             let k = Self::get_fast_key(key_addr);
-            let v = Self::get_fast_value(val_addr);
-            let raw = v.val;
             if k == EMPTY_KEY {
                 match op {
                     ModOp::Insert(fval, val) | ModOp::AttemptInsert(fval, val) => {
@@ -1238,21 +1256,12 @@ impl<
                     ModOp::SwapFastVal(_) => return ModResult::NotFound,
                     ModOp::Lock => {}
                 };
-            } else if k == fkey && raw == SENTINEL_VALUE {
-                return ModResult::Sentinel;
-            } else if raw == SENTINEL_VALUE {
-                match &op {
-                    ModOp::Insert(_, _) | ModOp::AttemptInsert(_, _) => {
-                        return ModResult::Sentinel;
-                    }
-                    _ => {}
-                }
-            }
-            if k == fkey {
+            } else if k == fkey {
                 let attachment = chunk.attachment.prefetch(idx);
                 let key_probe = attachment.probe(&key);
                 if key_probe {
-                    let act_val = v.act_val::<V>();
+                    let v = Self::get_fast_value(val_addr);
+                    let raw = v.val;
                     if raw < TOMBSTONE_VALUE || v.is_primed() {
                         // Other tags (except tombstone and locks)
                         if cfg!(debug_assertions) {
@@ -1268,9 +1277,13 @@ impl<
                                 }
                             }
                         }
+                        if raw == SENTINEL_VALUE {
+                            return ModResult::Sentinel;
+                        }
                         backoff.spin();
                         continue;
                     }
+                    let act_val = v.act_val::<V>();
                     match op {
                         ModOp::Insert(fval, ov) => {
                             // Insert with attachment should prime value first when
