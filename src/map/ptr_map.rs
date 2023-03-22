@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::intrinsics::{forget, prefetch_read_data};
 use std::mem::MaybeUninit;
+use std::sync::atomic::AtomicU32;
 
 use ahash::AHasher;
 
@@ -11,7 +12,10 @@ use super::*;
 
 pub type PtrTable<K, V, ALLOC, H> =
     Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
-const ALLOC_BUFFER_SIZE: usize = 64;
+const ALLOC_BUFFER_SIZE: usize = 16;
+
+type EpochAtomic = AtomicU32;
+type EpochInt = u32;
 
 pub struct PtrHashMap<
     K: Clone + Hash + Eq,
@@ -21,20 +25,20 @@ pub struct PtrHashMap<
 > {
     pub(crate) table: PtrTable<K, V, ALLOC, H>,
     allocator: Box<obj_alloc::Allocator<PtrValueNode<V>, ALLOC_BUFFER_SIZE>>,
-    epoch: AtomicUsize, // Global epoch for VBR
+    epoch: EpochAtomic, // Global epoch for VBR
 }
 
 #[repr(align(8))]
 struct PtrValueNode<V> {
-    birth_ver: AtomicUsize,
-    retire_ver: AtomicUsize,
+    birth_ver: EpochAtomic,
+    retire_ver: EpochAtomic,
     value: Cell<V>,
 }
 
 impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + Default>
     PtrHashMap<K, V, ALLOC, H>
 {
-    const VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS;
+    const VAL_NODE_LOW_BITS: EpochInt = PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS as EpochInt;
     const INV_VAL_NODE_LOW_BITS: usize = PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS;
 
     #[inline(always)]
@@ -95,7 +99,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
             let node_ref = &*node_ptr;
             let node_ver = node_ref.retire_ver.load(Relaxed);
             debug_assert_ne!(
-                node_ptr as usize & Self::VAL_NODE_LOW_BITS,
+                node_ptr as usize & (Self::VAL_NODE_LOW_BITS as usize),
                 node_ptr as usize
             );
             loop {
@@ -170,10 +174,10 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     }
 
     #[inline(always)]
-    fn compose_value(ptr: usize, ver: usize) -> usize {
+    fn compose_value(ptr: usize, ver: EpochInt) -> usize {
         let ptr_part = ptr & Self::INV_VAL_NODE_LOW_BITS;
         let ver_part = ver & Self::VAL_NODE_LOW_BITS;
-        let val = ptr_part | ver_part;
+        let val = ptr_part | ver_part as usize;
         val & WORD_MUTEX_DATA_BIT_MASK
     }
 
@@ -192,11 +196,11 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
 }
 
 #[inline(always)]
-fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, usize) {
+fn decompose_value<K: Clone + Hash + Eq, V: Clone>(value: usize) -> (usize, EpochInt) {
     let value = value & WORD_MUTEX_DATA_BIT_MASK;
     (
         value & PtrValAttachmentItem::<K, V>::INV_VAL_NODE_LOW_BITS,
-        value & PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS,
+        (value & PtrValAttachmentItem::<K, V>::VAL_NODE_LOW_BITS as usize) as EpochInt,
     )
 }
 
@@ -208,7 +212,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
         Self {
             table: PtrTable::with_capacity(cap, ()),
             allocator: alloc,
-            epoch: AtomicUsize::new(1),
+            epoch: EpochAtomic::new(1),
         }
     }
 
