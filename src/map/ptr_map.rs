@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::intrinsics::{forget, prefetch_read_data};
+use std::intrinsics::{forget, prefetch_read_data, prefetch_write_data};
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU32;
 
@@ -12,7 +12,7 @@ use super::*;
 
 pub type PtrTable<K, V, ALLOC, H> =
     Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
-const ALLOC_BUFFER_SIZE: usize = 16;
+const ALLOC_BUFFER_SIZE: usize = 8;
 
 type EpochAtomic = AtomicU32;
 type EpochInt = u32;
@@ -93,7 +93,7 @@ impl<K: Clone + Hash + Eq, V: Clone, ALLOC: GlobalAlloc + Default, H: Hasher + D
     fn ref_val(&self, d: V, guard: &AllocGuard<PtrValueNode<V>, ALLOC_BUFFER_SIZE>) -> usize {
         unsafe {
             let node_ptr = guard.alloc();
-            prefetch_read_data(node_ptr, 3);
+            prefetch_write_data(node_ptr, 3);
             let mut current_ver = self.epoch.load(Relaxed);
             let backoff = Backoff::new();
             let node_ref = &*node_ptr;
