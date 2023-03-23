@@ -624,6 +624,7 @@ impl<
             } else if history_chunk != current_chunk {
                 if current_chunk.occupation.load(Relaxed) >= current_chunk.occu_limit {
                     self.iter_migrate_slabs(hash, history_chunk, part, parts, &guard);
+                    backoff.spin();
                     continue;
                 }
                 can_migrate_slabs = true;
@@ -1893,18 +1894,19 @@ impl<
         }
         let empty_entries = old_chunk_ptr.empty_entries.load(Relaxed);
         let old_cap = old_chunk_ptr.capacity;
+        // Preoccupie half of the new capacity for migration
+        let mut pre_occupation = old_cap;
         let new_cap = if empty_entries > (old_cap >> 1) {
             // Clear tombstones
             old_cap
         } else {
             let mut cap = old_cap << 1;
             if cap < 2048 {
+                pre_occupation = cap;
                 cap <<= 1;
             }
             cap
         };
-        // Preoccupie half of the new capacity for migration
-        let pre_occupation = old_cap;
         let new_chunk = Chunk::alloc_chunk(new_cap, &self.attachment_init_meta);
         unsafe {
             (*new_chunk).occupation.store(pre_occupation as _, Relaxed);

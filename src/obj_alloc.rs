@@ -328,15 +328,6 @@ impl<T, const B: usize> TLAlloc<T, B> {
                 .free_buffer
                 .push((self.buffer_addr, self.buffer_limit))
         }
-        // let mut free_node = mem::replace(&mut self.free_list.head, Arc::null());
-        // while !free_node.is_null() {
-        //     let next_next =
-        //         mem::replace(&mut free_node.as_mut().next, AtomicArc::null()).into_arc();
-        //     if free_node.pos > 0 {
-        //         (&*self.shared).attach_objs(free_node);
-        //     }
-        //     free_node = next_next;
-        // }
         if self.buffered_free[0].pos > 0 {
             (&*self.shared).attach_objs(mem::replace(
                 &mut self.buffered_free[0],
