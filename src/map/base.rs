@@ -2,15 +2,13 @@ use std::{
     cell::RefCell,
     cmp::{max, min},
     collections::{self, VecDeque},
-    sync::atomic::{AtomicU32, AtomicU64, AtomicU8},
+    sync::atomic::{AtomicU32},
 };
 
 use itertools::Itertools;
-use libc::IFA_F_HOMEADDRESS;
 use smallvec::{smallvec, SmallVec};
 
 use crate::counter::Counter;
-use rand::prelude::*;
 
 use super::*;
 
