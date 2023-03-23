@@ -12,7 +12,7 @@ use super::*;
 
 pub type PtrTable<K, V, ALLOC, H> =
     Table<K, (), PtrValAttachment<K, V, ALLOC>, ALLOC, H, PTR_KV_OFFSET, PTR_KV_OFFSET>;
-const ALLOC_BUFFER_SIZE: usize = 8;
+const ALLOC_BUFFER_SIZE: usize = 256;
 
 type EpochAtomic = AtomicU32;
 type EpochInt = u32;
