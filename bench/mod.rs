@@ -330,7 +330,7 @@ fn run_perf_test_set<'a, T: Collection>(
         let of = vec![{
             println!("Oversize");
             let oversize_measurement =
-                run_and_measure_mix::<T>(Mix::insert_heavy(), 2.1, load - 1, 0.0, stride);
+                run_and_measure_mix::<T>(Mix::insert_heavy(), 4.5, load - 2, 0.0, stride);
             write_measurements(
                 &format!(
                     "{}_{}_oversize.csv",
@@ -341,34 +341,34 @@ fn run_perf_test_set<'a, T: Collection>(
             );
             ("overflow", oversize_measurement)
         }];
-        let lo = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_lo", ds_name),
-            load,
-            0.2,
-            stride,
-        );
-        let hi = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_hi", ds_name),
-            load,
-            0.8,
-            stride,
-        );
-        let mi = run_and_record_contention::<T>(
-            file_name,
-            &format!("{}_mi", ds_name),
-            load,
-            0.5,
-            stride,
-        );
+        // let lo = run_and_record_contention::<T>(
+        //     file_name,
+        //     &format!("{}_lo", ds_name),
+        //     load,
+        //     0.2,
+        //     stride,
+        // );
+        // let hi = run_and_record_contention::<T>(
+        //     file_name,
+        //     &format!("{}_hi", ds_name),
+        //     load,
+        //     0.8,
+        //     stride,
+        // );
+        // let mi = run_and_record_contention::<T>(
+        //     file_name,
+        //     &format!("{}_mi", ds_name),
+        //     load,
+        //     0.5,
+        //     stride,
+        // );
         (
             ds_name,
             vec![
                 // ("full", full),
-                ("lo", lo),
-                ("mi", mi),
-                ("hi", hi),
+                // ("lo", lo),
+                // ("mi", mi),
+                // ("hi", hi),
                 ("of", of),
             ],
         )
