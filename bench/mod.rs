@@ -320,13 +320,6 @@ fn run_perf_test_set<'a, T: Collection>(
 ) {
     println!("Testing perf with contention {}", contention);
     if contention {
-        // let full = run_and_record_contention::<T>(
-        //     file_name,
-        //     &format!("{}_full", ds_name),
-        //     load,
-        //     1.0,
-        //     stride,
-        // );
         let of = vec![{
             println!("Oversize");
             let oversize_measurement =
@@ -365,7 +358,6 @@ fn run_perf_test_set<'a, T: Collection>(
         (
             ds_name,
             vec![
-                ("full", full),
                 ("lo", lo),
                 ("mi", mi),
                 ("hi", hi),
