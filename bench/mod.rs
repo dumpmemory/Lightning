@@ -341,34 +341,34 @@ fn run_perf_test_set<'a, T: Collection>(
             );
             ("overflow", oversize_measurement)
         }];
-        // let lo = run_and_record_contention::<T>(
-        //     file_name,
-        //     &format!("{}_lo", ds_name),
-        //     load,
-        //     0.2,
-        //     stride,
-        // );
-        // let hi = run_and_record_contention::<T>(
-        //     file_name,
-        //     &format!("{}_hi", ds_name),
-        //     load,
-        //     0.8,
-        //     stride,
-        // );
-        // let mi = run_and_record_contention::<T>(
-        //     file_name,
-        //     &format!("{}_mi", ds_name),
-        //     load,
-        //     0.5,
-        //     stride,
-        // );
+        let lo = run_and_record_contention::<T>(
+            file_name,
+            &format!("{}_lo", ds_name),
+            load,
+            0.2,
+            stride,
+        );
+        let hi = run_and_record_contention::<T>(
+            file_name,
+            &format!("{}_hi", ds_name),
+            load,
+            0.8,
+            stride,
+        );
+        let mi = run_and_record_contention::<T>(
+            file_name,
+            &format!("{}_mi", ds_name),
+            load,
+            0.5,
+            stride,
+        );
         (
             ds_name,
             vec![
-                // ("full", full),
-                // ("lo", lo),
-                // ("mi", mi),
-                // ("hi", hi),
+                ("full", full),
+                ("lo", lo),
+                ("mi", mi),
+                ("hi", hi),
                 ("of", of),
             ],
         )
